@@ -1593,9 +1593,10 @@ give the same link. The **head** of a chain is `(seq, link)` of its last record.
 
 **The anchor.** For each space, a device keeps, sealed in its vault's encrypted store, the
 **anchor**: the `seq` and `epoch` of the last record it accepted, and the link of every record it
-accepted, from `seq` 0 to that one (32 bytes each, at most 2 MiB), and the Owners of the state it
-accepted there (the wasm module's view of a verified chain lists them as `owners`; "Epochs" says what
-they are for). The anchor never goes back,
+accepted, from `seq` 0 to that one (32 bytes each, at most 2 MiB), and the confirmed Owners of the
+state it accepted there, each with `SHA-256` of their bundle (the wasm module's view of a verified
+chain lists them as `anchorOwners`; "Epochs" says what they are for). An anchor kept without them
+vouches for no fence. The anchor never goes back,
 except by a fence ("Epochs"). A device that lost its anchor can't rebuild it from the server: it
 starts again from "First contact".
 
@@ -1649,6 +1650,8 @@ Verification turns a chain into a **state**. The state before the first record i
 | retired ids | Ids of deleted collections and groups. They can't be used again. |
 | policies | The policy set ("`policies`"), every setting off at first. |
 | recovery key | 1600 bytes, or none. |
+| bytes | The record bytes of every record applied so far, which "Limits" counts against 64 MiB, and "The end of a chain" against the reserve. |
+| reconfirmed | By member: the `seq` of a `confirm` that confirmed them again under a newer bundle while they were confirmed ("`confirm`"), if it is still the last word on their bundle. |
 
 Terms, all taken in a given state:
 
@@ -2079,8 +2082,12 @@ removed or demoted, and a server that is not the home could serve the chain up t
 then a fence the removed Owner signed, followed by records of the Owner's choosing. Removing an
 Owner is final. So a divergence is taken only when the device holds and verified the promotion
 record the fence names (its `home` and `promotion` are a pair the device holds), or when the fence's
-signer is an Owner in the state the device accepted at its anchor (the device keeps its Owners with
-the anchor). A device that has neither refuses the chain as **forked**.
+signer is a confirmed Owner in the state the device accepted at its anchor **and** the bundle the
+served chain records for the signer just before the fence is the one the device kept for them (the
+device keeps each Owner's id and `SHA-256` of their bundle with the anchor). The bundle matters: a
+fence signed with an Owner's old, leaked key, at the place where the Owner's own `rekey` was, finds
+the old bundle in the served chain and is not vouched for. A device that has neither refuses the
+chain as **forked**.
 
 ### Removal and replacement
 
@@ -2179,8 +2186,9 @@ follow the same order and names.
 1. **For each record**, in the order served, starting from the empty state `S`:
    1. *Anchor.* If the anchor has a link at this `seq` and it differs from this record's link, and no
       earlier record differed, this `seq` is the **divergence**. A divergence is allowed only at a
-      `fence` the device vouches for (it holds the promotion the fence names, or the fence's signer is an
-      Owner of the state it accepted at its anchor; "Epochs"); at any other kind, or at a fence it
+      `fence` the device vouches for (it holds the promotion the fence names, or the fence's signer is
+      an Owner of the state it accepted at its anchor, with the bundle it kept for them; "Epochs"); at
+      any other kind, or at a fence it
       doesn't vouch for, the chain is refused as **forked**. After a divergence, the anchor isn't
       compared again.
    2. *Position.* `space` is the space being verified (wrong space). `seq` is `S`'s head `seq` plus
@@ -2415,14 +2423,15 @@ unless all of these hold:
   tell them from the rest: the row's accepted time was written when the confirm landed, so it records
   no consent. It repairs nothing; an Owner or Admin who finds such a member (a confirmed member they
   never invited, or one whose invitation was never accepted) removes them with a `remove` record.
-- A13. The chain after the request is within "Limits": at most 65,536 records and 64 MiB of record
-  bytes (**too large**, `422`). Past 60 MiB the server takes only an Owner's records and `remove`
-  and `keys` records (**not allowed**, `422`), so the byte limit can't leave an Owner no room to
-  remove a member. This is A7's own rule, which a record can't be checked against alone: the server
-  adds the sizes up in the append.
-- A14. A member who isn't an Owner signs at most 1,024 records of the space in an hour and 4,096 in
-  a day, counted by the records' `at`. A request past either is refused whole (`429`
-  `space-chain-quota`). Owners have no quota: they are who removes a member who sends too many.
+- A13. The chain after the request is within "Limits" and keeps its end for Owners: at most 65,536
+  records and 64 MiB of record bytes (**too large**, `422`), and "The end of a chain" (**not
+  allowed**, `422`). These are A7's rules for the chain as a whole: the server applies them with the
+  state at the head, which keeps the bytes, so it adds nothing up in the append.
+- A14. An account signs at most 4,096 records of a space in a day and, unless it is an Owner or an
+  Admin of the space, 1,024 in an hour, counted by the records' `at`. A request past either is
+  refused whole (`429` `space-chain-quota`). Owners and Admins are not asked for the hour, because
+  they do the bulk work (invites, confirms, seals) and are who removes a member who sends too many.
+  The day is asked of everyone, so a stolen Owner or Admin key can't fill a chain either.
 
 **Items**
 
@@ -2528,16 +2537,28 @@ keys with 2,001 names packed, about 170,000 bytes, and keeps a record with its t
 bytes, inside a federation home record's 256 KiB payload.
 
 **The end of a chain.** A member must not be able to fill a chain to its cap and leave no room to
-remove them. So the last records are kept (a rule of "Authority", checked in step 6 of
-"Verification" by every verifier, and refused as **not allowed**): a record with `seq` 64,512 or
-more (`CHAIN_RECORDS - 1,024`) is taken only from an Owner, or when its kind is `remove` or `keys`;
-a record with `seq` 65,408 or more (`CHAIN_RECORDS - 128`) is taken only from an Owner. Records of
-an Owner are still bound by every other rule.
+remove them. So the end of a chain is kept (a rule of "Authority", checked in step 6 of
+"Verification" by every verifier, and refused as **not allowed**). `bytes` is the chain's record
+bytes with this record (the state keeps the total, `bytes` in "State"):
 
-The server also refuses (A13) a record that would take the chain past 65,536 records or 64 MiB of
-record bytes (**too large**), as a client would, and keeps the last 4 MiB for an Owner's records and
-`remove` and `keys` records. The server alone applies that byte reserve and the quota of A14: a
-client sees a chain as a whole and has no record of when each record was sent.
+- **The reserve**: a record with `seq` 64,512 or more (`CHAIN_RECORDS - 1,024`), or with `bytes` over
+  62 MiB (the last 4 MiB of `CHAIN_BYTES`), is taken from anyone but an Owner only if it is a
+  `remove`, or a `keys` record whose every key is **marked** now (an Owner's `remove` marked it, so
+  the `keys` record is the replacement that follows). A `keys` record that replaces an unmarked key is
+  not taken: a member with Manage on one collection could otherwise rotate it again and again until
+  the reserve is gone.
+- **The Owner-only tail**: a record with `seq` 65,408 or more (`CHAIN_RECORDS - 128`), or with
+  `bytes` over 64 MiB less 512 KiB, is taken only from an Owner.
+- An Owner's records are always taken here, and are still bound by every other rule.
+
+A record that would take `bytes` past 64 MiB is **too large**, in the state rules as in step 0 (A13
+says the same of the server). `test-vectors/space-chain.json` has `end-of-chain` cases, which give a
+`seq`, `bytes`, the signer's role, the kind and whether the keys are marked, and say whether the
+chain takes the record: 64,511 and 64,512, 65,407 and 65,408, a `keys` record for a marked and for an
+unmarked key, and the byte limits, 62 MiB and 64 MiB less 512 KiB, on either side.
+
+The server alone applies the quota of A14: a client sees a chain as a whole and has no record of when
+each record was sent.
 
 ### Test cases
 
@@ -2575,10 +2596,11 @@ no chain there. In words:
    10 is a `fence` to epoch 2 and whose `seq` 0 to 9 match its anchor: accepted, and 10 to 12 of its
    own are dropped. If its link at 9 differs: forked. A device anchored at epoch 2 served the old
    home's epoch-1 records past the fence: forked. The fence's signer is an Owner in the device's
-   own state (or the device holds the promotion): accepted. The device's records 10 to 12 removed the
-   signer as an Owner and it holds no promotion, or it keeps no Owners with its anchor and holds no
-   promotion: forked. In the vectors, an `anchor` may also carry `owners` (uuids) and `promotions`
-   (`home` and `promotion` hash pairs).
+   own state, with the bundle the device kept (or the device holds the promotion): accepted. The
+   device's records 10 to 12 removed the signer as an Owner, or rekeyed them and the fence is signed
+   with the old key, and it holds no promotion, or it keeps no Owners with its anchor and holds no
+   promotion: forked. In the vectors, an `anchor` may also carry `owners` (a map of uuid to the hex
+   of `SHA-256` of the Owner's bundle) and `promotions` (`home` and `promotion` hash pairs).
 10. **The only Owner replaces their keys.** A `rekey` with a valid cosignature is accepted; the next
     record signed with the new key is accepted, and one signed with the old key is a bad signature. A
     `rekey` without a cosignature is malformed; with a cosignature by another key, a bad signature; to

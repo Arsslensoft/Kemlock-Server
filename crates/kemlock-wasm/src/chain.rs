@@ -19,7 +19,7 @@
 //!   operations (`open_space`, `seal_space_key_to` and the rest in `spaces.rs`): a page that
 //!   skipped the chain can't open or seal a key the chain doesn't vouch for.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use kemlock_crypto::{
     bundle::{Bundle, fingerprint_groups},
@@ -54,14 +54,24 @@ pub(crate) struct AnchorIn {
     seq: u64,
     epoch: u32,
     links: Vec<String>,
-    /// The Owners of the state the page accepted at `seq` (uuid text), when the page kept them: a
-    /// `fence` that parts the chain from the anchor is taken only when an Owner of these signed it,
-    /// or the page holds the promotion it names. The view of a verified chain gives them.
+    /// The confirmed Owners of the state the page accepted at `seq`, each with the hash of their
+    /// bundle, when the page kept them: a `fence` that parts the chain from the anchor is taken only
+    /// when an Owner of these signed it with that bundle's key, or the page holds the promotion it
+    /// names. The view of a verified chain gives them (`anchorOwners`). An anchor kept before they
+    /// were given has none, and then no fence is vouched for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    owners: Option<Vec<String>>,
+    owners: Option<Vec<AnchorOwnerIn>>,
     /// Promotion records the page holds and verified: the new home's id and the hash of the record.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     promotions: Vec<PromotionIn>,
+}
+
+/// An Owner kept with an anchor: their id (uuid text) and `SHA-256` of their bundle (base64url).
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AnchorOwnerIn {
+    id: String,
+    bundle: String,
 }
 
 /// A promotion record the page holds and verified.
@@ -91,8 +101,15 @@ impl AnchorIn {
             .map(|owners| {
                 owners
                     .iter()
-                    .map(|owner| ids::parse_uuid(owner))
-                    .collect::<Result<BTreeSet<Id>, Error>>()
+                    .map(|owner| -> Result<(Id, Hash), Error> {
+                        Ok((
+                            ids::parse_uuid(&owner.id)?,
+                            b64::decode(&owner.bundle)?
+                                .try_into()
+                                .map_err(|_: Vec<u8>| Error::Invalid)?,
+                        ))
+                    })
+                    .collect::<Result<BTreeMap<Id, Hash>, Error>>()
             })
             .transpose()?;
         let promotions = self
@@ -289,6 +306,14 @@ struct ContactOut {
     owners: Vec<OwnerOut>,
 }
 
+/// An Owner as the page keeps them with an anchor.
+#[derive(Serialize)]
+struct AnchorOwnerOut {
+    id: String,
+    /// `SHA-256` of the Owner's bundle, base64url.
+    bundle: String,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ChainView {
@@ -300,9 +325,10 @@ pub(crate) struct ChainView {
     epoch: u32,
     /// The link of every record, base64url: what the page stores as its anchor.
     links: Vec<String>,
-    /// The Owners of the state, uuid text: stored with the anchor, so a later unlock can tell a
-    /// `fence` signed by an Owner it removed from one signed by an Owner it still has.
-    owners: Vec<String>,
+    /// The confirmed Owners of the state with the hash of their bundle: stored with the anchor, so
+    /// a later unlock can tell a `fence` signed by an Owner it removed, or by an old key of one
+    /// who has since rekeyed, from one signed by an Owner's current key.
+    anchor_owners: Vec<AnchorOwnerOut>,
     /// Whether first contact is done, so keys may be opened.
     trusted: bool,
     /// What to compare, while `trusted` is false.
@@ -379,7 +405,14 @@ fn view_of(held: &HeldChain, me: &Id) -> ChainView {
         }),
         epoch: state.epoch,
         links: held.links.iter().map(text_of).collect(),
-        owners: state.owners().iter().map(uuid).collect(),
+        anchor_owners: state
+            .owners()
+            .iter()
+            .map(|(id, bundle)| AnchorOwnerOut {
+                id: uuid(id),
+                bundle: text_of(bundle),
+            })
+            .collect(),
         trusted: held.trusted,
         first_contact: (!held.trusted).then(|| held.contact.clone()),
         divergence: held.divergence,
@@ -433,7 +466,7 @@ fn unchained() -> ChainView {
         head: None,
         epoch: 0,
         links: Vec::new(),
-        owners: Vec::new(),
+        anchor_owners: Vec::new(),
         trusted: true,
         first_contact: None,
         divergence: None,
@@ -677,7 +710,11 @@ impl Session {
             })
         });
         let mut effective = match (given.as_ref(), held_anchor) {
-            (Some(a), Some(h)) if h.seq > a.seq => Some(h),
+            // The held head is further along: it carries the promotions the page gave.
+            (Some(a), Some(mut h)) if h.seq > a.seq => {
+                h.promotions.clone_from(&a.promotions);
+                Some(h)
+            }
             (Some(a), _) => Some(a.clone()),
             (None, h) => h,
         };

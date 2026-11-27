@@ -812,6 +812,30 @@ pub(crate) fn cases<B: Backend>() -> Vec<Case> {
                 reason: Reason::Forked,
             },
         );
+        // An Owner who rekeyed since: the device accepted the rekey, and is served a fence that
+        // the Owner's old key signed at the rekey's place. The kept bundle is the new one.
+        let mut rekeyed = w.clone();
+        rekeyed.rekey::<B>(&owner2);
+        rekeyed.ok::<B>(
+            &owner,
+            Body::Policies {
+                policies: policies_with(|p| p.disable_send = true),
+            },
+        );
+        let rekeyed_anchor = rekeyed.anchor();
+        let mut leaked = w.clone();
+        leaked.ok::<B>(&owner2, fence_body(b"promotion"));
+        out.anchored(
+            "fence-by-an-owners-old-key",
+            "The device accepted an Owner's rekey. It is served a chain that parts at the rekey \
+             with a fence signed by that Owner's old key, whose promotion it doesn't hold: forked.",
+            &leaked.records,
+            &rekeyed_anchor,
+            Expect::Refused {
+                seq: Some(fork_at),
+                reason: Reason::Forked,
+            },
+        );
         let mut unknown = anchor.clone();
         unknown.owners = None;
         out.anchored(

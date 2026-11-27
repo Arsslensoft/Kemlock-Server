@@ -38,7 +38,9 @@ pub use model::{
 };
 pub use seals::{key_check, link, seal_digest, seal_hash, sign_record, verify_record_signature};
 pub use state::{Head, Member, State, Status};
-pub use verify::{Anchor, Applied, NameCommit, SealCommit, Verified, verify_chain};
+pub use verify::{
+    Anchor, Applied, NameCommit, SealCommit, Verified, end_of_chain_allows, verify_chain,
+};
 
 /// The limits of "Limits".
 #[derive(Clone, Copy, Debug)]
@@ -51,12 +53,19 @@ impl Limits {
     pub const CHAIN_RECORDS: u64 = 65_536;
     /// Record bytes in a chain.
     pub const CHAIN_BYTES: usize = 64 * 1024 * 1024;
-    /// From this `seq` on, a chain takes only an Owner's records and `remove` and `keys` records:
-    /// the last 1,024 records are kept so that no member can fill the chain and leave no room for
-    /// an Owner to remove them or replace keys.
+    /// From this `seq` on, a chain takes from anyone but an Owner only a `remove` record, and a
+    /// `keys` record that replaces keys already marked: the last 1,024 records are kept so that no
+    /// member can fill the chain and leave no room for an Owner to remove them or replace keys.
     pub const OPEN_RECORDS: u64 = Self::CHAIN_RECORDS - 1_024;
     /// From this `seq` on, a chain takes only an Owner's records: the last 128.
     pub const OWNER_ONLY_FROM: u64 = Self::CHAIN_RECORDS - 128;
+    /// Past this many record bytes (the last 4 MiB of `CHAIN_BYTES`) the chain takes the same
+    /// narrowed set as past `OPEN_RECORDS`.
+    pub const OPEN_BYTES: u64 = Self::CHAIN_BYTES_U64 - 4 * 1024 * 1024;
+    /// Past this many record bytes (the last 512 KiB) the chain takes only an Owner's records.
+    pub const OWNER_ONLY_BYTES: u64 = Self::CHAIN_BYTES_U64 - 512 * 1024;
+    /// `CHAIN_BYTES` as the `u64` the state counts in.
+    pub const CHAIN_BYTES_U64: u64 = 64 * 1024 * 1024;
     /// Records in one request to the append route.
     pub const REQUEST_RECORDS: usize = 16;
     /// `invite.grants` and `collection.grants`.

@@ -149,6 +149,13 @@ impl State {
         }
         let link = link_in::<B>(&signed.entry);
         self.check_position(space, rec).map_err(fail)?;
+        // The chain's bytes, with this record's: at most `CHAIN_BYTES` ("Limits").
+        let bytes = self
+            .bytes
+            .saturating_add(u64::try_from(signed.entry.len()).unwrap_or(u64::MAX));
+        if bytes > Limits::CHAIN_BYTES_U64 {
+            return Err(fail(Reason::TooLarge));
+        }
         let signer = self.signer(rec).map_err(fail)?;
         if verify {
             Self::check_signatures::<B>(rec, signed, &signer).map_err(fail)?;
@@ -156,8 +163,10 @@ impl State {
         let (mut next, effects) = self.apply_kind::<B>(rec).map_err(fail)?;
         let changes = self.access_changes(&next);
         self.check_rules(rec, &next, &changes).map_err(fail)?;
-        self.check_authority(rec, &next, &changes).map_err(fail)?;
+        self.check_authority(rec, &next, &changes, bytes)
+            .map_err(fail)?;
         next.head = Some(Head { seq: rec.seq, link });
+        next.bytes = bytes;
         next.epoch = rec.epoch;
         Ok(Applied {
             state: next,
@@ -1025,7 +1034,13 @@ impl State {
         })
     }
 
-    fn check_authority(&self, rec: &Record, next: &State, changes: &[AccessChange]) -> R<()> {
+    fn check_authority(
+        &self,
+        rec: &Record,
+        next: &State,
+        changes: &[AccessChange],
+        bytes: u64,
+    ) -> R<()> {
         const NO: Reason = Reason::NotAllowed;
         if rec.kind() == Kind::Create {
             return Ok(());
@@ -1038,14 +1053,11 @@ impl State {
 
         // The end of the chain is kept for Owners ("Limits"): a member can't fill the chain to its
         // cap and leave no room for a `remove` or a `keys` record.
-        let reserved = if rec.seq >= Limits::OWNER_ONLY_FROM {
-            role != Role::Owner
-        } else if rec.seq >= Limits::OPEN_RECORDS {
-            role != Role::Owner && !matches!(rec.kind(), Kind::Remove | Kind::Keys)
-        } else {
-            false
+        let keys_marked = match &rec.body {
+            Body::Keys { rotate, .. } => rotate.iter().all(|c| self.key_marked(&c.key)),
+            _ => false,
         };
-        if reserved {
+        if !end_of_chain_allows(rec.seq, bytes, role, rec.kind(), keys_marked) {
             return Err(NO);
         }
 
@@ -1176,6 +1188,31 @@ impl State {
     }
 }
 
+/// Whether the end of a chain takes a record ("Limits", "The end of a chain"): `seq` is the record's,
+/// `bytes` the chain's record bytes with this record, `role` the signer's, `kind` the record's,
+/// and `keys_marked` for a `keys` record whether every key it replaces is marked now.
+///
+/// An Owner's records are always taken. From the last 1,024 records, or the last 4 MiB, anyone else
+/// may sign only a `remove`, or a `keys` that replaces keys already marked (an Owner's `remove`
+/// marked them; one member rotating their own collection must not use up the room). From the last
+/// 128 records, or the last 512 KiB, only an Owner signs.
+pub fn end_of_chain_allows(seq: u64, bytes: u64, role: Role, kind: Kind, keys_marked: bool) -> bool {
+    if role == Role::Owner {
+        return true;
+    }
+    if seq >= Limits::OWNER_ONLY_FROM || bytes > Limits::OWNER_ONLY_BYTES {
+        return false;
+    }
+    if seq >= Limits::OPEN_RECORDS || bytes > Limits::OPEN_BYTES {
+        return match kind {
+            Kind::Remove => true,
+            Kind::Keys => keys_marked,
+            _ => false,
+        };
+    }
+    true
+}
+
 // ---- a whole chain ---------------------------------------------------------------------------
 
 /// What a device keeps for a space: the `seq` and `epoch` of the last record it accepted, and the
@@ -1185,27 +1222,38 @@ pub struct Anchor {
     pub seq: u64,
     pub epoch: u32,
     pub links: Vec<Hash>,
-    /// The Owners of the state the device accepted at `seq`, when it keeps that state. A `fence`
-    /// that parts the served chain from the anchor is taken only when its signer is one of them, or
-    /// the device holds the promotion it names: an Owner the device's own records removed or
-    /// demoted can't sign a fence that drops those records.
-    pub owners: Option<BTreeSet<Id>>,
+    /// The confirmed Owners of the state the device accepted at `seq`, each with `SHA-256` of the
+    /// bundle that state records for them (`State::owners`), when the device keeps them. A `fence`
+    /// that parts the served chain from the anchor is taken only when its signer is one of them and
+    /// the bundle the served chain records for the signer at that point is the kept one, or the
+    /// device holds the promotion it names. An Owner the device's own records removed or demoted
+    /// can't sign a fence that drops those records, and nor can an old key of an Owner who has
+    /// rekeyed since.
+    pub owners: Option<BTreeMap<Id, Hash>>,
     /// `(home, promotion)` of each federation promotion record the device holds and verified: the
     /// `home` a `fence` names and `SHA-256` of the promotion record's envelope.
     pub promotions: Vec<(Id, Hash)>,
 }
 
 impl Anchor {
-    /// Whether the device lets this `fence` part the chain from its anchor.
-    fn vouches_for(&self, fence: &Record) -> bool {
+    /// Whether the device lets this `fence` part the chain from its anchor. `before` is the state
+    /// of the served chain just before the fence.
+    fn vouches_for(&self, fence: &Record, before: &State) -> bool {
         let Body::Fence { home, promotion } = &fence.body else {
             return false;
         };
-        self.promotions.contains(&(*home, *promotion))
-            || self
-                .owners
-                .as_ref()
-                .is_some_and(|owners| owners.contains(&fence.by))
+        if self.promotions.contains(&(*home, *promotion)) {
+            return true;
+        }
+        let Some(kept) = self.owners.as_ref().and_then(|owners| owners.get(&fence.by)) else {
+            return false;
+        };
+        before
+            .members
+            .get(&fence.by)
+            .filter(|m| m.status == Status::Confirmed && m.role == Role::Owner)
+            .and_then(|m| m.bundle.as_ref())
+            .is_some_and(|b| crate::hash::sha256(&b.to_bytes()) == *kept)
     }
 }
 
@@ -1275,7 +1323,7 @@ pub(crate) fn verify_chain_in<B: Backend>(
             && *kept != link_in::<B>(&signed.entry)
         {
             // A divergence is allowed only at a `fence` the device vouches for (M17).
-            if record.kind() != Kind::Fence || !anchor.vouches_for(record) {
+            if record.kind() != Kind::Fence || !anchor.vouches_for(record, &state) {
                 return Err(ChainError {
                     seq: Some(record.seq),
                     reason: Reason::Forked,

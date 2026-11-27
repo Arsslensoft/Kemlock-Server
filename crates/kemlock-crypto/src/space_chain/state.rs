@@ -125,6 +125,8 @@ pub struct State {
     pub recovery_key: Option<Vec<u8>>,
     /// The `seq` of the `recovery-key` record that set `recovery_key`; `None` with it.
     pub recovery_key_seq: Option<u64>,
+    /// The bytes of every record applied so far, which "Limits" counts against `CHAIN_BYTES`.
+    pub bytes: u64,
 }
 
 impl State {
@@ -151,6 +153,7 @@ impl State {
             policies: Policies::default(),
             recovery_key: None,
             recovery_key_seq: None,
+            bytes: 0,
         }
     }
 
@@ -168,12 +171,14 @@ impl State {
             .filter(|m| m.status == Status::Confirmed)
     }
 
-    /// Every member who is an Owner now.
-    pub fn owners(&self) -> BTreeSet<Id> {
+    /// The confirmed Owners now, each with `SHA-256` of the bundle the chain records for them: what
+    /// a device keeps with its anchor, so a `fence` is vouched for by an Owner's key as well as
+    /// their id (a leaked old key of an Owner who has since rekeyed vouches for nothing).
+    pub fn owners(&self) -> BTreeMap<Id, Hash> {
         self.members
             .iter()
-            .filter(|(_, m)| m.status != Status::Removed && m.role == Role::Owner)
-            .map(|(id, _)| *id)
+            .filter(|(_, m)| m.status == Status::Confirmed && m.role == Role::Owner)
+            .filter_map(|(id, m)| Some((*id, crate::hash::sha256(&m.bundle.as_ref()?.to_bytes()))))
             .collect()
     }
 
