@@ -1346,9 +1346,7 @@ fn change_doc() -> Result<Json> {
             .ok_or(FedError::Crypto)?
             .to_bytes()
             .map_err(|_| FedError::Crypto)?;
-        let writer_signature = writer_key
-            .sign("item-write", &writer_statement)
-            .map_err(|_| FedError::Crypto)?;
+        let writer_signature = crypto::sign(&writer_key, "item-write", &writer_statement)?;
         written.write = Some(WriteSignature {
             writer,
             key_version: 2,
@@ -1374,9 +1372,7 @@ fn change_doc() -> Result<Json> {
         in_space.write = Some(WriteSignature {
             writer,
             key_version: 2,
-            signature: writer_key
-                .sign("item-write", &in_space_statement)
-                .map_err(|_| FedError::Crypto)?,
+            signature: crypto::sign(&writer_key, "item-write", &in_space_statement)?,
         });
         let writer_public = crypto::sign_public(&writer_key)?;
         let mut cases = Vec::new();
