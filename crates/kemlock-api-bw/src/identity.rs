@@ -9,9 +9,7 @@
 //! body or the `Device-Type` header, a 400 with `TwoFactorProviders` and `TwoFactorProviders2` for
 //! the second step, no new-device challenge, and an API-key grant that gets no refresh token.
 
-use crate::account::{
-    check_valid_password, identity_master_password_policy, kdf_upgrade, user_name,
-};
+use crate::account::{identity_master_password_policy, kdf_upgrade, user_name};
 use crate::app::{App, BwStore};
 use crate::env::{random_bytes, random_uuid};
 use crate::error::{BwError, BwResult};
@@ -867,6 +865,51 @@ pub(crate) fn check_login_limit<S: BwStore>(app: &App<S>, ip: IpAddr) -> BwResul
         .map_err(|_| too_many_logins())
 }
 
+/// The wrong-password tries of an account, kept apart from its second-step tries.
+const PASSWORD_KIND: &str = "password";
+/// An account refuses every password check once it holds this many times the limit in a window,
+/// the right password included, until the window runs out.
+const PASSWORD_CAP_FACTOR: u32 = 10;
+
+/// Checks the master password hash of `account` for `user`, counting the try against the account
+/// whichever address it comes from (the address limit only stops one source). The try is counted
+/// before the hash is looked at, so tries that arrive together each count. Past the account's
+/// limit in a window, each try is held back, 1 second then 2 then 3, so guessing costs time and
+/// the owner's own right password still gets through; past ten times the limit the account refuses
+/// every try until the window ends. A right password clears the count. The hash itself is
+/// checked off the async workers, a few at a time (see [`App::hashing`]).
+async fn check_password<S: BwStore>(
+    app: &App<S>,
+    user: &User,
+    account: &BwAccount,
+    password: &str,
+) -> BwResult<()> {
+    let limit = app.settings.password_limit();
+    let tries = BwTryRepo::count_try(
+        &app.store,
+        user.id,
+        PASSWORD_KIND,
+        app.now_secs(),
+        TRIES_WINDOW_SECS,
+    )
+    .await?;
+    if tries > limit.saturating_mul(PASSWORD_CAP_FACTOR) {
+        return Err(too_many_logins());
+    }
+    if tries > limit {
+        let wait = 1u64 << (tries - limit - 1).min(8);
+        tokio::time::sleep(std::time::Duration::from_secs(
+            wait.min(app.settings.password_slowdown_secs),
+        ))
+        .await;
+    }
+    if !app.password_matches(account, password).await? {
+        return Err(BwError::msg(BAD_LOGIN));
+    }
+    BwTryRepo::forget_tries(&app.store, user.id, PASSWORD_KIND).await?;
+    Ok(())
+}
+
 async fn password_login<S: BwStore>(
     app: &App<S>,
     data: ConnectData,
@@ -908,9 +951,7 @@ async fn password_login<S: BwStore>(
     if data.auth_request.is_some() {
         return Err(BwError::msg("Auth request not found. Try again."));
     }
-    if !check_valid_password(&account, password) {
-        return Err(BwError::msg(BAD_LOGIN));
-    }
+    check_password(app, &user, &account, password).await?;
     attempt.proved = true;
     attempt.user = Some(user.id);
     // As Vaultwarden does (`_password_login`, identity.rs): the disabled check comes after the
@@ -1247,9 +1288,7 @@ pub(crate) async fn send_email_login<S: BwStore>(
     let (Some(user), Some(account), Some(hash)) = (user, account, password_hash) else {
         return Err(BwError::msg(BAD_LOGIN));
     };
-    if !check_valid_password(&account, hash) {
-        return Err(BwError::msg(BAD_LOGIN));
-    }
+    check_password(app, &user, &account, hash).await?;
     // Only a request that knows the password is counted, so a stranger can neither use the count
     // to tell who has an account nor use up the owner's mails; the client address limit above is
     // what stops guesses.

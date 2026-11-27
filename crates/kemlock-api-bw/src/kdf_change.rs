@@ -9,7 +9,7 @@
 //! once, the other devices' refresh tokens are revoked so they sign in again with the new hash,
 //! and the calling device's refresh tokens follow the new stamp, so its next refresh works.
 
-use crate::account::{Kdf, check_valid_password};
+use crate::account::Kdf;
 use crate::app::{App, Authed, BwStore};
 use crate::env::random_uuid;
 use crate::error::{BwError, BwResult};
@@ -66,7 +66,10 @@ pub(crate) async fn change_kdf<S: BwStore>(
     data: ChangeKdfData,
 ) -> BwResult<()> {
     let mut account = authed.account.clone();
-    if !check_valid_password(&account, &data.master_password_hash) {
+    if !app
+        .password_matches(&account, &data.master_password_hash)
+        .await?
+    {
         return Err(BwError::msg("Invalid password"));
     }
     let (auth, unlock) = (&data.authentication_data, &data.unlock_data);

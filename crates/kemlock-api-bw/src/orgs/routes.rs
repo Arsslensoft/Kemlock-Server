@@ -21,7 +21,6 @@ use super::structure::{
     collections_plain, create_collection, delete_collection, delete_group, groups_list, put_policy,
     save_group, update_collection,
 };
-use crate::account::check_valid_password;
 use crate::app::{App, Authed, BwStore};
 use crate::cipher::{CipherData, lcase_keys};
 use crate::error::{BwError, BwResult};
@@ -430,10 +429,14 @@ async fn org_public_key<S: BwStore>(
 }
 
 /// The owner's master password, as Vaultwarden's `PasswordOrOtpData::validate`.
-fn check_proof(authed: &Authed, data: &PasswordData) -> BwResult<()> {
+async fn check_proof<S: BwStore>(
+    app: &App<S>,
+    authed: &Authed,
+    data: &PasswordData,
+) -> BwResult<()> {
     match (data.master_password_hash.as_deref(), data.otp.as_deref()) {
         (Some(hash), None) => {
-            if check_valid_password(&authed.account, hash) {
+            if app.password_matches(&authed.account, hash).await? {
                 Ok(())
             } else {
                 Err(BwError::msg("Invalid password"))
@@ -454,7 +457,7 @@ async fn org_api_key<S: BwStore>(
 ) -> JsonResult {
     let ctx = app.guard(&authed, &org_id, Need::Owner).await?;
     let data: PasswordData = parse(&body)?;
-    check_proof(&authed, &data)?;
+    check_proof(&app, &authed, &data).await?;
     ok(api_key::api_key(&app, &ctx, false).await?)
 }
 
@@ -466,7 +469,7 @@ async fn rotate_org_api_key<S: BwStore>(
 ) -> JsonResult {
     let ctx = app.guard(&authed, &org_id, Need::Owner).await?;
     let data: PasswordData = parse(&body)?;
-    check_proof(&authed, &data)?;
+    check_proof(&app, &authed, &data).await?;
     ok(api_key::api_key(&app, &ctx, true).await?)
 }
 
@@ -927,9 +930,12 @@ async fn reset_password_enrollment<S: BwStore>(
         otp: data.otp,
     };
     empty(
-        recovery::enroll(&app, &ctx, data.reset_password_key, || {
-            check_proof(&authed, &proof)
-        })
+        recovery::enroll(
+            &app,
+            &ctx,
+            data.reset_password_key,
+            check_proof(&app, &authed, &proof),
+        )
         .await,
     )
 }

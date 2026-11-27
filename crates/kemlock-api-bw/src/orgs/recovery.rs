@@ -126,7 +126,7 @@ pub(crate) async fn enroll<S: BwStore>(
     app: &App<S>,
     ctx: &Ctx,
     reset_key: Option<String>,
-    proof: impl FnOnce() -> BwResult<()>,
+    proof: impl std::future::Future<Output = BwResult<()>>,
 ) -> BwResult<()> {
     policy_on(ctx)?;
     let key = reset_key.filter(|k| !k.is_empty());
@@ -137,7 +137,7 @@ pub(crate) async fn enroll<S: BwStore>(
     }
     // Giving a key away needs the account's password.
     if key.is_some() {
-        proof()?;
+        proof.await?;
     }
     let mut doc = ctx.doc.clone();
     let enrolled = key.is_some();

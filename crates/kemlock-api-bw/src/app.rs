@@ -144,6 +144,9 @@ pub struct Inner<S> {
     /// arrive together can't each read the same sum and all pass. One server owns the data, so one
     /// lock is enough.
     pub(crate) quota_gate: tokio::sync::Mutex<()>,
+    /// Lets [`crate::account::HASH_PERMITS`] password hash checks run at once (see
+    /// [`App::hashing`]).
+    pub(crate) hash_gate: tokio::sync::Semaphore,
 }
 
 impl<S> std::fmt::Debug for Inner<S> {
@@ -207,6 +210,7 @@ impl<S: BwStore> App<S> {
             erasure: parts.live.erasure,
             prelogin_key,
             quota_gate: tokio::sync::Mutex::new(()),
+            hash_gate: tokio::sync::Semaphore::new(crate::account::HASH_PERMITS),
         }))
     }
 

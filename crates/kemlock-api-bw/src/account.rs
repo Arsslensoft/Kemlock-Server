@@ -149,14 +149,43 @@ pub(crate) async fn prelogin<S: BwStore>(app: &App<S>, email: &str) -> BwResult<
     }))
 }
 
-/// Whether `password` (the text of the client's `masterPasswordHash`) is the account's.
-pub(crate) fn check_valid_password(account: &BwAccount, password: &str) -> bool {
-    verify_password(
-        password.as_bytes(),
-        &account.salt,
-        &account.password_hash,
-        account.password_iterations,
-    )
+/// How many PBKDF2 checks of the server's password hash run at once. Each is 600,000 rounds of
+/// HMAC-SHA-256, so they run on blocking threads, a few at a time, and never on the async workers.
+pub(crate) const HASH_PERMITS: usize = 4;
+
+impl<S: BwStore> App<S> {
+    /// Runs `work` (a PBKDF2 over the client's hash) on a blocking thread, behind the gate that
+    /// lets [`HASH_PERMITS`] of them run at once. The rest wait their turn, so a flood of sign-ins
+    /// can't take the workers the other routes (and the other APIs) answer on.
+    pub(crate) async fn hashing<T: Send + 'static>(
+        &self,
+        work: impl FnOnce() -> T + Send + 'static,
+    ) -> BwResult<T> {
+        let _permit = self
+            .hash_gate
+            .acquire()
+            .await
+            .map_err(|_| BwError::Server("the password hash gate is closed".to_owned()))?;
+        tokio::task::spawn_blocking(work)
+            .await
+            .map_err(|e| BwError::Server(format!("a password hash check stopped: {e}")))
+    }
+
+    /// Whether `password` (the text of the client's `masterPasswordHash`) is the account's.
+    pub(crate) async fn password_matches(
+        &self,
+        account: &BwAccount,
+        password: &str,
+    ) -> BwResult<bool> {
+        let (salt, previous, iterations) = (
+            account.salt.clone(),
+            account.password_hash.clone(),
+            account.password_iterations,
+        );
+        let secret = password.as_bytes().to_vec();
+        self.hashing(move || verify_password(&secret, &salt, &previous, iterations))
+            .await
+    }
 }
 
 /// Re-hashes the password with the current number of rounds when the account has fewer, as
@@ -170,11 +199,14 @@ pub(crate) async fn kdf_upgrade<S: BwStore>(
         return Ok(false);
     }
     account.password_iterations = app.settings.password_iterations;
-    account.password_hash = hash_password(
-        password.as_bytes(),
-        &account.salt,
+    let (secret, salt, iterations) = (
+        password.as_bytes().to_vec(),
+        account.salt.clone(),
         account.password_iterations,
     );
+    account.password_hash = app
+        .hashing(move || hash_password(&secret, &salt, iterations))
+        .await?;
     BwAccountRepo::update(&app.store, account).await?;
     app.touch(account.user).await?;
     Ok(true)
@@ -561,6 +593,12 @@ pub(crate) async fn register<S: BwStore>(app: &App<S>, request: Registration) ->
         ))
     })?;
 
+    let salt = random_bytes::<64>(app.env.as_ref()).to_vec();
+    let iterations = app.settings.password_iterations;
+    let (secret, salt_copy) = (request.hash.as_bytes().to_vec(), salt.clone());
+    let password_hash = app
+        .hashing(move || hash_password(&secret, &salt_copy, iterations))
+        .await?;
     let now = app.now();
     let user = User {
         id: kemlock_domain::UserId(random_uuid(app.env.as_ref())),
@@ -585,12 +623,9 @@ pub(crate) async fn register<S: BwStore>(app: &App<S>, request: Registration) ->
         Err(StoreError::Duplicate) => return Err(BwError::msg(REGISTRATION_REFUSED)),
         Err(e) => return Err(e.into()),
     }
-
-    let salt = random_bytes::<64>(app.env.as_ref()).to_vec();
-    let iterations = app.settings.password_iterations;
     let account = BwAccount {
         user: user.id,
-        password_hash: hash_password(request.hash.as_bytes(), &salt, iterations),
+        password_hash,
         salt,
         password_iterations: iterations,
         kdf_type: kdf.kind,
