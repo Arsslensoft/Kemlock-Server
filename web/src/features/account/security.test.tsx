@@ -251,7 +251,14 @@ describe('EmergencyCard', () => {
       },
     );
     expect(screen.getByLabelText("Fingerprint of jordan@example.co's keys")).toHaveTextContent('11111 22222');
-    await userEvent.setup().click(screen.getByRole('button', { name: 'It matches' }));
+    // Not pressed blindly: the last group has to be typed first.
+    const user = userEvent.setup();
+    expect(screen.getByRole('button', { name: 'It matches' })).toBeDisabled();
+    await user.type(screen.getByLabelText(/Type the last group of digits/), '11111');
+    expect(screen.getByRole('button', { name: 'It matches' })).toBeDisabled();
+    await user.clear(screen.getByLabelText(/Type the last group of digits/));
+    await user.type(screen.getByLabelText(/Type the last group of digits/), '22222');
+    await user.click(screen.getByRole('button', { name: 'It matches' }));
     expect(props.emergency.actions.confirm).toHaveBeenCalled();
   });
 

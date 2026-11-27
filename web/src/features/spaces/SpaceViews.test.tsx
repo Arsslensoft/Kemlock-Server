@@ -132,7 +132,14 @@ describe('SpaceDetailView', () => {
       },
     });
     expect(screen.getByLabelText("Fingerprint of Theo Grant's keys")).toHaveTextContent('12345 67890');
-    await userEvent.setup().click(screen.getByRole('button', { name: 'It matches' }));
+    // Not pressed blindly: the last group has to be typed first, a wrong one does not open it.
+    const user = userEvent.setup();
+    expect(screen.getByRole('button', { name: 'It matches' })).toBeDisabled();
+    await user.type(screen.getByLabelText(/Type the last group of digits/), '12345');
+    expect(screen.getByRole('button', { name: 'It matches' })).toBeDisabled();
+    await user.clear(screen.getByLabelText(/Type the last group of digits/));
+    await user.type(screen.getByLabelText(/Type the last group of digits/), '00000');
+    await user.click(screen.getByRole('button', { name: 'It matches' }));
     expect(props.actions.confirm).toHaveBeenCalledOnce();
   });
 
@@ -362,7 +369,10 @@ describe('SpaceDetailView', () => {
       actions: { ...actions(), acceptFirstContact: accept },
     });
     expect(screen.getByLabelText("Fingerprint of Sam Rivera's keys")).toHaveTextContent('12345 67890');
-    await userEvent.setup().click(screen.getByRole('button', { name: 'It matches' }));
+    const user = userEvent.setup();
+    expect(screen.getByRole('button', { name: 'It matches' })).toBeDisabled();
+    await user.type(screen.getByLabelText(/Type the last group of digits/), '67890');
+    await user.click(screen.getByRole('button', { name: 'It matches' }));
     expect(accept).toHaveBeenCalledOnce();
     expect(props.actions.confirm).not.toHaveBeenCalled();
   });
@@ -389,6 +399,7 @@ describe('SpaceDetailView', () => {
     expect(screen.getByRole('button', { name: 'It matches' })).toBeDisabled();
     await userEvent.setup().selectOptions(screen.getByLabelText('Owner to compare with'), ME);
     expect(screen.getByText('55555 44444')).toBeInTheDocument();
+    await userEvent.setup().type(screen.getByLabelText(/Type the last group of digits/), '44444');
     await userEvent.setup().click(screen.getByRole('button', { name: 'It matches' }));
     expect(accept).toHaveBeenCalledOnce();
   });

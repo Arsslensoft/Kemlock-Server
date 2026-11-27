@@ -58,6 +58,7 @@
   "profile.error.proof": "That code is wrong, or it was used already or has run out. Ask for another and try again.",
   "profile.error.changed": "Your account changed while this was being saved, so nothing was changed. Try again.",
 
+  "fingerprint.typeLast": "Type the last group of digits as the other person's app shows it",
   "confirmEmail.title": "New email address",
   "confirmEmail.ask": "Someone asked to change the address of your account to this one. Confirm only if it was you.",
   "confirmEmail.confirm": "Confirm the new address",

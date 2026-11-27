@@ -12,6 +12,7 @@ import type { Fingerprint } from '@/sharing/bundle';
 import { Button } from '@/ui/Button';
 import { ConfirmDialog } from '@/ui/ConfirmDialog';
 import { Notice } from '@/ui/Notice';
+import { TypeLastGroup } from '@/ui/TypeLastGroup';
 import '@/styles/account.css';
 import { CheckList, SelectInput, TextInput } from '../account/controls';
 import type { Described } from '../account/errors';
@@ -226,7 +227,10 @@ function ConfirmPanel({
   const t = useT();
   const name = state.member.name || state.member.email;
   const fp = state.fingerprint;
-  const ready = fp !== undefined && fp !== null && fp.consistent;
+  // Pressing "matches" is a deliberate act: it opens once the last group has been typed as the
+  // other person's app shows it.
+  const [typedRight, setTypedRight] = useState(false);
+  const ready = fp !== undefined && fp !== null && fp.consistent && typedRight;
   return (
     <section className="confirm-panel" aria-labelledby="h-confirm">
       <h2 id="h-confirm">{t(state.mode === 'pin' ? 'space.pin.title' : 'space.confirm.title', { name })}</h2>
@@ -246,7 +250,9 @@ function ConfirmPanel({
             <Notice tone="error" live>
               <p>{t('space.confirm.inconsistent')}</p>
             </Notice>
-          ) : null}
+          ) : (
+            <TypeLastGroup key={fp.text} fingerprint={fp.text} onMatch={setTypedRight} />
+          )}
         </>
       )}
       <p>{t('space.confirm.warning')}</p>
@@ -281,6 +287,8 @@ function ChainNotice({
 }) {
   const t = useT();
   const [picked, setPicked] = useState('');
+  // Accepting an owner's keys is a deliberate act: it opens once the last group has been typed.
+  const [typedRight, setTypedRight] = useState(false);
   const trust = detail.trust;
   if (!trust || trust.kind === 'unchained' || trust.kind === 'verified') return null;
   if (trust.kind === 'unverified') {
@@ -325,15 +333,18 @@ function ChainNotice({
         </Notice>
       )}
       {digits ? (
-        <p className="fp" aria-label={t('space.chain.contact.label', { name })}>
-          {digits}
-        </p>
+        <>
+          <p className="fp" aria-label={t('space.chain.contact.label', { name })}>
+            {digits}
+          </p>
+          <TypeLastGroup key={digits} fingerprint={digits} onMatch={setTypedRight} />
+        </>
       ) : null}
       <p>{t('space.chain.contact.warning')}</p>
       <div className="actions">
         <Button
           variant="primary"
-          isDisabled={busy || !digits || !onAccept}
+          isDisabled={busy || !digits || !typedRight || !onAccept}
           onPress={() => onAccept?.()}
         >
           {t('space.chain.contact.matches')}
