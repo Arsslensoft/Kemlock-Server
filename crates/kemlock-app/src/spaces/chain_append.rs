@@ -283,11 +283,7 @@ where
                 "a chain holds at most 65,536 records",
             ));
         }
-        if head.is_some()
-            && !state.is_owner(&me)
-            && (usage.by_member_hour.saturating_add(requested) > MEMBER_RECORDS_PER_HOUR
-                || usage.by_member_day.saturating_add(requested) > MEMBER_RECORDS_PER_DAY)
-        {
+        if head.is_some() && !state.is_owner(&me) && over_quota(&usage, requested) {
             return Err(AppendError::Quota(
                 "this account has signed as many records of this space lately as one member may: wait, or ask an owner",
             ));
@@ -861,6 +857,13 @@ fn matches_pending<'a>(
     }
 }
 
+/// Whether `requested` more records would pass what one member who isn't an Owner may sign in an
+/// hour or a day.
+fn over_quota(usage: &ChainUsage, requested: u64) -> bool {
+    usage.by_member_hour.saturating_add(requested) > MEMBER_RECORDS_PER_HOUR
+        || usage.by_member_day.saturating_add(requested) > MEMBER_RECORDS_PER_DAY
+}
+
 fn id_of_collection(id: kemlock_domain::spaces::CollectionId) -> sc::Id {
     *id.as_bytes()
 }
@@ -1019,5 +1022,23 @@ mod tests {
             reason(check_home(Some(&GATE), &fresh, &first)),
             Some(Reason::BadEpoch)
         );
+    }
+
+    #[test]
+    fn a_member_signs_so_many_records_an_hour_and_a_day() {
+        let usage = ChainUsage {
+            by_member_hour: MEMBER_RECORDS_PER_HOUR - 16,
+            by_member_day: 10,
+            ..ChainUsage::default()
+        };
+        assert!(!over_quota(&usage, 16));
+        assert!(over_quota(&usage, 17));
+        let day = ChainUsage {
+            by_member_hour: 0,
+            by_member_day: MEMBER_RECORDS_PER_DAY,
+            ..ChainUsage::default()
+        };
+        assert!(!over_quota(&day, 0));
+        assert!(over_quota(&day, 1));
     }
 }
