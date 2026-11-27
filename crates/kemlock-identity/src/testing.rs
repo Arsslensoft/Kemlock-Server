@@ -118,6 +118,7 @@ struct Inner {
     audience: Option<String>,
     string_booleans: bool,
     token_requests: usize,
+    discovery_requests: usize,
     keys_made: u32,
 }
 
@@ -174,6 +175,7 @@ impl FakeProvider {
                 audience: None,
                 string_booleans: false,
                 token_requests: 0,
+                discovery_requests: 0,
                 keys_made: 1,
             }),
         });
@@ -250,6 +252,11 @@ impl FakeProvider {
         self.shared.lock().string_booleans = on;
     }
 
+    /// How many times the discovery document has been asked for.
+    pub fn discovery_requests(&self) -> usize {
+        self.shared.lock().discovery_requests
+    }
+
     /// How many token requests have come in.
     pub fn token_requests(&self) -> usize {
         self.shared.lock().token_requests
@@ -315,6 +322,7 @@ fn standard_base64(data: &[u8]) -> String {
 }
 
 async fn discovery(State(shared): State<Arc<Shared>>) -> Json<Value> {
+    shared.lock().discovery_requests += 1;
     let issuer = &shared.issuer;
     Json(json!({
         "issuer": issuer,
