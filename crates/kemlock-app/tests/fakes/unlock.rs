@@ -138,6 +138,24 @@ impl ApprovalRepo for FakeStore {
     }
 }
 
+impl FakeStore {
+    /// What the real stores do under the account's lock: refuse a wrap made for a key version the
+    /// account no longer has (an account at version 0 accepts any).
+    fn check_key_version(&self, user: UserId, key_version: Option<u32>) -> Result<(), StoreError> {
+        let Some(key_version) = key_version else {
+            return Ok(());
+        };
+        match self.lock().users.get(&user) {
+            Some(account) if account.key_version != 0 && account.key_version != key_version => {
+                Err(StoreError::StaleKeyVersion {
+                    current: account.key_version,
+                })
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
 impl KeyCopyRepo for FakeStore {
     async fn key_copy(&self, device: DeviceId) -> Result<Option<DeviceKeyCopy>, StoreError> {
         Ok(self.unlock.lock().copies.get(&device).cloned())
@@ -149,6 +167,18 @@ impl KeyCopyRepo for FakeStore {
         }
         self.unlock.lock().copies.insert(copy.device, copy.clone());
         Ok(())
+    }
+
+    async fn put_key_copy_at(
+        &self,
+        copy: &DeviceKeyCopy,
+        key_version: Option<u32>,
+    ) -> Result<(), StoreError> {
+        let owner = self.lock().devices.get(&copy.device).map(|device| device.user);
+        if let Some(owner) = owner {
+            self.check_key_version(owner, key_version)?;
+        }
+        self.put_key_copy(copy).await
     }
 
     async fn remove_key_copy(&self, device: DeviceId) -> Result<(), StoreError> {
@@ -214,6 +244,16 @@ impl EmergencyRepo for FakeStore {
             }
             _ => Ok(false),
         }
+    }
+
+    async fn save_grant_at(
+        &self,
+        grant: &EmergencyGrant,
+        from: EmergencyState,
+        key_version: Option<u32>,
+    ) -> Result<bool, StoreError> {
+        self.check_key_version(grant.grantor, key_version)?;
+        self.save_grant(grant, from).await
     }
 
     async fn recovering_grants(&self) -> Result<Vec<EmergencyGrant>, StoreError> {

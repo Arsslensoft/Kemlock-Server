@@ -42,16 +42,13 @@ pub trait EmergencyRepo: Send + Sync {
     /// [`save_grant`](EmergencyRepo::save_grant) for a grant that carries a box of the grantor's
     /// root key made for `key_version`: a store that can read the grantor's account refuses
     /// (`StaleKeyVersion`) a box for a version that is no longer the account's. `None` checks
-    /// nothing. The provided method ignores the version.
+    /// nothing. Every store implements the check.
     fn save_grant_at(
         &self,
         grant: &EmergencyGrant,
         from: EmergencyState,
         key_version: Option<u32>,
-    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
-        let _ = key_version;
-        self.save_grant(grant, from)
-    }
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
     /// Every grant whose request is running. The timer picks the ones whose wait has ended.
     fn recovering_grants(

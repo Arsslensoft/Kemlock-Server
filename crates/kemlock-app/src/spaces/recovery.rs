@@ -56,16 +56,13 @@ pub trait SpaceRecoveryRepo: Send + Sync {
 
     /// [`put_recovery_box`](SpaceRecoveryRepo::put_recovery_box) for a box of the root key at
     /// `key_version`: a store that can read the account refuses (`StaleKeyVersion`) a box for a
-    /// version that is no longer the account's. `None` checks nothing. The provided method
-    /// ignores the version.
+    /// version that is no longer the account's. `None` checks nothing. Every store implements
+    /// the check.
     fn put_recovery_box_at(
         &self,
         recovery: RecoveryBox,
         key_version: Option<u32>,
-    ) -> impl Future<Output = Result<(), StoreError>> + Send {
-        let _ = key_version;
-        self.put_recovery_box(recovery)
-    }
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
 
     /// Removes the member's box; false when there was none.
     fn delete_recovery_box(
