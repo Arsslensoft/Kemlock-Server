@@ -14,9 +14,9 @@ use crate::error::{StoreResult, is_unique_violation, map_db};
 use crate::store::SqlStore;
 use crate::tables::items::{owner_parts, stored_signature};
 use crate::tables::{
-    account_bundles, auth_requests, device_key_copies, devices, emergency_access, items, passkeys,
-    recovery_kits, rotation_previous_keys, rotation_staged_items, sends, space_recovery,
-    space_tables::members, users,
+    account_bundles, auth_requests, device_key_copies, devices, email_changes, emergency_access,
+    items, passkeys, recovery_kits, rotation_previous_keys, rotation_staged_items, sends,
+    space_recovery, space_tables::members, users,
 };
 use kemlock_app::ports::StoreError;
 use kemlock_app::rotation::{
@@ -417,6 +417,14 @@ impl SqlStore {
             install.after.updated_at,
         )
         .await?;
+
+        // A pending change of address holds a password wrap of the root key this install
+        // replaces. Opening its link would put that wrap back next to the new key version, so it
+        // goes with the rotation (the person asks again), inside the same transaction.
+        db(email_changes::Entity::delete_many()
+            .filter(email_changes::Column::UserId.eq(user.0))
+            .exec(txn)
+            .await)?;
 
         // What the account holds, as of now, against what the request names.
         let holdings = holdings_in(txn, user).await?;

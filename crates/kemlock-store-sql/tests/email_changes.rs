@@ -48,6 +48,7 @@ fn change(user: UserId, new_email: &str, token_hash: [u8; 32]) -> EmailChange {
         opaque_record: vec![token_hash[0]; 192],
         kdf: KdfParams::new_account([token_hash[1]; 16]),
         wrapped_root_key: vec![token_hash[2]; 92],
+        key_version: 1,
         requested_at: T0,
         expires_at: T0 + EmailChange::LIFETIME,
     }

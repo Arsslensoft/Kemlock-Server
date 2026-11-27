@@ -1236,6 +1236,27 @@ async fn a_disabled_account_or_one_being_deleted_opens_nothing() {
 }
 
 #[tokio::test]
+async fn a_link_asked_for_before_a_key_rotation_is_refused_and_the_ask_dropped() {
+    let s = scene().await;
+    let token = s.asked().await;
+    // A root-key rotation ran since the link was mailed: the wrap in the change is of the old root.
+    let account = s.world.store.user(s.user).expect("the account");
+    s.world.store.put_user(kemlock_domain::User {
+        key_version: account.key_version + 1,
+        ..account.clone()
+    });
+    let rotated = s.world.store.user(s.user).expect("the account");
+
+    assert_eq!(
+        s.confirm().confirm(&token).await,
+        Err(ProfileError::EmailChangeInvalid)
+    );
+    assert_eq!(s.repo.pending(s.user), None, "the stale ask is dropped");
+    // Nothing was put back: the account is as the rotation left it.
+    assert_eq!(s.world.store.user(s.user), Some(rotated));
+}
+
+#[tokio::test]
 async fn an_account_that_cannot_change_its_address_any_more_is_refused_and_the_ask_dropped() {
     let account = || async {
         let s = scene().await;

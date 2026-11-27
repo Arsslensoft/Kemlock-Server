@@ -11,6 +11,7 @@ use kemlock_app::devices::{ApprovalRepo, KeyCopyRepo};
 use kemlock_app::emergency::EmergencyRepo;
 use kemlock_app::passkeys::PasskeyRepo;
 use kemlock_app::ports::{DeviceRepo, ItemStore, UserRepo};
+use kemlock_app::profile::ProfileRepo;
 use kemlock_app::recovery_kit::RecoveryKitRepo;
 use kemlock_app::rotation::{Install, InstallRequest, RotationError, RotationStore, StagedItem};
 use kemlock_domain::DeviceKind;
@@ -19,7 +20,8 @@ use kemlock_domain::unlock::{
     EmergencyState, GrantId, KeyProtection, SEALED_BOX_OVERHEAD,
 };
 use kemlock_domain::{
-    DeviceId, Email, ItemId, Owner, Passkey, PasskeyId, PrfWrap, RecoveryKit, Revision, User,
+    DeviceId, Email, EmailChange, ItemId, KdfParams, Owner, Passkey, PasskeyId, PrfWrap,
+    RecoveryKit, Revision, User,
 };
 use kemlock_store_sql::SqlStore;
 use time::OffsetDateTime;
@@ -537,6 +539,34 @@ async fn an_install_keeps_both_bundles_and_when_the_old_one_was_retired(store: &
     );
 }
 
+async fn a_pending_change_of_address_does_not_survive_the_install(store: &SqlStore) {
+    let sam = account(store).await;
+    let mut token_hash = [0u8; 32];
+    token_hash[..16].copy_from_slice(Uuid::new_v4().as_bytes());
+    token_hash[16..].copy_from_slice(Uuid::new_v4().as_bytes());
+    let pending = EmailChange {
+        user: sam.id,
+        email: Email::parse(&unique_email("rotation-new")).expect("an address"),
+        token_hash,
+        opaque_record: vec![1; 192],
+        kdf: KdfParams::new_account([3; 16]),
+        wrapped_root_key: vec![2; 92],
+        key_version: 1,
+        requested_at: T0 - time::Duration::hours(1),
+        expires_at: T0 + time::Duration::hours(23),
+    };
+    store.put_email_change(&pending).await.expect("pending");
+    assert!(store.email_change_of(sam.id).await.expect("read").is_some());
+
+    RotationStore::install(store, install_of(&sam, request()))
+        .await
+        .expect("the install");
+
+    // Its wrap was of the old root key: it is gone, and its link opens nothing.
+    assert_eq!(store.email_change_of(sam.id).await, Ok(None));
+    assert_eq!(store.email_change_by_token(token_hash).await, Ok(None));
+}
+
 async fn all(store: &SqlStore) {
     a_vault_that_takes_signed_writes_only_installs_no_unsigned_item(store).await;
     rotation(store).await;
@@ -546,6 +576,7 @@ async fn all(store: &SqlStore) {
     an_approval_that_holds_the_old_root_key_does_not_survive_the_install(store).await;
     a_grant_that_names_the_account_as_contact_goes_back_to_waiting(store).await;
     an_install_keeps_both_bundles_and_when_the_old_one_was_retired(store).await;
+    a_pending_change_of_address_does_not_survive_the_install(store).await;
 }
 
 #[tokio::test]

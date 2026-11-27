@@ -21,6 +21,8 @@ pub struct Model {
     pub kdf_parallelism: i64,
     pub kdf_salt: Vec<u8>,
     pub wrapped_root_key: Vec<u8>,
+    /// The account's key version the wrap was made for.
+    pub key_version: i64,
     pub requested_at: TimeDateTimeWithTimeZone,
     pub expires_at: TimeDateTimeWithTimeZone,
 }
@@ -47,6 +49,7 @@ impl Model {
                 salt: self.kdf_salt,
             },
             wrapped_root_key: self.wrapped_root_key,
+            key_version: from_i64_u32(self.key_version, "key version")?,
             requested_at: self.requested_at,
             expires_at: self.expires_at,
         })
@@ -64,6 +67,7 @@ pub(crate) fn active(change: &EmailChange) -> ActiveModel {
         kdf_parallelism: Set(i64::from(change.kdf.parallelism)),
         kdf_salt: Set(change.kdf.salt.clone()),
         wrapped_root_key: Set(change.wrapped_root_key.clone()),
+        key_version: Set(i64::from(change.key_version)),
         requested_at: Set(utc(change.requested_at)),
         expires_at: Set(utc(change.expires_at)),
     }
@@ -82,6 +86,7 @@ mod tests {
             opaque_record: vec![1, 2, 3],
             kdf: KdfParams::new_account([7; 16]),
             wrapped_root_key: vec![9; 92],
+            key_version: 2,
             requested_at: datetime!(2026-11-25 10:00:00 UTC),
             expires_at: datetime!(2026-11-26 10:00:00 UTC),
         }
@@ -98,6 +103,7 @@ mod tests {
             kdf_parallelism: i64::from(change.kdf.parallelism),
             kdf_salt: change.kdf.salt.clone(),
             wrapped_root_key: change.wrapped_root_key.clone(),
+            key_version: i64::from(change.key_version),
             requested_at: change.requested_at,
             expires_at: change.expires_at,
         }

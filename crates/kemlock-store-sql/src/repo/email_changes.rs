@@ -147,6 +147,7 @@ impl ProfileRepo for SqlStore {
                 email_changes::Column::KdfParallelism,
                 email_changes::Column::KdfSalt,
                 email_changes::Column::WrappedRootKey,
+                email_changes::Column::KeyVersion,
                 email_changes::Column::RequestedAt,
                 email_changes::Column::ExpiresAt,
             ])
