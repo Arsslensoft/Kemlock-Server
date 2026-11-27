@@ -191,9 +191,12 @@ struct RunningGuard<'a> {
 impl<'a> RunningGuard<'a> {
     fn take(state: &'a Mutex<RunnerState>, peer: ServerId) -> Option<RunningGuard<'a>> {
         let mut held = state.lock().unwrap_or_else(PoisonError::into_inner);
-        held.running
-            .insert(peer)
-            .then_some(RunningGuard { state, peer })
+        // Not `then_some`: it would build the guard even for a peer already running, and its drop
+        // would lock the state still held here and take the other run's mark away.
+        if !held.running.insert(peer) {
+            return None;
+        }
+        Some(RunningGuard { state, peer })
     }
 }
 
@@ -512,7 +515,11 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
         };
         let mut started = Vec::new();
         for peer in peers.into_iter().filter(|p| p.state == PeerState::Paired) {
-            if self.state().running.contains(&peer.id) || !self.due(&peer, now).await {
+            // Read on its own line: in the condition the guard would live across `due`'s await,
+            // blocking every other task that reads the runner's state (and, on one thread,
+            // deadlocking against them).
+            let running = self.state().running.contains(&peer.id);
+            if running || !self.due(&peer, now).await {
                 continue;
             }
             started.push(peer.id);
