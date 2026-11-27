@@ -5,7 +5,7 @@
   "description": "The Bitwarden CLI the contract workflow runs as a client against the server, pinned by package-lock.json. Dependabot proposes new versions.",
   "license": "AGPL-3.0-only",
   "dependencies": {
-    "@bitwarden/cli": "2026.10.1"
+    "@bitwarden/cli": "2026.11.0"
   },
   "overrides": {
     "node-forge": "1.4.4",
