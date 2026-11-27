@@ -586,7 +586,11 @@ async fn a_bad_replacement_or_a_missing_kit_does_not_spend_the_proof() {
     assert_eq!(made.status, StatusCode::CREATED);
 
     // A malformed replacement is refused before the proof is looked at.
-    let bad = with(rig.kit_body(user).await, "keyVersion", json!(99));
+    let bad = with(
+        rig.kit_body(user).await,
+        "wrappedKey",
+        json!(kemlock_app::b64url::encode(&[1u8; 20])),
+    );
     let refused = rig
         .authed(
             &device,
