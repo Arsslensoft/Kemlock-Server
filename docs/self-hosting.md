@@ -573,7 +573,8 @@ holds keys only.
   address). The file always also lists where flaws in Kemlock Server itself are reported, and its
   `Expires` is always 180 days ahead.
 - Upgrades: migrations run forward at start-up. On SQLite the server first copies the database to
-  `/data/backups/pre-<version>.sqlite3`. Within a major version migrations only add, so the
+  `/data/backups/pre-<version>.sqlite3` and keeps the last three such copies (each is a plaintext
+  copy of the whole database, so older ones are deleted). Within a major version migrations only add, so the
   previous release still runs on the new schema.
 - Several replicas need PostgreSQL or MySQL, S3-compatible storage and one shared server key.
 

@@ -220,7 +220,43 @@ async fn pre_migration_copy(db: &DatabaseConnection) -> Result<(), StoreError> {
         tracing::warn!(copy = %target.display(), error = %e, "couldn't make the copy readable by its owner only");
     }
     tracing::info!(copy = %target.display(), pending = pending.len(), "copied the database before migrating");
+    // Each upgrade leaves a plaintext copy of the whole database; only the last few are kept.
+    if let Some(folder) = target.parent() {
+        prune_pre_migration_copies(folder, KEEP_PRE_MIGRATION_COPIES);
+    }
     Ok(())
+}
+
+/// How many pre-migration copies stay in the backups folder: the one just made and the ones of
+/// the upgrades before it, which `restore --pre-migration` can still put back.
+pub const KEEP_PRE_MIGRATION_COPIES: usize = 3;
+
+/// Deletes all but the newest `keep` `pre-*.sqlite3` files of `folder`, newest by modified time.
+/// Nothing else in the folder is touched (it also holds backup archives). A copy that can't be
+/// removed is logged and left.
+fn prune_pre_migration_copies(folder: &Path, keep: usize) {
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return;
+    };
+    let mut copies: Vec<(std::time::SystemTime, std::path::PathBuf)> = entries
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with("pre-") && name.ends_with(".sqlite3")
+        })
+        .filter_map(|entry| {
+            let meta = entry.metadata().ok()?;
+            meta.is_file().then_some((meta.modified().ok()?, entry.path()))
+        })
+        .collect();
+    copies.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, old) in copies.into_iter().skip(keep) {
+        match std::fs::remove_file(&old) {
+            Ok(()) => tracing::info!(copy = %old.display(), "removed an old pre-migration copy"),
+            Err(e) => tracing::warn!(copy = %old.display(), error = %e, "couldn't remove an old pre-migration copy"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -234,5 +270,47 @@ mod tests {
             .join("backups")
             .join(format!("pre-{}.sqlite3", env!("CARGO_PKG_VERSION")));
         assert_eq!(path, expected);
+    }
+
+    #[test]
+    fn only_the_newest_copies_are_kept_and_nothing_else_is_touched() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let now = std::time::SystemTime::now();
+        for (age_days, name) in [
+            (5, "pre-0.1.1.sqlite3"),
+            (4, "pre-0.1.2.sqlite3"),
+            (3, "pre-0.1.3.sqlite3"),
+            (2, "pre-0.1.4.sqlite3"),
+            (1, "pre-0.1.5.sqlite3"),
+        ] {
+            let path = dir.path().join(name);
+            let file = std::fs::File::create(&path).expect("a copy");
+            file.set_modified(now - std::time::Duration::from_secs(age_days * 86_400))
+                .expect("an age");
+        }
+        std::fs::write(dir.path().join("kemlock-premigration-0.1.4.tar.zst.age"), b"x").expect("an archive");
+        std::fs::write(dir.path().join("notes.txt"), b"x").expect("a file");
+
+        prune_pre_migration_copies(dir.path(), 3);
+
+        let mut left: Vec<String> = std::fs::read_dir(dir.path())
+            .expect("a folder")
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            [
+                "kemlock-premigration-0.1.4.tar.zst.age",
+                "notes.txt",
+                "pre-0.1.3.sqlite3",
+                "pre-0.1.4.sqlite3",
+                "pre-0.1.5.sqlite3",
+            ]
+        );
+        // Fewer than `keep`, or a folder that isn't there: nothing happens.
+        prune_pre_migration_copies(dir.path(), 10);
+        prune_pre_migration_copies(&dir.path().join("missing"), 3);
     }
 }
