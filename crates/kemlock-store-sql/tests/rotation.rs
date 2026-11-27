@@ -12,7 +12,9 @@ use kemlock_app::emergency::EmergencyRepo;
 use kemlock_app::passkeys::PasskeyRepo;
 use kemlock_app::ports::{DeviceRepo, ItemStore, StoreError, UserRepo};
 use kemlock_app::recovery_kit::RecoveryKitRepo;
-use kemlock_app::rotation::{Install, InstallRequest, RotationError, RotationStore, StagedItem};
+use kemlock_app::rotation::{
+    Install, InstallRequest, ResetGrant, RotationError, RotationStore, StagedItem,
+};
 use kemlock_app::sends::SendRepo;
 use kemlock_app::spaces::{RecoveryBox, SpaceRecoveryRepo};
 use kemlock_domain::DeviceKind;
@@ -442,9 +444,12 @@ async fn a_grant_that_names_the_account_as_contact_goes_back_to_waiting(store: &
         .await
         .expect("the install");
     assert_eq!(
-        installed.reset_grantors,
-        vec![grantor.id],
-        "the install names the grantor to tell"
+        installed.reset_grants,
+        vec![ResetGrant {
+            grantor: grantor.id,
+            contact: grant.grantee_email.clone(),
+        }],
+        "the install names the grantor to tell, and the contact as the grant has it"
     );
     // The grantor's box was sealed to the keys the account no longer has: the grantor confirms
     // again, to the new bundle.

@@ -20,13 +20,13 @@ use crate::tables::{
 };
 use kemlock_app::ports::StoreError;
 use kemlock_app::rotation::{
-    Holdings, Install, Installed, PreviousKeys, RotationError, RotationStore, StagedItem,
-    check_install, check_staged_write, device_copy_row,
+    Holdings, Install, Installed, PreviousKeys, ResetGrant, RotationError, RotationStore,
+    StagedItem, check_install, check_staged_write, device_copy_row,
 };
 use kemlock_domain::sends::SendId;
 use kemlock_domain::unlock::{EmergencyState, GrantId};
 use kemlock_domain::{
-    DeviceId, ItemDraft, ItemFormat, ItemId, Owner, PasskeyId, RecoveryKit, Revision, SpaceId,
+    DeviceId, Email, ItemDraft, ItemFormat, ItemId, Owner, PasskeyId, RecoveryKit, Revision, SpaceId,
     UserId, WriteSignature,
 };
 use sea_orm::ActiveValue::Set;
@@ -580,7 +580,7 @@ impl SqlStore {
         // key, which this rotation replaces: they go back to waiting for the grantor's
         // confirmation, who then seals to the new bundle.
         // The rows are read again here so the grantors told are exactly the grants reset.
-        let mut reset_grantors: Vec<UserId> = Vec::new();
+        let mut reset_grants: Vec<ResetGrant> = Vec::new();
         if !holdings.as_contact.is_empty() {
             let held = db(emergency_access::Entity::find()
                 .filter(emergency_access::Column::GranteeId.eq(user.0))
@@ -601,9 +601,12 @@ impl SqlStore {
                     .exec(txn)
                     .await)?;
                 for grant in &held {
-                    let grantor = UserId(grant.grantor_id);
-                    if !reset_grantors.contains(&grantor) {
-                        reset_grantors.push(grantor);
+                    match Email::parse(&grant.grantee_email) {
+                        Ok(contact) => reset_grants.push(ResetGrant {
+                            grantor: UserId(grant.grantor_id),
+                            contact,
+                        }),
+                        Err(_) => tracing::warn!("a reset grant's contact address doesn't parse, no mail"),
                     }
                 }
             }
@@ -695,7 +698,7 @@ impl SqlStore {
             .await)?;
         Ok(Installed {
             change,
-            reset_grantors,
+            reset_grants,
         })
     }
 }

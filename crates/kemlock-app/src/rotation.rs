@@ -31,8 +31,8 @@ use kemlock_domain::unlock::{
     DeviceKeyCopy, EmergencyState, GrantId, KeyProtection, MAX_WRAPPED_KEY_LEN,
 };
 use kemlock_domain::{
-    AccountMode, ChangeId, DeviceId, ItemError, ItemFormat, ItemId, Owner, PasskeyId, PrfWrap,
-    Revision, SpaceId, User, UserId, WriteSignature,
+    AccountMode, ChangeId, DeviceId, Email, ItemError, ItemFormat, ItemId, Owner, PasskeyId,
+    PrfWrap, Revision, SpaceId, User, UserId, WriteSignature,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -189,10 +189,19 @@ impl std::fmt::Debug for Install {
 pub struct Installed {
     /// The last item the install wrote, to nudge the account's devices with.
     pub change: Option<ChangeId>,
-    /// The grantors of the emergency grants that named the account as the contact and held a box:
-    /// the install sent each grant back to waiting for its grantor's confirmation, so each grantor
-    /// is told. Read in the install's transaction, one entry per grantor.
-    pub reset_grantors: Vec<UserId>,
+    /// The emergency grants that named the account as the contact and held a box: the install sent
+    /// each back to waiting for its grantor's confirmation, so each grantor is told. Read in the
+    /// install's transaction, one entry per grant.
+    pub reset_grants: Vec<ResetGrant>,
+}
+
+/// An emergency grant the install sent back to waiting for its grantor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResetGrant {
+    pub grantor: UserId,
+    /// The contact's address as the grant itself names it, not as the account has it now: the
+    /// grantor knows the contact by it, and a changed address is not told to them.
+    pub contact: Email,
 }
 
 // ---- refusals ----
@@ -704,14 +713,14 @@ where
             .await;
         // Each emergency grant the account was the contact of lost its box: its grantor has to
         // confirm the contact again, and is told so. No key material is in the mail.
-        for grantor in installed.reset_grantors {
-            match self.users.by_id(grantor).await {
+        for reset in installed.reset_grants {
+            match self.users.by_id(reset.grantor).await {
                 Ok(Some(grantor)) => {
                     self.notices
                         .send(Notice::EmergencyContactRekeyed(
                             EmergencyContactRekeyedNotice {
                                 to: grantor.email,
-                                contact: after.email.clone(),
+                                contact: reset.contact,
                                 at: now,
                             },
                         ))

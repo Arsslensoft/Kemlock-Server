@@ -25,8 +25,8 @@ use kemlock_api_kem::{RotationApiDoc, rotation_router, space_chain_router, space
 use kemlock_app::notices::{BoxFuture, Notice, Outbox};
 use kemlock_app::ports::{StoreError, UserRepo};
 use kemlock_app::rotation::{
-    Holdings, Install, Installed, PreviousKeys, RotationError, RotationStore, StagedItem,
-    check_install,
+    Holdings, Install, Installed, PreviousKeys, ResetGrant, RotationError, RotationStore,
+    StagedItem, check_install,
 };
 use kemlock_domain::unlock::{EmergencyState, GrantId};
 use kemlock_domain::{ItemId, PasskeyId, Revision, UserId};
@@ -57,7 +57,7 @@ struct FakeRotation {
     holdings: Arc<Mutex<Holdings>>,
     installs: Arc<Mutex<u32>>,
     /// The grantors the install says it reset the grants of.
-    reset_grantors: Arc<Mutex<Vec<UserId>>>,
+    reset_grants: Arc<Mutex<Vec<ResetGrant>>>,
     snapshots: Arc<Mutex<u32>>,
     /// The previous private keys an install keeps for an account in a space, as the store does.
     kept: Arc<Mutex<Option<PreviousKeys>>>,
@@ -114,7 +114,7 @@ impl RotationStore for FakeRotation {
         *self.installs.lock().expect("lock") += 1;
         Ok(Installed {
             change: None,
-            reset_grantors: self.reset_grantors.lock().expect("lock").clone(),
+            reset_grants: self.reset_grants.lock().expect("lock").clone(),
         })
     }
 
@@ -151,7 +151,7 @@ fn fake_rotation(app: &App) -> FakeRotation {
         users: app.store.clone(),
         holdings: Arc::new(Mutex::new(Holdings::default())),
         installs: Arc::new(Mutex::new(0)),
-        reset_grantors: Arc::new(Mutex::new(Vec::new())),
+        reset_grants: Arc::new(Mutex::new(Vec::new())),
         snapshots: Arc::new(Mutex::new(0)),
         kept: Arc::new(Mutex::new(None)),
     }
@@ -523,8 +523,12 @@ async fn the_grantor_of_a_grant_the_install_reset_is_mailed_to_confirm_the_conta
         as_contact: vec![(GrantId::random(), EmergencyState::Confirmed)],
         ..Holdings::default()
     };
-    // The store says, from inside its transaction, which grants it sent back to waiting.
-    *rig.repo.reset_grantors.lock().expect("lock") = vec![grantor.id];
+    // The store says, from inside its transaction, which grants it sent back to waiting, and the
+    // contact's address as the grant has it (not the one the account has now).
+    *rig.repo.reset_grants.lock().expect("lock") = vec![ResetGrant {
+        grantor: grantor.id,
+        contact: kemlock_domain::Email::parse("sam.old@example.org").expect("an address"),
+    }];
     rig.mailbox.0.lock().expect("the lock").clear();
 
     let reply = sam
@@ -546,7 +550,7 @@ async fn the_grantor_of_a_grant_the_install_reset_is_mailed_to_confirm_the_conta
         .collect();
     assert_eq!(told.len(), 1, "{mails:?}");
     assert_eq!(told[0].to.as_str(), grantor_email);
-    assert_eq!(told[0].contact.as_str(), EMAIL);
+    assert_eq!(told[0].contact.as_str(), "sam.old@example.org");
     // The contact is told of their own rotation, and not of the grantor's.
     assert!(
         mails
