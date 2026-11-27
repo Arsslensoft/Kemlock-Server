@@ -32,6 +32,13 @@ export interface ChainDeps {
   anchors?: AnchorStore;
   /** Where it keeps the members whose fingerprint a person compared; in memory when left out. */
   pins?: PinStore;
+  /**
+   * The spaces the account's own signed manifest says have a chain: a space on the list that is
+   * served no chain is a chain withheld, not a space without one. Throws when it can't be read.
+   */
+  chainedSpaces?: (() => Promise<ReadonlySet<string>>) | undefined;
+  /** Told of a chain verified and trusted here, so that list gains the space. */
+  noteChained?: ((spaceId: string) => void) | undefined;
 }
 
 export type SpaceTrust =
@@ -76,7 +83,14 @@ export async function checkSpaceChain(
       if (tail.length === 0) return classify(held);
     }
     const store = storeOf(deps);
-    const [records, anchor] = await Promise.all([deps.api.chain(spaceId), store.load(me, spaceId)]);
+    const [records, anchor, listed] = await Promise.all([
+      deps.api.chain(spaceId),
+      store.load(me, spaceId),
+      deps.chainedSpaces?.(),
+    ]);
+    // The account's own signed record says this space has a chain: the worker is told before it
+    // reads what the server serves, so none served is a refusal there and its keys stay shut.
+    if (listed?.has(spaceId)) await deps.crypto.expectChained(spaceId);
     const verdict = await deps.crypto.verifySpaceChain({
       spaceId,
       records,
@@ -96,6 +110,7 @@ export async function checkSpaceChain(
     }
     // The anchor is kept once first contact is done, and moves forward with every chain verified.
     const next = verdict.chained && verdict.trusted ? anchorOf(verdict) : undefined;
+    if (next) deps.noteChained?.(spaceId);
     if (next) await store.save(me, spaceId, next, verdict.divergence !== undefined);
     return classify(verdict);
   } catch {

@@ -163,8 +163,14 @@ export interface WasmVault {
     keyVersion: number,
   ): string;
   newSpace(spaceId: string, collectionId: string, spaceName: string, collectionName: string): string;
-  openSpace(spaceId: string, keyVersion: number, sealed: string): void;
-  openCollection(spaceId: string, collectionId: string, keyVersion: number, sealed: string): void;
+  openSpace(spaceId: string, keyVersion: number, sealed: string, unsigned?: boolean): void;
+  openCollection(
+    spaceId: string,
+    collectionId: string,
+    keyVersion: number,
+    sealed: string,
+    unsigned?: boolean,
+  ): void;
   openName(spaceId: string, keyVersion: number, kind: string, id: string, ciphertext: string): string;
   sealName(spaceId: string, keyVersion: number, kind: string, id: string, name: string): string;
   newCollection(spaceId: string, collectionId: string, name: string): string;
@@ -204,6 +210,10 @@ export interface WasmVault {
   sealLocal(label: string, text: string): string;
   openLocal(label: string, sealed: string): string;
   acceptFirstContact(spaceId: string): void;
+  expectChained(spaceId: string): void;
+  /** JSON `[{collection, version, fingerprint}]`, or `undefined` when no key waits for a person. */
+  provisionalKeys(spaceId: string): string | undefined;
+  acceptProvisionalKeys(spaceId: string, typed: string): void;
   openChainKey(
     spaceId: string,
     key: string,

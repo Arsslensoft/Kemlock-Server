@@ -2,10 +2,13 @@
 // the same failure points (a name opens only under the id, kind and key version it was sealed
 // with; a sealed key says who it is for), so the account screens' logic is tested without
 // WebAssembly.
-import type { ChainBuilt, ChainChange, ChainReplacement, ChainView } from '@/crypto/types';
+import type { ChainBuilt, ChainChange, ChainReplacement, ChainView, ProvisionalKey } from '@/crypto/types';
 import { decodeB64, encodeB64, fromUtf8, utf8 } from '@/lib/b64url';
 import type { SharingCrypto } from '@/sharing/crypto';
 import type { SpaceCrypto } from '@/spaces/crypto';
+
+/** What the fake shows as the fingerprint of a space's keys taken from unsigned boxes. */
+export const PROVISIONAL_FINGERPRINT = '11111 22222 33333 44444 55555 66666 77777 88888 99999 00000 12345 67890';
 
 export interface FakeSharing extends SharingCrypto {
   calls: string[];
@@ -76,6 +79,10 @@ export interface FakeSpaces extends SpaceCrypto {
   resealed: ChainBuilt | null;
   /** The items `buildReseal` was given, a list for each call. */
   resealings: ChainReplacement['items'][];
+  /** The keys `provisionalKeys` answers: set by an `openSpace` with `unsigned`, cleared by a right `acceptProvisionalKeys`. */
+  provisional: ProvisionalKey[] | null;
+  /** The spaces `expectChained` was told of. */
+  expected: Set<string>;
 }
 
 /**
@@ -128,6 +135,8 @@ export function fakeSpaceCrypto(): FakeSpaces {
     replacements: [],
     resealed: null,
     resealings: [],
+    provisional: null,
+    expected: new Set<string>(),
     async buildReseal({ spaceId, items }) {
       fake.resealings.push(items);
       calls.push('buildReseal');
@@ -215,6 +224,10 @@ export function fakeSpaceCrypto(): FakeSpaces {
       };
     },
     async verifySpaceChain({ spaceId }) {
+      if (fake.expected.has(spaceId) && !(fake.chain.ok && fake.chain.chained)) {
+        calls.push(`verifySpaceChain:${spaceId}`);
+        return { ok: false, reason: 'chain withheld', seq: null };
+      }
       calls.push(`verifySpaceChain:${spaceId}`);
       held = fake.chain.ok && fake.chain.chained ? fake.chain : null;
       return fake.chain;
@@ -229,6 +242,19 @@ export function fakeSpaceCrypto(): FakeSpaces {
       const [kept, text] = JSON.parse(fromUtf8(decodeB64(sealed))) as [string, string];
       if (kept !== label) throw new Error('invalid');
       return text;
+    },
+    async expectChained(spaceId) {
+      calls.push(`expectChained:${spaceId}`);
+      fake.expected.add(spaceId);
+    },
+    async provisionalKeys() {
+      return fake.provisional;
+    },
+    async acceptProvisionalKeys(spaceId, typed) {
+      calls.push(`acceptProvisionalKeys:${spaceId}`);
+      const shown = fake.provisional?.[0]?.fingerprint.split(' ').at(-1);
+      if (!shown || typed.replace(/s+/g, '') !== shown) throw new Error('invalid');
+      fake.provisional = null;
     },
     async acceptFirstContact(spaceId) {
       calls.push(`acceptFirstContact:${spaceId}`);
@@ -250,11 +276,17 @@ export function fakeSpaceCrypto(): FakeSpaces {
         },
       };
     },
-    async openSpace({ spaceId }) {
-      calls.push(`openSpace:${spaceId}`);
+    async openSpace({ spaceId, unsigned }) {
+      calls.push(unsigned ? `openSpace:${spaceId}:unsigned` : `openSpace:${spaceId}`);
+      if (unsigned) {
+        fake.provisional ??= [{ collection: null, version: 1, fingerprint: PROVISIONAL_FINGERPRINT }];
+      }
     },
-    async openCollection({ collectionId }) {
-      calls.push(`openCollection:${collectionId}`);
+    async openCollection({ collectionId, unsigned }) {
+      calls.push(unsigned ? `openCollection:${collectionId}:unsigned` : `openCollection:${collectionId}`);
+      if (unsigned) {
+        fake.provisional ??= [{ collection: null, version: 1, fingerprint: PROVISIONAL_FINGERPRINT }];
+      }
     },
     async openName({ spaceId, keyVersion, kind, id, ciphertext }) {
       const [s, v, k, i, name] = JSON.parse(fromUtf8(ciphertext)) as [

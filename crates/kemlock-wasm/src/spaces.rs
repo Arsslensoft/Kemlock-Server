@@ -32,7 +32,7 @@
 use std::collections::{HashMap, HashSet};
 
 use kemlock_crypto::{
-    bundle::Bundle,
+    bundle::{Bundle, FINGERPRINT_LEN, fingerprint_groups},
     kem1, key_box,
     keys::{ITEM_WRAP_LABEL, SecretKey},
     kx1,
@@ -99,6 +99,15 @@ pub(crate) struct SpaceKeys {
     pub(crate) chains: HashMap<[u8; 16], HeldChain>,
     /// Spaces whose served chain was refused: they have a chain, so they stay closed too.
     pub(crate) refused: HashSet<[u8; 16]>,
+    /// Spaces the account's own signed record names as chained (the page tells the worker before it
+    /// reads a chain). A space in here has a chain even when the server serves none: it stays closed
+    /// to the unchained operations, so keys the server names can't stand in for the chain's.
+    pub(crate) expected_chained: HashSet<[u8; 16]>,
+    /// Spaces with a key opened from a box that carried no signature and that this browser had not
+    /// accepted before (the server's own word, on first sight). Nothing is sealed or written under
+    /// the keys of such a space until a person has compared their fingerprint
+    /// ([`Session::accept_provisional_keys`]).
+    pub(crate) provisional: HashSet<[u8; 16]>,
 }
 
 impl SpaceKeys {
@@ -106,6 +115,7 @@ impl SpaceKeys {
     pub(crate) fn drop_keys(&mut self, space: &[u8; 16]) {
         self.spaces.retain(|(held, _), _| held != space);
         self.collections.retain(|(held, _, _), _| held != space);
+        self.provisional.remove(space);
     }
 
     /// The verified state of a space that has a chain, when this unlock has verified it.
@@ -116,7 +126,20 @@ impl SpaceKeys {
     /// Refuses an operation that opens, seals or names keys outside the chain, for a space that
     /// has one: the page can't skip the chain by calling the older operations.
     pub(crate) fn require_unchained(&self, space: &[u8; 16]) -> Result<(), Error> {
-        if self.chains.contains_key(space) || self.refused.contains(space) {
+        if self.chains.contains_key(space)
+            || self.refused.contains(space)
+            || self.expected_chained.contains(space)
+        {
+            Err(Error::Invalid)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Refuses sealing or writing under the keys of a space whose keys this browser took on the
+    /// server's word (an unsigned box on first sight) and no person has compared yet.
+    pub(crate) fn require_settled(&self, space: &[u8; 16]) -> Result<(), Error> {
+        if self.provisional.contains(space) {
             Err(Error::Invalid)
         } else {
             Ok(())
@@ -125,7 +148,8 @@ impl SpaceKeys {
 
     /// Whether an item of `collection` may be written under `version`: for a chained space, only
     /// once first contact is done, under the collection's current key version, and while neither
-    /// it nor the space key is marked ("Using the state", "Items").
+    /// it nor the space key is marked ("Using the state", "Items"). For a space with no chain,
+    /// only once its keys are settled ([`SpaceKeys::require_settled`]).
     fn allow_item_write(
         &self,
         space: &[u8; 16],
@@ -135,6 +159,7 @@ impl SpaceKeys {
         if self.refused.contains(space) {
             return Err(Error::Invalid);
         }
+        self.require_settled(space)?;
         let Some(held) = self.chains.get(space) else {
             return Ok(());
         };
@@ -207,6 +232,42 @@ impl SpaceKeys {
             .map(|((_, _, version), key)| (*version, key))
             .ok_or(Error::Invalid)
     }
+}
+
+/// One key of a provisional space, as a person compares it: which key, its version and its
+/// fingerprint, 12 groups of 5 digits.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ProvisionalKey {
+    /// `None` for the space key.
+    pub(crate) collection: Option<[u8; 16]>,
+    pub(crate) version: u32,
+    pub(crate) fingerprint: String,
+}
+
+/// The text of a key's fingerprint: 12 groups of 5 digits worked out from two one-way children of
+/// the key, bound to the space, the collection and the key version, so the digits can be shown and
+/// read aloud without giving the key away, and one key's can't be passed for another's.
+pub(crate) fn key_fingerprint(
+    key: &SecretKey,
+    space: &[u8; 16],
+    collection: Option<&[u8; 16]>,
+    version: u32,
+) -> Result<String, Error> {
+    fn hex(bytes: &[u8; 16]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+    let scope = match collection {
+        None => format!("kemlock/v1/key-fingerprint/{}/space/{version}", hex(space)),
+        Some(collection) => format!(
+            "kemlock/v1/key-fingerprint/{}/collection/{}/{version}",
+            hex(space),
+            hex(collection)
+        ),
+    };
+    let mut digest = Zeroizing::new([0u8; FINGERPRINT_LEN]);
+    digest[..32].copy_from_slice(key.child(&format!("{scope}/a"))?.as_bytes());
+    digest[32..].copy_from_slice(key.child(&format!("{scope}/b"))?.as_bytes());
+    Ok(fingerprint_groups(&digest).join(" "))
 }
 
 /// The `aad` of a space key's box: the space, the key version and the recipient.
@@ -448,6 +509,102 @@ impl Session {
         Ok(())
     }
 
+    /// As [`Session::open_space`], for a box that carried no signature and that this browser had not
+    /// accepted before: the key is kept for reading, and the space is marked so that nothing is
+    /// sealed or written under its keys until a person has compared them
+    /// ([`Session::accept_provisional_keys`]).
+    pub(crate) fn open_space_unsigned(
+        &mut self,
+        space: &[u8; 16],
+        key_version: u32,
+        sealed: &[u8],
+    ) -> Result<(), Error> {
+        self.open_space(space, key_version, sealed)?;
+        self.unlocked_mut()?.spaces.provisional.insert(*space);
+        Ok(())
+    }
+
+    /// As [`Session::open_collection`], for an unsigned box not accepted before (see
+    /// [`Session::open_space_unsigned`]).
+    pub(crate) fn open_collection_unsigned(
+        &mut self,
+        space: &[u8; 16],
+        collection: &[u8; 16],
+        key_version: u32,
+        sealed: &[u8],
+    ) -> Result<(), Error> {
+        self.open_collection(space, collection, key_version, sealed)?;
+        self.unlocked_mut()?.spaces.provisional.insert(*space);
+        Ok(())
+    }
+
+    /// Tells the worker the account's own signed record names `space` as chained: until a verified
+    /// chain is held for it, the unchained operations refuse it and an empty chain is a refusal
+    /// (a chain the server withheld), not "no chain".
+    pub(crate) fn expect_chained(&mut self, space: &[u8; 16]) -> Result<(), Error> {
+        let unlocked = self.unlocked_mut()?;
+        unlocked.spaces.expected_chained.insert(*space);
+        Ok(())
+    }
+
+    /// The fingerprints of the keys of a space marked provisional, for a person to compare with a
+    /// member who holds them: first the space key (newest version), then each collection key held
+    /// (newest version of each, in collection id order). `None` when the space is not provisional.
+    pub(crate) fn provisional_fingerprints(
+        &self,
+        space: &[u8; 16],
+    ) -> Result<Option<Vec<ProvisionalKey>>, Error> {
+        let unlocked = self.unlocked()?;
+        if !unlocked.spaces.provisional.contains(space) {
+            return Ok(None);
+        }
+        let (version, key) = unlocked.spaces.newest_space(space)?;
+        let mut out = vec![ProvisionalKey {
+            collection: None,
+            version,
+            fingerprint: key_fingerprint(key, space, None, version)?,
+        }];
+        let mut collections: Vec<[u8; 16]> = unlocked
+            .spaces
+            .collections
+            .keys()
+            .filter(|(held, _, _)| held == space)
+            .map(|(_, collection, _)| *collection)
+            .collect();
+        collections.sort_unstable();
+        collections.dedup();
+        for collection in collections {
+            let (version, key) = unlocked.spaces.newest_collection(space, &collection)?;
+            out.push(ProvisionalKey {
+                collection: Some(collection),
+                version,
+                fingerprint: key_fingerprint(key, space, Some(&collection), version)?,
+            });
+        }
+        Ok(Some(out))
+    }
+
+    /// The person compared the fingerprints of a provisional space's keys and typed the last group
+    /// of the space key's: when it is right the space is settled, and sealing and writing under
+    /// its keys are allowed again. Anything else leaves it as it was.
+    pub(crate) fn accept_provisional_keys(
+        &mut self,
+        space: &[u8; 16],
+        typed_last_group: &str,
+    ) -> Result<(), Error> {
+        let shown = self
+            .provisional_fingerprints(space)?
+            .ok_or(Error::Invalid)?;
+        let space_key = shown.first().ok_or(Error::Invalid)?;
+        let want = space_key.fingerprint.rsplit(' ').next().unwrap_or_default();
+        let typed: String = typed_last_group.split_whitespace().collect();
+        if want.is_empty() || !kemlock_crypto::hash::ct_eq(typed.as_bytes(), want.as_bytes()) {
+            return Err(Error::Invalid);
+        }
+        self.unlocked_mut()?.spaces.provisional.remove(space);
+        Ok(())
+    }
+
     /// Decrypts a name. Fails for another space, id, kind or key version than it was sealed with.
     pub(crate) fn open_name(
         &self,
@@ -517,6 +674,7 @@ impl Session {
         let unlocked = self.unlocked()?;
         // A chained space's names change by records, which commit their hashes.
         unlocked.spaces.require_unchained(space)?;
+        unlocked.spaces.require_settled(space)?;
         let key = unlocked.spaces.space(space, key_version)?;
         seal_name_under(key, space, key_version, kind, id, name)
     }
@@ -592,6 +750,7 @@ impl Session {
         let unlocked = self.unlocked_mut()?;
         let (kx_private, sig_private) = unlocked.private.as_ref().ok_or(Error::Locked)?;
         unlocked.spaces.require_unchained(space)?;
+        unlocked.spaces.require_settled(space)?;
         let (version, space_key) = unlocked.spaces.newest_space(space)?;
         if unlocked.spaces.collections.contains_key(&(
             *space,
@@ -646,6 +805,7 @@ impl Session {
         // A chained space seals to the members its chain gives, in records, not to a key the page
         // names.
         unlocked.spaces.require_unchained(space)?;
+        unlocked.spaces.require_settled(space)?;
         let (_, sig_private) = unlocked.private.as_ref().ok_or(Error::Locked)?;
         let (version, key) = unlocked.spaces.newest_space(space)?;
         let public = kx1::PublicKey::from_bytes(recipient_kx1)?;
@@ -673,6 +833,7 @@ impl Session {
     ) -> Result<SignedBox, Error> {
         let unlocked = self.unlocked()?;
         unlocked.spaces.require_unchained(space)?;
+        unlocked.spaces.require_settled(space)?;
         let (_, sig_private) = unlocked.private.as_ref().ok_or(Error::Locked)?;
         let (version, key) = unlocked.spaces.newest_collection(space, collection)?;
         let public = kx1::PublicKey::from_bytes(recipient_kx1)?;

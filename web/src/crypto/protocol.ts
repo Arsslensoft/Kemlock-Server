@@ -27,6 +27,7 @@ import {
   type KitProblem,
   type MadeKit,
   type PrfWrap,
+  type ProvisionalKey,
   type Ops,
   type ResealedItem,
   type ResealedSend,
@@ -355,11 +356,11 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
         (await current()).newSpace(spaceId, collectionId, spaceName, collectionName),
       );
     },
-    async openSpace({ spaceId, keyVersion, sealed }) {
-      (await current()).openSpace(spaceId, toKeyVersion(keyVersion), sealed);
+    async openSpace({ spaceId, keyVersion, sealed, unsigned }) {
+      (await current()).openSpace(spaceId, toKeyVersion(keyVersion), sealed, unsigned);
     },
-    async openCollection({ spaceId, collectionId, keyVersion, sealed }) {
-      (await current()).openCollection(spaceId, collectionId, toKeyVersion(keyVersion), sealed);
+    async openCollection({ spaceId, collectionId, keyVersion, sealed, unsigned }) {
+      (await current()).openCollection(spaceId, collectionId, toKeyVersion(keyVersion), sealed, unsigned);
     },
     async openName({ spaceId, keyVersion, kind, id, ciphertext }) {
       return (await current()).openName(spaceId, toKeyVersion(keyVersion), kind, id, ciphertext);
@@ -420,6 +421,16 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
     },
     async acceptFirstContact(spaceId) {
       (await current()).acceptFirstContact(spaceId);
+    },
+    async expectChained(spaceId) {
+      (await current()).expectChained(spaceId);
+    },
+    async provisionalKeys(spaceId) {
+      const keys = (await current()).provisionalKeys(spaceId);
+      return keys === undefined ? null : parse<ProvisionalKey[]>(keys);
+    },
+    async acceptProvisionalKeys(spaceId, typed) {
+      (await current()).acceptProvisionalKeys(spaceId, typed);
     },
     async openChainKey({ spaceId, key, servedVersion, sealed, list }) {
       (await current()).openChainKey(

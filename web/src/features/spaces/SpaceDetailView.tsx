@@ -7,12 +7,13 @@ import type {
   SpaceRole,
 } from '@/api/spaces';
 import { CUSTOM_PERMISSIONS, COLLECTION_PERMISSIONS, ROLES } from '@/api/spaces';
+import type { ProvisionalKey } from '@/crypto/types';
 import { useT } from '@/i18n';
 import type { Fingerprint } from '@/sharing/bundle';
 import { Button } from '@/ui/Button';
 import { ConfirmDialog } from '@/ui/ConfirmDialog';
 import { Notice } from '@/ui/Notice';
-import { TypeLastGroup } from '@/ui/TypeLastGroup';
+import { TypeLastGroup, lastGroup } from '@/ui/TypeLastGroup';
 import '@/styles/account.css';
 import { CheckList, SelectInput, TextInput } from '../account/controls';
 import type { Described } from '../account/errors';
@@ -42,6 +43,8 @@ export interface ConfirmState {
 export interface SpaceActions extends StructureActions {
   /** The person compared the fingerprint first contact asked for and it matched. */
   acceptFirstContact?: () => void;
+  /** The person compared the keys taken on the server's word and typed the last group of the space key's fingerprint. */
+  acceptProvisional?: (typed: string) => void;
   /** Replaces the keys that wait for it, for a space with a verified chain. */
   replaceKeys?: () => void;
   /** Seals again the items still under an old key version. */
@@ -354,6 +357,51 @@ function ChainNotice({
   );
 }
 
+/**
+ * The keys of a space that this browser took on the server's word: nothing is sealed or written
+ * until a person has compared them with a member who holds them and typed the space key's last group.
+ */
+function ProvisionalNotice({
+  keys,
+  busy,
+  onAccept,
+}: {
+  keys: ProvisionalKey[];
+  busy: boolean;
+  onAccept: ((typed: string) => void) | undefined;
+}) {
+  const t = useT();
+  const [typed, setTyped] = useState('');
+  const [right, setRight] = useState(false);
+  const space = keys.find((key) => key.collection === null) ?? keys[0];
+  return (
+    <section className="confirm-panel" aria-labelledby="h-provisional">
+      <h2 id="h-provisional">{t('space.provisional.title')}</h2>
+      <p>{t('space.provisional.body')}</p>
+      {keys.map((key) => (
+        <p key={`${key.collection ?? 'space'}:${key.version}`} className="fp">
+          {key.fingerprint}
+        </p>
+      ))}
+      {space ? (
+        <TypeLastGroup
+          key={space.fingerprint}
+          fingerprint={space.fingerprint}
+          onMatch={(matches) => {
+            setRight(matches);
+            if (matches) setTyped(lastGroup(space.fingerprint));
+          }}
+        />
+      ) : null}
+      <div className="actions">
+        <Button variant="primary" isDisabled={busy || !right || !onAccept} onPress={() => onAccept?.(typed)}>
+          {t('space.provisional.matches')}
+        </Button>
+      </div>
+    </section>
+  );
+}
+
 /** Whether an owner or admin of a space with no chain, whose keys are open here, may seal them again. */
 function canReseal(detail: SpaceDetail): boolean {
   const unchained = !detail.trust || detail.trust.kind === 'unchained';
@@ -517,6 +565,9 @@ export function SpaceDetailView({
             {t('space.keys.reseal')}
           </Button>
         </div>
+      ) : null}
+      {detail.provisional ? (
+        <ProvisionalNotice keys={detail.provisional} busy={busy} onAccept={actions.acceptProvisional} />
       ) : null}
       {detail.legacyKeys && detail.legacyKeys.length > 0 ? (
         <Notice tone="warn">

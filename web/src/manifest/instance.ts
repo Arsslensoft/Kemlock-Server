@@ -60,3 +60,7 @@ manifestHooks.accepted = (spaceId) => manifestKeeper.acceptedManifest(`space:${s
 // A key box its sealer signed under a key version they have since replaced is checked against that
 // version's bundle, the same way a write is.
 manifestHooks.pastBundle = (account, version) => bundleHistory.past(account, version);
+// The spaces the account's own signed manifest says have a chain, and the chains this browser met:
+// what a server that withholds a chain is held against (manifest/chained.ts).
+manifestHooks.chainedSpaces = () => manifestKeeper.chainedSpaces();
+manifestHooks.noteChained = (spaceId) => manifestKeeper.noteChained(spaceId);

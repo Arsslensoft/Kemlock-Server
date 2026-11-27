@@ -183,6 +183,15 @@ export interface TotpOptions {
 /** What `sealRootKey` seals under. An emergency contact's box is made by `sealEmergencyKey`, which checks the contact's bundle. */
 export type RootKeyContext = 'device-approval';
 
+/** One key of a space opened from an unsigned box, with the fingerprint a person compares. */
+export interface ProvisionalKey {
+  /** The collection's id; null for the space key. */
+  collection: string | null;
+  version: number;
+  /** 12 groups of 5 digits. */
+  fingerprint: string;
+}
+
 /** What a space name names. */
 export type NameKind = 'space' | 'collection' | 'group';
 
@@ -755,14 +764,19 @@ export interface CryptoApi {
 
   /** A new space: a space key and first collection key sealed to the maker, names under the key. */
   newSpace(input: NewSpaceInput): Promise<NewSpaceResult>;
-  /** Opens the space key sealed to me and keeps it for `spaceId` at `keyVersion`. */
-  openSpace(input: { spaceId: string; keyVersion: number; sealed: string }): Promise<void>;
-  /** Opens a collection key sealed to me and keeps it. */
+  /**
+   * Opens the space key sealed to me and keeps it for `spaceId` at `keyVersion`. `unsigned` is for a
+   * box that carried no signature and that this browser had not accepted before: the space is then
+   * held back from sealing and writing until `acceptProvisionalKeys`.
+   */
+  openSpace(input: { spaceId: string; keyVersion: number; sealed: string; unsigned?: boolean }): Promise<void>;
+  /** Opens a collection key sealed to me and keeps it; `unsigned` as for `openSpace`. */
   openCollection(input: {
     spaceId: string;
     collectionId: string;
     keyVersion: number;
     sealed: string;
+    unsigned?: boolean;
   }): Promise<void>;
   openName(input: NameAddress & { ciphertext: string }): Promise<string>;
   sealName(input: NameAddress & { name: string }): Promise<string>;
@@ -945,6 +959,23 @@ export interface CryptoApi {
   /** The person compared the fingerprint first contact asked for and it matched. */
   acceptFirstContact(spaceId: string): Promise<void>;
   /**
+   * Tells the worker the account's own signed record names a space as chained: until a chain is
+   * verified for it, its keys open only through one, and a chain served empty is refused as withheld.
+   * Call it before `verifySpaceChain` for each space the record lists.
+   */
+  expectChained(spaceId: string): Promise<void>;
+  /**
+   * The fingerprints of the keys of a space opened from unsigned boxes this browser had not accepted,
+   * for a person to compare with a member who holds them (the space key first), or null when the
+   * space has none waiting.
+   */
+  provisionalKeys(spaceId: string): Promise<ProvisionalKey[] | null>;
+  /**
+   * Says the person compared them and typed the last group of the space key's fingerprint: right,
+   * and the space's keys may be sealed and written under again; anything else is refused.
+   */
+  acceptProvisionalKeys(spaceId: string, typed: string): Promise<void>;
+  /**
    * Opens the space key ("space") or a collection key ("collection:<uuid>") of a chained space at
    * the chain's current version. servedVersion and sealed are what the server served; list is the
    * seal hash list of the record that committed the seal, when the chain says it is needed.
@@ -1073,11 +1104,13 @@ export interface Ops {
   };
   newSpace: { args: [input: NewSpaceInput]; result: NewSpaceResult };
   openSpace: {
-    args: [input: { spaceId: string; keyVersion: number; sealed: string }];
+    args: [input: { spaceId: string; keyVersion: number; sealed: string; unsigned?: boolean }];
     result: void;
   };
   openCollection: {
-    args: [input: { spaceId: string; collectionId: string; keyVersion: number; sealed: string }];
+    args: [
+      input: { spaceId: string; collectionId: string; keyVersion: number; sealed: string; unsigned?: boolean },
+    ];
     result: void;
   };
   openName: { args: [input: NameAddress & { ciphertext: string }]; result: string };
@@ -1178,6 +1211,9 @@ export interface Ops {
   openLocal: { args: [label: string, sealed: string]; result: string };
   spaceChainView: { args: [spaceId: string]; result: ChainView | null };
   acceptFirstContact: { args: [spaceId: string]; result: void };
+  expectChained: { args: [spaceId: string]; result: void };
+  provisionalKeys: { args: [spaceId: string]; result: ProvisionalKey[] | null };
+  acceptProvisionalKeys: { args: [spaceId: string, typed: string]; result: void };
   openChainKey: {
     args: [
       input: {

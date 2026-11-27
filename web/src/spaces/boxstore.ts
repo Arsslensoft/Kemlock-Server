@@ -23,6 +23,11 @@ export interface BoxRecord {
   hash: string;
   /** Whether the box carried a valid signature of a member this browser could trace. */
   signed: boolean;
+  /**
+   * For an unsigned box: a person compared the key's fingerprint with a member who holds it and
+   * typed its last group. Until then the key is read but never sealed under or written to.
+   */
+  compared?: boolean;
 }
 
 /** A key of a space: its own key `space`, or a collection's `collection:<uuid>`. */
@@ -45,14 +50,18 @@ const signedKey = (account: string, space: string) => `signed/${account}/${space
 function isRecord(value: unknown): value is BoxRecord {
   if (typeof value !== 'object' || value === null) return false;
   const v = value as Record<string, unknown>;
-  return typeof v.hash === 'string' && typeof v.signed === 'boolean';
+  return (
+    typeof v.hash === 'string' &&
+    typeof v.signed === 'boolean' &&
+    (v.compared === undefined || typeof v.compared === 'boolean')
+  );
 }
 
 /** Reads a kept record from its text; anything that isn't one is an error. */
 export function parseBoxRecord(text: string): BoxRecord {
   const value: unknown = JSON.parse(text);
   if (!isRecord(value)) throw new Error('the kept key box is damaged');
-  return { hash: value.hash, signed: value.signed };
+  return { hash: value.hash, signed: value.signed, ...(value.compared === undefined ? {} : { compared: value.compared }) };
 }
 
 /** The accepted boxes in memory: for tests, and the fallback when IndexedDB can't be used. */

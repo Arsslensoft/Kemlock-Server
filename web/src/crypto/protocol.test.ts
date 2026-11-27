@@ -122,6 +122,9 @@ function mockVault(overrides: Partial<WasmVault> = {}): WasmVault {
     sealLocal: vi.fn(() => 'c2VhbGVk'),
     openLocal: vi.fn(() => '{"seq":1}'),
     acceptFirstContact: vi.fn(),
+    expectChained: vi.fn(),
+    provisionalKeys: vi.fn((): string | undefined => undefined),
+    acceptProvisionalKeys: vi.fn(),
     openChainKey: vi.fn(),
     rotationStart: vi.fn(() =>
       JSON.stringify({
@@ -404,9 +407,15 @@ describe('the dispatcher', () => {
     });
 
     await dispatch('openSpace', [{ spaceId: UUID, keyVersion: 1, sealed: 'c2s' }]);
-    expect(vault.openSpace).toHaveBeenCalledWith(UUID, 1, 'c2s');
+    expect(vault.openSpace).toHaveBeenCalledWith(UUID, 1, 'c2s', undefined);
+    await dispatch('openSpace', [{ spaceId: UUID, keyVersion: 1, sealed: 'c2s', unsigned: true }]);
+    expect(vault.openSpace).toHaveBeenLastCalledWith(UUID, 1, 'c2s', true);
     await dispatch('openCollection', [{ spaceId: UUID, collectionId: UUID, keyVersion: 2, sealed: 'Y2s' }]);
-    expect(vault.openCollection).toHaveBeenCalledWith(UUID, UUID, 2, 'Y2s');
+    expect(vault.openCollection).toHaveBeenCalledWith(UUID, UUID, 2, 'Y2s', undefined);
+    await dispatch('openCollection', [
+      { spaceId: UUID, collectionId: UUID, keyVersion: 2, sealed: 'Y2s', unsigned: true },
+    ]);
+    expect(vault.openCollection).toHaveBeenLastCalledWith(UUID, UUID, 2, 'Y2s', true);
 
     // A new chained space and one change to it: the request comes back parsed, and the time is checked.
     const created = await dispatch('newChainedSpace', [
@@ -463,6 +472,13 @@ describe('the dispatcher', () => {
     expect(vault.openLocal).toHaveBeenCalledWith('anchor/x', 'c2VhbGVk');
     await dispatch('acceptFirstContact', [UUID]);
     expect(vault.acceptFirstContact).toHaveBeenCalledWith(UUID);
+    await dispatch('expectChained', [UUID]);
+    expect(vault.expectChained).toHaveBeenCalledWith(UUID);
+    expect(await dispatch('provisionalKeys', [UUID])).toBeNull();
+    vault.provisionalKeys = vi.fn(() => JSON.stringify([{ collection: null, version: 1, fingerprint: '12345' }]));
+    expect(await dispatch('provisionalKeys', [UUID])).toEqual([{ collection: null, version: 1, fingerprint: '12345' }]);
+    await dispatch('acceptProvisionalKeys', [UUID, '12345']);
+    expect(vault.acceptProvisionalKeys).toHaveBeenCalledWith(UUID, '12345');
     await dispatch('openChainKey', [{ spaceId: UUID, key: 'space', servedVersion: 2, sealed: 'Ym94' }]);
     expect(vault.openChainKey).toHaveBeenCalledWith(UUID, 'space', 2, 'Ym94', undefined);
     const list = [{ bundleVersion: 1, key: 'space', member: UUID, sealHash: 'aGFzaA', version: 2 }];

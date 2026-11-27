@@ -235,15 +235,26 @@ async function checkSigned(
   if (!ok) throw refuse('bad-signature');
 }
 
-async function openIn(ctx: BoxContext, box: BoxToOpen, sealed: Uint8Array): Promise<void> {
+/**
+ * Opens a box in the worker. `unsigned` marks the key as taken on the server's word: the worker then
+ * lets it be read with but seals and writes nothing under it until a person compared it
+ * (`acceptProvisional`).
+ */
+async function openIn(ctx: BoxContext, box: BoxToOpen, sealed: Uint8Array, unsigned = false): Promise<void> {
   if (box.key === 'space') {
-    await ctx.deps.crypto.openSpace({ spaceId: ctx.spaceId, keyVersion: box.version, sealed });
+    await ctx.deps.crypto.openSpace({
+      spaceId: ctx.spaceId,
+      keyVersion: box.version,
+      sealed,
+      ...(unsigned ? { unsigned } : {}),
+    });
   } else {
     await ctx.deps.crypto.openCollection({
       spaceId: ctx.spaceId,
       collectionId: box.key.collection,
       keyVersion: box.version,
       sealed,
+      ...(unsigned ? { unsigned } : {}),
     });
   }
 }
@@ -265,9 +276,10 @@ export async function openKeyBox(ctx: BoxContext, box: BoxToOpen): Promise<{ leg
   const hash = await sha256(bytes);
   const kept = await store.load(ctx.me, ctx.spaceId, ref, box.version);
 
-  // A box accepted before: again without asking who sealed it.
+  // A box accepted before: again without asking who sealed it. An unsigned one stays on the server's
+  // word until a person has compared its key (`acceptProvisional`), so it opens as provisional.
   if (kept?.hash === hash) {
-    await openIn(ctx, box, bytes);
+    await openIn(ctx, box, bytes, !kept.signed && !kept.compared);
     return { legacy: !kept.signed };
   }
 
@@ -284,7 +296,8 @@ export async function openKeyBox(ctx: BoxContext, box: BoxToOpen): Promise<{ leg
   // already accepted is a signature taken away, or a key the server made.
   if (kept) throw new KeyBoxRefused(ref, 'unsigned-changed');
   if (await store.hasSigned(ctx.me, ctx.spaceId)) throw new KeyBoxRefused(ref, 'unsigned-downgrade');
-  await openIn(ctx, box, bytes);
+  // On the server's word: read, never sealed under or written to, until a person compared it.
+  await openIn(ctx, box, bytes, true);
   await store.save(ctx.me, ctx.spaceId, ref, box.version, { hash, signed: false });
   return { legacy: true };
 }
@@ -346,4 +359,34 @@ export function lazyContext(deps: SpaceDeps, spaceId: string, me: string): BoxCo
       return { grants: view.grants, groups: view.groups };
     },
   };
+}
+
+/**
+ * The keys of a space that were taken on the server's word (an unsigned box on first sight) and wait
+ * for a person to compare them, with their fingerprints; null when none does. Nothing is sealed or
+ * written under such a space's keys until `acceptProvisional`.
+ */
+export function provisionalKeys(deps: SpaceDeps, spaceId: string) {
+  return deps.crypto.provisionalKeys(spaceId);
+}
+
+/**
+ * The person compared the keys' fingerprints with a member who holds them and typed the last group
+ * of the space key's. The worker checks the digits; when they are right, this browser remembers that
+ * these boxes were compared, so they open settled next time. Throws when the digits are wrong.
+ */
+export async function acceptProvisional(
+  deps: SpaceDeps,
+  spaceId: string,
+  me: string,
+  typed: string,
+): Promise<void> {
+  const keys = await deps.crypto.provisionalKeys(spaceId);
+  await deps.crypto.acceptProvisionalKeys(spaceId, typed);
+  const store = storeOf(deps);
+  for (const key of keys ?? []) {
+    const ref = key.collection === null ? 'space' : `collection:${key.collection}`;
+    const kept = await store.load(me, spaceId, ref, key.version);
+    if (kept && !kept.signed) await store.save(me, spaceId, ref, key.version, { ...kept, compared: true });
+  }
 }

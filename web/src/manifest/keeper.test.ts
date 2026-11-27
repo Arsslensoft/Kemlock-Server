@@ -769,3 +769,64 @@ describe('after the account rotated its keys', () => {
     expect(run.keeper.getWarning()).toEqual(NO_WARNING);
   });
 });
+
+describe('the chained spaces the account’s own manifest lists', () => {
+  const S1 = '66666666-6666-4666-8666-666666666666';
+  const S2 = '77777777-7777-4777-8777-777777777777';
+  const mark = (id: string) => ({ id, revision: 0, hash: TOMBSTONE_HASH, deleted: true });
+  /** Lets the fakes' promises settle: noteChained reads the manifest in the background. */
+  const later = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  it('are read from the manifest the account signed, with the ones about to be listed', async () => {
+    const run = setup();
+    run.stored.set(OWN, served({ owner: OWN, counter: 2, entries: [mark(S1)] }));
+    expect([...(await run.keeper.chainedSpaces())]).toEqual([S1]);
+    run.keeper.noteChained(S2);
+    expect([...(await run.keeper.chainedSpaces())].sort()).toEqual([S1, S2]);
+  });
+
+  it('are not believed from a manifest that does not verify, or one lower than seen', async () => {
+    const run = setup();
+    run.stored.set(OWN, served({ owner: OWN, counter: 2, entries: [mark(S1)] }, ACCOUNT, true));
+    expect((await run.keeper.chainedSpaces()).size).toBe(0);
+    // A lower counter than the one this browser accepted: the accepted one stands.
+    const good = { owner: OWN, counter: 5, entries: [mark(S1), mark(S2)] };
+    await run.records.put(`${ACCOUNT}|${OWN}`, { manifest: encodeB64(encodeManifest(good)), counter: 5, deleted: {} });
+    run.stored.set(OWN, served({ owner: OWN, counter: 4, entries: [] }));
+    run.keeper.reset();
+    expect([...(await run.keeper.chainedSpaces())].sort()).toEqual([S1, S2]);
+  });
+
+  it('gain a space this browser met: the next manifest lists it, over what was there', async () => {
+    const run = setup();
+    run.stored.set(OWN, served({ owner: OWN, counter: 2, entries: [await listed(A, 1)] }));
+    await run.keeper.chainedSpaces();
+    run.keeper.noteChained(S1);
+    await later();
+    await run.keeper.flush();
+    expect(run.api.put).toHaveBeenCalledTimes(1);
+    const { owner, manifest } = putBody(run.api);
+    expect(owner).toBe(OWN);
+    expect(manifest?.counter).toBe(3);
+    expect(manifest?.entries.map((e) => e.id).sort()).toEqual([A, S1].sort());
+    expect(manifest?.entries.find((e) => e.id === S1)).toEqual(mark(S1));
+  });
+
+  it('write nothing when the manifest already lists the space', async () => {
+    const run = setup();
+    run.stored.set(OWN, served({ owner: OWN, counter: 2, entries: [mark(S1)] }));
+    run.keeper.noteChained(S1);
+    await later();
+    await run.keeper.flush();
+    expect(run.api.put).not.toHaveBeenCalled();
+  });
+
+  it('are not written over a manifest that could not be read', async () => {
+    const run = setup();
+    run.stored.set(OWN, served({ owner: OWN, counter: 2, entries: [mark(S1)] }, ACCOUNT, true));
+    run.keeper.noteChained(S2);
+    await later();
+    await run.keeper.flush();
+    expect(run.api.put).not.toHaveBeenCalled();
+  });
+});

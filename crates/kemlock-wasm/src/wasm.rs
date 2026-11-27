@@ -154,6 +154,16 @@ struct NewSpaceOut {
     collection: CollectionOut,
 }
 
+/// One key of a space opened from an unsigned box on first sight, with its fingerprint to compare.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProvisionalKeyOut {
+    /// The collection's id; `null` for the space key.
+    collection: Option<String>,
+    version: u32,
+    fingerprint: String,
+}
+
 /// A key sealed to a member and the signature of the account that sealed it.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1118,21 +1128,27 @@ impl Vault {
     }
 
     /// Opens the space key sealed to this account and keeps it for the space at `key_version`.
+    /// `unsigned` is for a box that carried no signature and that this browser had not accepted
+    /// before: the space is then held back from sealing and writing until `acceptProvisionalKeys`.
     #[wasm_bindgen(js_name = openSpace)]
     pub fn open_space(
         &mut self,
         space_id: &str,
         key_version: u32,
         sealed: &str,
+        unsigned: Option<bool>,
     ) -> Result<(), JsError> {
         let space = ids::parse_uuid(space_id).map_err(fail)?;
         let sealed = b64::decode(sealed).map_err(fail)?;
-        self.session
-            .open_space(&space, key_version, &sealed)
-            .map_err(fail)
+        let opened = if unsigned == Some(true) {
+            self.session.open_space_unsigned(&space, key_version, &sealed)
+        } else {
+            self.session.open_space(&space, key_version, &sealed)
+        };
+        opened.map_err(fail)
     }
 
-    /// Opens a collection key sealed to this account and keeps it.
+    /// Opens a collection key sealed to this account and keeps it. `unsigned` as for `openSpace`.
     #[wasm_bindgen(js_name = openCollection)]
     pub fn open_collection(
         &mut self,
@@ -1140,13 +1156,19 @@ impl Vault {
         collection_id: &str,
         key_version: u32,
         sealed: &str,
+        unsigned: Option<bool>,
     ) -> Result<(), JsError> {
         let space = ids::parse_uuid(space_id).map_err(fail)?;
         let collection = ids::parse_uuid(collection_id).map_err(fail)?;
         let sealed = b64::decode(sealed).map_err(fail)?;
-        self.session
-            .open_collection(&space, &collection, key_version, &sealed)
-            .map_err(fail)
+        let opened = if unsigned == Some(true) {
+            self.session
+                .open_collection_unsigned(&space, &collection, key_version, &sealed)
+        } else {
+            self.session
+                .open_collection(&space, &collection, key_version, &sealed)
+        };
+        opened.map_err(fail)
     }
 
     /// Decrypts the name of a space (`kind` `space`), a collection or a group under the space
@@ -1524,6 +1546,46 @@ impl Vault {
     pub fn space_chain_view(&self, space_id: &str) -> Result<Option<String>, JsError> {
         let space = ids::parse_uuid(space_id).map_err(fail)?;
         self.session.space_chain_view(&space).map_err(fail)
+    }
+
+    /// Says the account's own signed record names the space as chained: until a verified chain is
+    /// held for it, its keys open only through a chain, and a chain served empty is refused as
+    /// withheld. Call it before `verifySpaceChain` for every space the record lists.
+    #[wasm_bindgen(js_name = expectChained)]
+    pub fn expect_chained(&mut self, space_id: &str) -> Result<(), JsError> {
+        let space = ids::parse_uuid(space_id).map_err(fail)?;
+        self.session.expect_chained(&space).map_err(fail)
+    }
+
+    /// The fingerprints of the keys of a space opened from unsigned boxes this browser had not
+    /// accepted (`openSpace` with `unsigned`), as JSON `[{collection, version, fingerprint}]` (the
+    /// space key first, `collection` null), or nothing when the space has none to compare.
+    #[wasm_bindgen(js_name = provisionalKeys)]
+    pub fn provisional_keys(&self, space_id: &str) -> Result<Option<String>, JsError> {
+        let space = ids::parse_uuid(space_id).map_err(fail)?;
+        let Some(keys) = self.session.provisional_fingerprints(&space).map_err(fail)? else {
+            return Ok(None);
+        };
+        let out: Vec<ProvisionalKeyOut> = keys
+            .into_iter()
+            .map(|key| ProvisionalKeyOut {
+                collection: key.collection.map(|id| kemlock_crypto::space_chain::uuid_text(&id)),
+                version: key.version,
+                fingerprint: key.fingerprint,
+            })
+            .collect();
+        json(&out).map(Some)
+    }
+
+    /// Says the person compared those fingerprints and typed the last group of the space key's:
+    /// right, and the space's keys may be sealed and written under again; anything else is
+    /// refused and changes nothing.
+    #[wasm_bindgen(js_name = acceptProvisionalKeys)]
+    pub fn accept_provisional_keys(&mut self, space_id: &str, typed: &str) -> Result<(), JsError> {
+        let space = ids::parse_uuid(space_id).map_err(fail)?;
+        self.session
+            .accept_provisional_keys(&space, typed)
+            .map_err(fail)
     }
 
     /// Says the person compared the fingerprint first contact asked for and it matched: the

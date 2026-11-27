@@ -146,6 +146,53 @@ describe('checking a space’s chain', () => {
     expect(await checkSpaceChain({ ...deps, crypto: fresh }, THEO, ME)).toEqual({ kind: 'unchained' });
   });
 
+  it('does not read a space the account’s signed manifest lists as chained as one with none', async () => {
+    // A browser with no history of the space: nothing seen, no anchor. The server serves no chain.
+    const { deps, crypto } = setup();
+    const listed: SpaceDeps = { ...deps, chainedSpaces: async () => new Set([SPACE]) };
+    expect(await checkSpaceChain(listed, SPACE, ME)).toEqual({
+      kind: 'unverified',
+      reason: 'chain withheld',
+      seq: null,
+    });
+    expect(crypto.calls).toContain(`expectChained:${SPACE}`);
+    // The worker was told before it read what the server served.
+    expect(crypto.calls.indexOf(`expectChained:${SPACE}`)).toBeLessThan(
+      crypto.calls.indexOf(`verifySpaceChain:${SPACE}`),
+    );
+    // A space the list does not name is as before, and so is one when the list is empty.
+    expect(await checkSpaceChain(listed, THEO, ME)).toEqual({ kind: 'unchained' });
+    expect(await checkSpaceChain({ ...deps, chainedSpaces: async () => new Set() }, THEO, ME)).toEqual({
+      kind: 'unchained',
+    });
+  });
+
+  it('is not taken for a space with none when the list can not be read', async () => {
+    const { deps } = setup();
+    const unreadable: SpaceDeps = {
+      ...deps,
+      chainedSpaces: async () => {
+        throw new Error('offline');
+      },
+    };
+    expect(await checkSpaceChain(unreadable, SPACE, ME)).toEqual({
+      kind: 'unverified',
+      reason: 'unreachable',
+      seq: null,
+    });
+  });
+
+  it('tells the manifest of a chain it verified and first-contacted, and of nothing else', async () => {
+    const noted = vi.fn();
+    const { deps } = setup(view());
+    expect((await checkSpaceChain({ ...deps, noteChained: noted }, SPACE, ME)).kind).toBe('verified');
+    expect(noted).toHaveBeenCalledWith(SPACE);
+    noted.mockClear();
+    const waiting = setup(view({ trusted: false, firstContact: { kind: 'pick', owners: [] } }));
+    await checkSpaceChain({ ...waiting.deps, noteChained: noted }, SPACE, ME);
+    expect(noted).not.toHaveBeenCalled();
+  });
+
   it('remembers a refused chain too', async () => {
     const { deps, anchors, crypto } = setup({ ok: false, reason: 'forked', seq: 3 });
     await checkSpaceChain(deps, SPACE, ME);

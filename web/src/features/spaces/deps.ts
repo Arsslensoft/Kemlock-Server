@@ -24,6 +24,8 @@ export const manifestHooks: {
   wrote?: (items: ItemDto[]) => Promise<void>;
   accepted?: (spaceId: string) => Promise<Manifest | null>;
   pastBundle?: (account: string, version: number) => Promise<Uint8Array | null>;
+  chainedSpaces?: () => Promise<ReadonlySet<string>>;
+  noteChained?: (spaceId: string) => void;
 } = {};
 
 export const spaceDeps: SpaceDeps = {
@@ -38,6 +40,9 @@ export const spaceDeps: SpaceDeps = {
   wrote: (items) => manifestHooks.wrote?.(items) ?? Promise.resolve(),
   acceptedManifest: (spaceId) => manifestHooks.accepted?.(spaceId) ?? Promise.resolve(null),
   pastBundle: (account, version) => manifestHooks.pastBundle?.(account, version) ?? Promise.resolve(null),
+  // The spaces the account's own signed manifest says have a chain, and a chain met here to list in it.
+  chainedSpaces: () => manifestHooks.chainedSpaces?.() ?? Promise.resolve(new Set<string>()),
+  noteChained: (spaceId) => manifestHooks.noteChained?.(spaceId),
 };
 
 export { spacesKey } from './refresh';

@@ -35,6 +35,7 @@ import {
   recordDeleted,
   sameEntries,
 } from './compare';
+import { chainedMarks, withMarks } from './chained';
 import { type Manifest, TOMBSTONE_HASH, ciphertextHash, decodeManifest, encodeManifest } from './format';
 import type { WriteVerdict } from './writes';
 import type { ManifestRecord, RecordStore } from './records';
@@ -114,6 +115,8 @@ export interface KeeperDeps {
 export const VERIFY_EVERY_MS = 5 * 60_000;
 /** How long after a write the next manifest is signed, so a burst of writes is one manifest. */
 export const PUBLISH_AFTER_MS = 2_000;
+/** How long the marks read from the account's own manifest are used before it is read again. */
+export const MARKS_FRESH_MS = 15_000;
 
 function defaultSchedule(run: () => void, ms: number): () => void {
   const timer = setTimeout(run, ms);
@@ -179,6 +182,14 @@ export function createManifestKeeper(deps: KeeperDeps) {
   const pending = new Set<string>();
   /** Owners the server refused our manifest for (not allowed to write); not asked again. */
   const refused = new Set<string>();
+  /**
+   * Spaces this browser verified a chain of and first-contacted: the next publish of the account's
+   * own manifest lists them (chained.ts). Forgotten with the rest on `reset`; the next check of the
+   * space says it again.
+   */
+  const chainedWanted = new Set<string>();
+  /** The marks the last read of the account's own manifest found, and when. */
+  let marksRead: { at: number; marks: Set<string> } | undefined;
   /** Owners whose last manifest could not be stored. */
   const failed = new Set<string>();
   let complete = false;
@@ -363,9 +374,15 @@ export function createManifestKeeper(deps: KeeperDeps) {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const checked = await check(owner, account);
       if (mine !== epoch) return;
-      const ledger = ledgers.get(owner);
+      // The account's own manifest also lists the chained spaces this browser met, with or without
+      // an item of its own to write; a space's only follows an item written to it.
+      const marks = isOwnVault(owner) ? chainedWanted : new Set<string>();
+      const ledger = isOwnVault(owner) ? ledgerOf(owner) : ledgers.get(owner);
       if (!ledger) return;
       const base = checked.accepted;
+      // A manifest this browser could not read is not written over to add a mark: with no item of its
+      // own to list, the next check of the space tries again.
+      if (checked.problem && ledger.size === 0) return;
       // What the check flags, and what this device saw deleted, is not signed in: a write of the
       // person's own must not make a rollback, a hidden item or a resurrection permanent.
       const deleted = recordDeleted(checked.record?.deleted ?? {}, base, ledger, now());
@@ -373,7 +390,7 @@ export function createManifestKeeper(deps: KeeperDeps) {
         (base ? compareLedger(base, deleted, ledger) : []).map((finding) => finding.id),
       );
       for (const anomaly of anomalies.values()) if (anomaly.owner === owner) skip.add(anomaly.id);
-      const entries = mergeEntries(base?.entries ?? [], ledger, deleted, skip);
+      const entries = withMarks(mergeEntries(base?.entries ?? [], ledger, deleted, skip), marks);
       if (base ? sameEntries(entries, base.entries) : entries.length === 0) return;
       const counter = Math.max(checked.floor, above) + 1;
       const next: Manifest = { owner, counter, entries };
@@ -402,6 +419,17 @@ export function createManifestKeeper(deps: KeeperDeps) {
       });
       return;
     }
+  }
+
+  /** The marks of the account's own manifest as this browser last accepted it or the server's verifies. */
+  async function readMarks(): Promise<Set<string>> {
+    const account = deps.accountId();
+    if (!account) return new Set();
+    if (!marksRead || now() - marksRead.at > MARKS_FRESH_MS) {
+      const checked = await check(`user:${account}`, account);
+      marksRead = { at: now(), marks: chainedMarks(checked.accepted?.entries ?? []) };
+    }
+    return marksRead.marks;
   }
 
   function planPublish(): void {
@@ -438,6 +466,8 @@ export function createManifestKeeper(deps: KeeperDeps) {
     /** Forgets everything but what is stored: a sync starts from scratch, or the vault locks. */
     reset(): void {
       epoch += 1;
+      chainedWanted.clear();
+      marksRead = undefined;
       ledgers = new Map();
       ledgerTail = Promise.resolve();
       anomalies.clear();
@@ -534,6 +564,39 @@ export function createManifestKeeper(deps: KeeperDeps) {
       if (!account) return null;
       const checked = await check(owner, account);
       return checked.problem ? null : (checked.accepted ?? null);
+    },
+
+    /**
+     * The spaces the account's own signed manifest says have a chain (manifest/chained.ts), with the
+     * ones this browser is about to list: what a space served with no chain is held against, so a
+     * server that withholds one can't pass for a space that never had one. The manifest is the one
+     * this browser last accepted, or the server's when it verifies, so a server that answers with a
+     * lower counter or a forged one is not believed. Throws when the server can't be reached.
+     */
+    async chainedSpaces(): Promise<Set<string>> {
+      return new Set([...(await readMarks()), ...chainedWanted]);
+    },
+
+    /**
+     * A chain of `space` verified here, first contact done: it is listed in the account's own
+     * signed manifest, unless that already says so. Never throws; the next check tries again.
+     */
+    noteChained(space: string): void {
+      const account = deps.accountId();
+      if (!account || chainedWanted.has(space)) return;
+      chainedWanted.add(space);
+      const mine = epoch;
+      void readMarks().then(
+        (marks) => {
+          // Already in the manifest the server serves: nothing to write.
+          if (mine !== epoch || marks.has(space)) return;
+          pending.add(`user:${account}`);
+          planPublish();
+        },
+        () => {
+          chainedWanted.delete(space);
+        },
+      );
     },
 
     /** Resolves once every item told to `served` and `wrote` so far is in the ledger. */

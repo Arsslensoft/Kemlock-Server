@@ -984,10 +984,48 @@ collection whose key no owner or admin holds stays unsigned until its key is rep
 What this leaves open, stated plainly: a device that has seen **no signed box of that space** yet
 accepts an unsigned box on first sight, for the space key and every collection key, because nothing
 yet tells it that signatures have begun. A server that serves such a device boxes of its own before
-the device has accepted any signed one is not caught, until the space is re-sealed or its keys are
-replaced and the device has seen the signed boxes. The mark makes such boxes visible, and re-sealing
-(or a key replacement) removes the exposure; a server can't use it on a device that has already
-accepted a signed box of the space.
+the device has accepted any signed one is not caught by the signature rules. So a key taken that way
+is **provisional**: the worker reads with it (names and items open) and refuses to seal under it or
+write under it (no item, name, collection or key box of that space) until a person has compared it.
+The page shows the fingerprint of each provisional key, 12 groups of 5 digits worked out from two
+one-way children of the key bound to the space, collection and version
+(`key_fingerprint` in `crates/kemlock-wasm/src/spaces.rs`), for the person to compare with a member
+who already holds the space. The person types the last group of the space key's, the worker checks
+it (constant time), and only then is the space settled; the browser remembers it
+(`compared` in the box record) so the same boxes open settled next time. A box a client accepted
+before this rule, and was never compared, is provisional again on the next visit. Re-sealing or a
+key replacement removes the exposure: the signed boxes are never provisional.
+
+### Chained spaces the account has met
+
+A server that serves a space with no chain to a device that has none stored would pass for a space
+that never had one (the `seen` marker in a browser's store is the only memory of a chain, and a new
+browser, a private window, cleared site data or the reset that follows a rotation has none). To give
+a client a fact the server can't remove, **the account's own signed manifest lists its chained
+spaces** ("Signed manifest"):
+
+- For each space the account has first-contacted a chain of, the account's own manifest holds an
+  entry whose item id is the space's id, `deleted` is 1, the hash is the 32 zero bytes of a tombstone
+  and the **revision is 0**. A tombstone of an item is a revision of it, and revisions start at 1, so
+  a revision 0 tombstone is never an item's: the format and the signing rules are unchanged, a
+  reader that knows nothing of marks sees a tombstone of an id it holds no item for, and a client
+  that merges entries keeps these (`src/manifest/chained.ts`).
+- A browser writes a mark when a chain verifies and first contact is done, with the next manifest it
+  signs (the same publish as an item write, or alone after two seconds), at a counter one above the
+  highest known. It never replaces a manifest it could not verify to add one.
+- Before it reads the chain a space is served, a browser reads the marks of the manifest it holds
+  (the server's, when its signature verifies under the account's own key and its counter is not below
+  the highest this browser has seen) and tells the worker (`expectChained`) for each space listed. For
+  such a space an empty chain is a refusal ("chain withheld", the space shows as "can't be checked"),
+  and its keys open only through a chain, never through the unchained boxes.
+- A server can't make a mark (the manifest is signed by the account's own `sig1` key) and can't remove
+  one from a browser that has seen it (the counter only goes up, and a lower or missing manifest is
+  "rolled back" or "dropped"). **What stays open:** a browser that has seen no manifest of the account
+  at all is told by the server, which can serve an older manifest of the account that lacks the
+  mark. For it, the first-sight rule above is the guard: a key accepted unsigned on first sight is
+  provisional, so nothing is sealed or written under the server's keys until a person compares them.
+- A mark names a space id and nothing else. It is shown to nobody, and an app that does not read it
+  loses nothing.
 
 **A sealer's key version.** The statement binds the key version of the sealer's bundle, so a client
 verifies a signature against the sealer's bundle **at the version the signature names**, not only
