@@ -504,7 +504,7 @@ async fn maps_files_settings_the_signing_key_and_everything_else() {
         "{plan}"
     );
     assert!(
-        plan.contains("not carried: admin_token, domain, enable_websocket"),
+        plan.contains(r#"not carried: "admin_token", "domain", "enable_websocket""#),
         "{plan}"
     );
 }

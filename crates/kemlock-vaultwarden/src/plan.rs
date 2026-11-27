@@ -117,7 +117,14 @@ fn write_plan(
         writeln!(
             out,
             "                not carried: {}",
-            mapped.settings.ignored.join(", ")
+            // Names come from the source's file: quoted and escaped, so one can't forge a line.
+            mapped
+                .settings
+                .ignored
+                .iter()
+                .map(|name| format!("{name:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
         )?;
     }
     if !mapped.settings.secrets.is_empty() {
@@ -202,5 +209,22 @@ mod tests {
         assert!(plan.contains("smtp_host = \"mail.example.org\""), "{plan}");
         assert!(plan.contains("- something to read"), "{plan}");
         assert!(!plan.contains("changed between"), "{plan}");
+    }
+
+    #[test]
+    fn a_setting_name_from_the_source_cannot_forge_a_plan_line() {
+        let meta = SnapshotMeta {
+            database: "SQLite",
+            release: "1.37.5",
+            source: "/data".into(),
+        };
+        let mut mapped = MappedImport::default();
+        mapped
+            .settings
+            .ignored
+            .push("x\nrsa_key.pem     not found".into());
+        let plan = render_plan(&meta, &mapped, None);
+        assert!(!plan.contains("\nrsa_key.pem     not found"), "{plan}");
+        assert!(plan.contains(r#""x\nrsa_key.pem     not found""#), "{plan}");
     }
 }
