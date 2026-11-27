@@ -23,10 +23,13 @@ use crate::cipher::{FOLDER_KIND, StoredCipher};
 use crate::env::random_uuid;
 use crate::error::{BwError, BwResult};
 use crate::password::hash_password;
-use crate::routes::{EmptyResult, JsonResult, SecretJsonResult, empty, ok, ok_no_store, parse};
+use crate::routes::{
+    EmptyResult, JsonResult, SecretJsonResult, UNAUTHENTICATED_BODY_LIMIT, empty, ok, ok_no_store,
+    parse,
+};
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::routing::{get, post};
 use kemlock_app::bitwarden::BwAccountRepo;
 use kemlock_app::emergency::{EmergencyEvent, EmergencyNotice, EmergencyRepo};
@@ -970,7 +973,7 @@ pub(crate) fn routes<S: BwStore>() -> Router<App<S>> {
         )
         .route(
             "/api/emergency-access/{id}/accept",
-            post(accept_invite::<S>),
+            post(accept_invite::<S>).layer(DefaultBodyLimit::max(UNAUTHENTICATED_BODY_LIMIT)),
         )
         .route(
             "/api/emergency-access/{id}/invite-link",

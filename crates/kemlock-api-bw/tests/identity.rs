@@ -1578,6 +1578,47 @@ async fn password_and_api_key_sign_ins_are_rate_limited_per_address_as_vaultward
 }
 
 #[tokio::test]
+async fn a_request_with_no_sign_in_may_not_send_more_than_a_few_kib() {
+    let h = Harness::new().await;
+    let (token, _) = h.signed_in("ada@example.com").await;
+    let big = "a".repeat(40 * 1024);
+    let body = format!("{{\"email\":\"{big}\"}}");
+    for uri in [
+        "/identity/connect/token",
+        "/identity/accounts/prelogin",
+        "/identity/accounts/prelogin/password",
+        "/identity/accounts/register/send-verification-email",
+        "/identity/accounts/register/verification-email-clicked",
+        "/identity/accounts/register/finish",
+        "/api/two-factor/send-email-login",
+    ] {
+        let (status, _, _) = h
+            .send(
+                "POST",
+                uri,
+                &[("content-type", "application/json")],
+                Body::from(body.clone()),
+            )
+            .await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{uri}");
+    }
+    // A signed-in route reads it, whatever it then makes of it.
+    let bearer = format!("Bearer {token}");
+    let (status, _, _) = h
+        .send(
+            "POST",
+            "/api/folders",
+            &[
+                ("content-type", "application/json"),
+                ("authorization", bearer.as_str()),
+            ],
+            Body::from(format!("{{\"name\":\"{big}\"}}")),
+        )
+        .await;
+    assert_ne!(status, StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
 async fn wrong_passwords_are_counted_per_account_from_any_address() {
     // The console's limit is 2 here, so an account slows after two wrong passwords in a window
     // and refuses everything after twenty; the slowdown is switched off so the test doesn't wait.

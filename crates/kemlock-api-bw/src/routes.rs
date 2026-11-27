@@ -34,6 +34,10 @@ pub const CLAIMED_SERVER_VERSION: &str = "2026.6.0";
 
 /// JSON bodies up to 64 MiB: an import of a large vault is one body.
 const JSON_BODY_LIMIT: usize = 64 * 1024 * 1024;
+/// The most a request with no sign-in may send: a password sign-in, a registration (whose keys are
+/// a few KiB) and the like. The server buffers a body before it can know who sent it, so these
+/// routes take no more than this, where the signed-in ones take up to the JSON limit above.
+pub(crate) const UNAUTHENTICATED_BODY_LIMIT: usize = 32 * 1024;
 /// An attachment upload is up to Vaultwarden's 525 MB, plus the multipart framing.
 const UPLOAD_BODY_LIMIT: usize = 551 * 1024 * 1024;
 
@@ -716,20 +720,31 @@ pub fn router<S: BwStore>(app: App<S>) -> Router {
     }
     Router::new()
         // identity
-        .route("/identity/accounts/prelogin", post(prelogin::<S>))
-        .route("/identity/accounts/prelogin/password", post(prelogin::<S>))
-        .route("/identity/connect/token", post(connect_token::<S>))
+        .route(
+            "/identity/accounts/prelogin",
+            post(prelogin::<S>).layer(DefaultBodyLimit::max(UNAUTHENTICATED_BODY_LIMIT)),
+        )
+        .route(
+            "/identity/accounts/prelogin/password",
+            post(prelogin::<S>).layer(DefaultBodyLimit::max(UNAUTHENTICATED_BODY_LIMIT)),
+        )
+        .route(
+            "/identity/connect/token",
+            post(connect_token::<S>).layer(DefaultBodyLimit::max(UNAUTHENTICATED_BODY_LIMIT)),
+        )
         .route(
             "/identity/accounts/register/send-verification-email",
-            post(register_send_verification::<S>),
+            post(register_send_verification::<S>)
+                .layer(DefaultBodyLimit::max(UNAUTHENTICATED_BODY_LIMIT)),
         )
         .route(
             "/identity/accounts/register/verification-email-clicked",
-            post(register_verification_clicked::<S>),
+            post(register_verification_clicked::<S>)
+                .layer(DefaultBodyLimit::max(UNAUTHENTICATED_BODY_LIMIT)),
         )
         .route(
             "/identity/accounts/register/finish",
-            post(register_finish::<S>),
+            post(register_finish::<S>).layer(DefaultBodyLimit::max(UNAUTHENTICATED_BODY_LIMIT)),
         )
         // account and meta
         .route("/api/config", get(config::<S>))
@@ -750,7 +765,7 @@ pub fn router<S: BwStore>(app: App<S>) -> Router {
         .route("/api/devices/knowndevice", get(known_device::<S>))
         .route(
             "/api/two-factor/send-email-login",
-            post(send_email_login::<S>),
+            post(send_email_login::<S>).layer(DefaultBodyLimit::max(UNAUTHENTICATED_BODY_LIMIT)),
         )
         // sync
         .route("/api/sync", get(sync::<S>))

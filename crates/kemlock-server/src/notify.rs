@@ -102,7 +102,14 @@ impl HubAuth for BwHubAuth {
                 return None;
             }
             let account = UserRepo::by_id(&self.store, user).await.ok()??;
-            (account.security_stamp.to_string() == claims.sstamp).then_some(HubIdentity {
+            // A password change moves the stamp, and a disabled account has no session.
+            if account.security_stamp.to_string() != claims.sstamp {
+                return None;
+            }
+            if UserRepo::account_disabled(&self.store, user).await.ok()? {
+                return None;
+            }
+            Some(HubIdentity {
                 user,
                 device: Some(device),
             })
