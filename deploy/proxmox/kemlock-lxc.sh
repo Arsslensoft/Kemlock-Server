@@ -167,6 +167,13 @@ if [ -n "$UPDATE" ]; then
 fi
 
 resolve_version
+# The systemd unit at the release's own tag (not the moving main branch): it is what that release
+# ships. Fetched before anything is created, so a tag that has none stops here, not after the
+# container exists.
+unit="$(mktemp)"
+trap 'rm -f "$unit"' EXIT
+curl -fsSL "https://raw.githubusercontent.com/${REPO}/${VERSION}/deploy/systemd/kemlock.service" -o "$unit" \
+  || die "deploy/systemd/kemlock.service does not exist at tag $VERSION of $REPO; pick a release that has it with --version"
 [ -n "$CTID" ] || CTID="$(pvesh get /cluster/nextid)"
 if [ -z "$STORAGE" ]; then
   STORAGE="$(pvesm status -content rootdir | awk 'NR>1 {print $1; exit}')"
@@ -211,11 +218,8 @@ pct exec "$CTID" -- bash -c '
   mkdir -p /etc/kemlock
   chmod 0755 /etc/kemlock
 '
-unit="$(mktemp)"
 env_file="$(mktemp)"
 trap 'rm -f "$unit" "$env_file"' EXIT
-# The unit file at the release's own tag (not the moving main branch): it is what that release ships.
-curl -fsSL "https://raw.githubusercontent.com/${REPO}/${VERSION}/deploy/systemd/kemlock.service" -o "$unit"
 {
   echo "# Kemlock Server settings: Vaultwarden's names, such as DOMAIN, plus KEMLOCK_*."
   if [ -n "$DOMAIN" ]; then echo "DOMAIN=$DOMAIN"; else echo "#DOMAIN=https://vault.example.com"; fi
