@@ -1120,7 +1120,7 @@ fn doc_passkey_registration_options() {}
     responses(
         (status = 201, description = "The passkey is registered", body = PasskeyDto),
         (status = 400, description = "The answer wasn't accepted, no registration is in progress, the PRF copy doesn't fit, or a second step is on and the fresh `proof` (a mailed code, a current code of the authenticator app, the recovery code, or `{\"webauthn\": ...}`) is missing or wrong", body = ProblemDoc, content_type = "application/problem+json"),
-        (status = 409, description = "The credential is registered already", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 409, description = "The credential is registered already, or `key-version-stale`: the PRF copy is for another key version than the account's (`currentKeyVersion`)", body = ProblemDoc, content_type = "application/problem+json"),
     )
 )]
 #[allow(dead_code)]
@@ -1158,7 +1158,8 @@ fn doc_passkey_delete() {}
     request_body = PrfBody,
     responses(
         (status = 204, description = "Stored"),
-        (status = 400, description = "Not 92 bytes, or for another key version than the account's", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 400, description = "Not 92 bytes", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 409, description = "`key-version-stale`: the wrap is for another key version than the account's (`currentKeyVersion`)", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 404, description = "No such passkey on this account", body = ProblemDoc, content_type = "application/problem+json"),
     )
 )]

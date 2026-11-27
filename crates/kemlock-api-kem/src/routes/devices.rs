@@ -707,7 +707,10 @@ fn doc_approval_answer() {}
     put, path = "/kem/v1/devices/key-copy", tag = "trusted-device",
     security(("dpop" = [])),
     request_body = KeyCopyRequest,
-    responses((status = 200, description = "Stored", body = KeyCopyResponse))
+    responses(
+        (status = 200, description = "Stored", body = KeyCopyResponse),
+        (status = 409, description = "`key-version-stale`: the wrap is for another key version than the account's (`currentKeyVersion`)", body = ProblemDoc, content_type = "application/problem+json"),
+    )
 )]
 #[allow(dead_code)]
 fn doc_key_copy_put() {}

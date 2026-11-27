@@ -928,6 +928,7 @@ where
     request_body = CreateSendRequest,
     responses(
         (status = 201, description = "Made; a file Send is closed until its bytes arrive", body = SendDto),
+        (status = 409, description = "`key-version-stale`: the sealed key (create) or `keyVersion` (edit) is for another key version than the account's (`currentKeyVersion`)", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 403, description = "A policy of one of the owner's spaces forbids it", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 413, description = "The file is larger than the server allows (`maxSize`)", body = ProblemDoc, content_type = "application/problem+json"),
     )
@@ -962,6 +963,7 @@ fn doc_get() {}
     request_body = UpdateSendRequest,
     responses(
         (status = 200, description = "Changed", body = SendDto),
+        (status = 409, description = "`key-version-stale`: the sealed key (create) or `keyVersion` (edit) is for another key version than the account's (`currentKeyVersion`)", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 403, description = "A policy of one of the owner's spaces forbids it", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 404, description = "No such Send of this account", body = ProblemDoc, content_type = "application/problem+json"),
     )

@@ -256,7 +256,7 @@ where
         (status = 400, description = "The box isn't unpadded base64url, or isn't a 1693-byte sealed root key starting with u8(1)"),
         (status = 403, description = "The caller isn't a confirmed member, or {user} isn't the caller"),
         (status = 404, description = "No such space, or the caller isn't an invited or confirmed member"),
-        (status = 409, description = "recovery-not-enabled: the chain's accountRecovery policy is off; stale-recovery-key: keySeq isn't the record that set the chain's current recovery key (the problem carries `current`)"),
+        (status = 409, description = "recovery-not-enabled: the chain's accountRecovery policy is off; stale-recovery-key: keySeq isn't the record that set the chain's current recovery key (the problem carries `current`); key-version-stale: the box is for another key version than the account's (`currentKeyVersion`)"),
     )
 )]
 #[allow(dead_code)]

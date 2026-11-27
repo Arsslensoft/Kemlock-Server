@@ -422,7 +422,10 @@ fn doc_accept() {}
     security(("dpop" = [])),
     params(("id" = String, Path, description = "The grant id")),
     request_body = EmergencyConfirmRequest,
-    responses((status = 200, description = "Confirmed; the sealed key is stored", body = EmergencyGrantDto))
+    responses(
+        (status = 200, description = "Confirmed; the sealed key is stored", body = EmergencyGrantDto),
+        (status = 409, description = "`key-version-stale`: the wrap is for another key version than the account's (`currentKeyVersion`)", body = ProblemDoc, content_type = "application/problem+json"),
+    )
 )]
 #[allow(dead_code)]
 fn doc_confirm() {}
