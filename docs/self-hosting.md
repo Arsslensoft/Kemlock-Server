@@ -564,6 +564,16 @@ holds keys only.
   and, if you have a PGP key, `KEMLOCK_SECURITY_ENCRYPTION` (an `https:` or `openpgp4fpr:`
   address). The file always also lists where flaws in Kemlock Server itself are reported, and its
   `Expires` is always 180 days ahead.
+- One-time Bitwarden token key replacement. Backup archives made before the Bitwarden token key was
+  left out of them hold the live `rsa_key.pem`. At the first start after that change the server
+  deletes `rsa_key.pem` and `rsa_key.pub.pem` once (recorded in the `bw_token_key_rotated` setting)
+  and the Bitwarden API makes a new pair, so a copy of an old archive signs nothing here. The log
+  says so. What it ends: "remember this device", invitation and verification tokens made before
+  (people's second step is asked once more, and pending organization invitation links must be sent
+  again). Bitwarden refresh tokens are database rows, so apps refresh silently. A key a Vaultwarden
+  move brings later is kept, unless the server has Bitwarden accounts of its own (then the move
+  leaves its key alone); an adopted source key signs tokens for every later account too, so move
+  only from a Vaultwarden whose data nobody else ever held.
 - Upgrades: migrations run forward at start-up. On SQLite the server first copies the database to
   `/data/backups/pre-<version>.sqlite3` and keeps the last three such copies (each is a plaintext
   copy of the whole database, so older ones are deleted). Within a major version migrations only add, so the
@@ -629,8 +639,9 @@ database file, and installs only the sealed secrets (`*.sealed`) and `config.jso
 folder, and a `config/<name>.toml` (put beside an existing configuration file as
 `.from-backup`, never over it); it says what it skipped. Every file it writes is readable by its
 owner only. A backup leaves out the Bitwarden token key (`rsa_key.pem`), which is a plain file, and a
-restore removes the data folder's copy: the server writes a new one at its next start, so Bitwarden
-apps sign in again once their access token runs out and "remember this device" is asked again. It
+restore removes the data folder's copy: the server writes a new one at its next start. Bitwarden
+apps refresh their tokens silently (refresh tokens are database rows); "remember this device",
+invitation and verification tokens end. It
 unpacks at most 16 GiB for one file, 50 times the archive's own size in total
 (between 1 GiB and 4 TiB) and 2 million files.
 

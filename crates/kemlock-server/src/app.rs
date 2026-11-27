@@ -201,6 +201,16 @@ where
             "couldn't seal the stored secrets to their accounts; the old form stays readable"
         ),
     }
+    // Archives made before the Bitwarden token key was left out of them hold the live key. Once, at
+    // the first start after that change, the key is replaced (the Bitwarden API makes a new one
+    // below), so a copy of an old archive signs nothing on this server.
+    match keys::rotate_token_key_once(&store, &config.data_folder).await {
+        Ok(true) => tracing::warn!(
+            "the Bitwarden token key was replaced once: \n             \"remember this device\", invitation and verification tokens made before end, \n             second steps are asked once more, and pending invitation links must be sent again"
+        ),
+        Ok(false) => {}
+        Err(e) => tracing::warn!(error = %e, "couldn't replace the Bitwarden token key"),
+    }
     // SSO settings from `SSO_*` fill an empty table; a bad value turns SSO off and says why.
     match sso::seed_from_env(&store, &crypto, &|name| std::env::var(name).ok()).await {
         Ok(true) => tracing::info!("single sign-on is set up from the SSO_* settings"),
