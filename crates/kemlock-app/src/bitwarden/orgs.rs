@@ -31,6 +31,18 @@ pub trait BwOrgStore: Send + Sync {
         body: &str,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
 
+    /// Writes a policy document and, in the same transaction, whether the space (the scope) requires
+    /// single sign-on in the table the Kemlock API reads (`space_policy_settings`), so the two never
+    /// disagree.
+    fn doc_put_with_require_sso(
+        &self,
+        scope: Uuid,
+        kind: &str,
+        key: &str,
+        body: &str,
+        require_sso: bool,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
     /// Removes the document; whether there was one.
     fn doc_delete(
         &self,

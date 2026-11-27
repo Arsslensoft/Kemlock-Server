@@ -11,7 +11,7 @@ use kemlock_domain::policies::{PoliciesBySpace, SpacePolicies};
 use kemlock_domain::spaces::{MemberState, SpaceRole};
 use kemlock_domain::{SpaceId, UserId};
 use sea_orm::sea_query::OnConflict;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -120,6 +120,17 @@ impl SqlStore {
         space: SpaceId,
         on: bool,
     ) -> Result<(), StoreError> {
+        upsert_require_sso_in(self.writer(), space, on).await
+    }
+}
+
+/// [`SqlStore::upsert_require_sso`] on a connection or a transaction the caller holds.
+pub(crate) async fn upsert_require_sso_in<C: ConnectionTrait>(
+    db: &C,
+    space: SpaceId,
+    on: bool,
+) -> Result<(), StoreError> {
+    {
         let fresh = SpacePolicies {
             require_sso: on,
             ..SpacePolicies::default()
@@ -130,7 +141,7 @@ impl SqlStore {
             .to_owned();
         match policies::Entity::insert(row)
             .on_conflict(conflict)
-            .exec(self.writer())
+            .exec(db)
             .await
         {
             // MySQL counts a replaced row with identical values as zero rows affected.

@@ -16,6 +16,7 @@ use crate::dates::format_date;
 use crate::env::random_uuid;
 use crate::error::{BwError, BwResult};
 use crate::events::kind;
+use kemlock_app::bitwarden::BwOrgStore;
 use kemlock_app::ports::TwoFactorRepo;
 use kemlock_app::spaces::{SpaceChanges, SpaceRepo};
 use kemlock_app::sso::SsoSettingsRepo;
@@ -650,11 +651,22 @@ pub(crate) async fn put_policy<S: BwStore>(
     };
     // Whether Require SSO is on lives in `space_policy_settings`, the one place the Kemlock API and
     // the sign-in checks read it; the document only keeps what Bitwarden shows of it.
+    // The table and the document are written in one transaction.
     if ptype == REQUIRE_SSO {
-        SpaceRepo::set_require_sso(&app.store, org.id, data.enabled).await?;
+        let text = serde_json::to_string(&policy).map_err(|e| BwError::Server(e.to_string()))?;
+        app.store
+            .doc_put_with_require_sso(
+                org.id.0,
+                KIND_POLICY,
+                &ptype.to_string(),
+                &text,
+                data.enabled,
+            )
+            .await?;
+    } else {
+        app.put_doc(org.id.0, KIND_POLICY, &ptype.to_string(), &policy)
+            .await?;
     }
-    app.put_doc(org.id.0, KIND_POLICY, &ptype.to_string(), &policy)
-        .await?;
     app.sync_members(org).await?;
     ctx.log(app, kind::POLICY_UPDATED, &policy.id).await;
     Ok(policy_json(&org.id.to_string(), ptype, &policy))
