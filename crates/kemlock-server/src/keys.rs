@@ -231,6 +231,43 @@ pub fn load_signing_key(data: &Path, seal: &ServerSeal) -> Result<SigningKey, Ke
     Ok(SigningKey::from_seed(&seed))
 }
 
+/// The `settings` key that says the Bitwarden token key was replaced once (or never needed to be).
+pub const TOKEN_KEY_ROTATED: &str = "bw_token_key_rotated";
+
+/// Replaces the Bitwarden API's token key once, at the first start after backups stopped carrying
+/// it: archives made before hold the live `rsa_key.pem`, whose bytes sign "remember this device",
+/// invitation and verification tokens. Deletes `rsa_key.pem` and `rsa_key.pub.pem` (the API makes a
+/// new pair when it starts) and records [`TOKEN_KEY_ROTATED`], so it never happens twice (a key a
+/// later move from Vaultwarden brings is kept). `Ok(true)` when a key was removed.
+pub async fn rotate_token_key_once(
+    store: &kemlock_store_sql::SqlStore,
+    data_folder: &Path,
+) -> Result<bool, String> {
+    use kemlock_app::admin::SettingsRepo;
+    let done = store
+        .settings_with_prefix(TOKEN_KEY_ROTATED)
+        .await
+        .map_err(|e| e.to_string())?
+        .iter()
+        .any(|(key, _)| key == TOKEN_KEY_ROTATED);
+    if done {
+        return Ok(false);
+    }
+    let mut removed = false;
+    for name in ["rsa_key.pem", "rsa_key.pub.pem"] {
+        match std::fs::remove_file(data_folder.join(name)) {
+            Ok(()) => removed = true,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("can't remove {name}: {e}")),
+        }
+    }
+    store
+        .put_setting(TOKEN_KEY_ROTATED, "1")
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(removed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,5 +444,31 @@ mod tests {
         let key = load_signing_key(&dir.0, &seal).expect("made");
         let key_again = load_signing_key(&dir.0, &seal).expect("reloaded");
         assert_eq!(key.public_key(), key_again.public_key());
+    }
+
+    #[tokio::test]
+    async fn the_token_key_is_replaced_once_and_a_carried_one_is_kept() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let store = kemlock_store_sql::SqlStore::connect("sqlite::memory:")
+            .await
+            .expect("a store");
+        std::fs::write(dir.path().join("rsa_key.pem"), b"old").expect("a key");
+        std::fs::write(dir.path().join("rsa_key.pub.pem"), b"old pub").expect("a key");
+
+        assert_eq!(rotate_token_key_once(&store, dir.path()).await, Ok(true));
+        assert!(!dir.path().join("rsa_key.pem").exists());
+        assert!(!dir.path().join("rsa_key.pub.pem").exists());
+
+        // A key made after that is the server's own: a second start leaves it.
+        std::fs::write(dir.path().join("rsa_key.pem"), b"new").expect("a key");
+        assert_eq!(rotate_token_key_once(&store, dir.path()).await, Ok(false));
+        assert!(dir.path().join("rsa_key.pem").exists());
+
+        // A fresh install has no key to remove and still records it.
+        let fresh = tempfile::tempdir().expect("a temp dir");
+        let other = kemlock_store_sql::SqlStore::connect("sqlite::memory:")
+            .await
+            .expect("a store");
+        assert_eq!(rotate_token_key_once(&other, fresh.path()).await, Ok(false));
     }
 }

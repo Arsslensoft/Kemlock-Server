@@ -175,8 +175,9 @@ pub fn pre_migration_path(database_file: &Path) -> std::path::PathBuf {
 }
 
 /// How many pre-migration copies are always kept, newest first, whatever their age: the one just
-/// made and the one before it, so a rollback of the last two upgrades is possible.
-const KEEP_PRE_MIGRATION_COPIES: usize = 2;
+/// made and the ones of the upgrades before it, so a rollback of the last three upgrades is
+/// possible.
+pub const KEEP_PRE_MIGRATION_COPIES: usize = 3;
 /// How long a copy beyond those, or a database a rollback moved aside, is kept.
 const OLD_COPY_MAX_AGE: StdDuration = StdDuration::from_secs(30 * 24 * 60 * 60);
 
@@ -338,13 +339,14 @@ mod tests {
     }
 
     #[test]
-    fn old_copies_go_and_the_newest_two_and_the_recent_stay() {
+    fn old_copies_go_and_the_newest_three_and_the_recent_stay() {
         let folder = tempfile::tempdir().expect("a folder");
         let at = |name: &str| folder.path().join(name);
         touch_old(&at("pre-1.0.sqlite3"), 200);
         touch_old(&at("pre-1.1.sqlite3"), 120);
         touch_old(&at("pre-1.2.sqlite3"), 90);
         touch_old(&at("pre-1.3.sqlite3"), 60);
+        touch_old(&at("pre-1.4.sqlite3"), 50);
         // A rollback moved a database aside long ago, with its journal; another only last week.
         touch_old(&at("replaced-1.sqlite3"), 45);
         touch_old(&at("replaced-1.sqlite3-wal"), 45);
@@ -353,7 +355,7 @@ mod tests {
 
         let removed = prune_old_copies(folder.path(), std::time::SystemTime::now());
 
-        // The two newest copies stay even though they are old; the two before them are over 30
+        // The three newest copies stay even though they are old; the two before them are over 30
         // days old and go. The old replaced database goes with its journal; the recent one stays.
         assert_eq!(removed, 4);
         for gone in [
@@ -367,6 +369,7 @@ mod tests {
         for kept in [
             "pre-1.2.sqlite3",
             "pre-1.3.sqlite3",
+            "pre-1.4.sqlite3",
             "replaced-2.sqlite3",
             "keep-me.txt",
         ] {
@@ -380,5 +383,47 @@ mod tests {
             prune_old_copies(Path::new("no-such-folder-for-prune"), std::time::SystemTime::now()),
             0
         );
+    }
+
+    #[test]
+    fn only_the_newest_three_old_copies_are_kept_and_nothing_else_is_touched() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let now = std::time::SystemTime::now();
+        // All older than the 30 days a copy beyond the newest three is kept for.
+        for (age_days, name) in [
+            (45, "pre-0.1.1.sqlite3"),
+            (44, "pre-0.1.2.sqlite3"),
+            (43, "pre-0.1.3.sqlite3"),
+            (42, "pre-0.1.4.sqlite3"),
+            (41, "pre-0.1.5.sqlite3"),
+        ] {
+            let path = dir.path().join(name);
+            let file = std::fs::File::create(&path).expect("a copy");
+            file.set_modified(now - std::time::Duration::from_secs(age_days * 86_400))
+                .expect("an age");
+        }
+        std::fs::write(dir.path().join("kemlock-premigration-0.1.4.tar.zst.age"), b"x").expect("an archive");
+        std::fs::write(dir.path().join("notes.txt"), b"x").expect("a file");
+
+        assert_eq!(prune_old_copies(dir.path(), now), 2);
+
+        let mut left: Vec<String> = std::fs::read_dir(dir.path())
+            .expect("a folder")
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            [
+                "kemlock-premigration-0.1.4.tar.zst.age",
+                "notes.txt",
+                "pre-0.1.3.sqlite3",
+                "pre-0.1.4.sqlite3",
+                "pre-0.1.5.sqlite3",
+            ]
+        );
+        // Nothing more to remove now: the three that are left are the ones always kept.
+        assert_eq!(prune_old_copies(dir.path(), now), 0);
     }
 }

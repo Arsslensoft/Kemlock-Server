@@ -149,6 +149,9 @@ pub(super) struct Ctx {
     pub(super) spaces: BTreeSet<Uuid>,
     /// What the pass left alone because the import doesn't own it: ids by kind.
     pub(super) refused: BTreeMap<&'static str, BTreeSet<String>>,
+    /// The token key to write into the data folder once the transaction has committed (see
+    /// `files::put_rsa_key`).
+    pub(super) rsa_key: Option<MappedRsaKey>,
 }
 
 /// The store side of a move, over one transaction. See the module docs.
@@ -183,6 +186,7 @@ impl SqlImportSink {
                 users: BTreeSet::new(),
                 spaces: BTreeSet::new(),
                 refused: BTreeMap::new(),
+                rsa_key: None,
             }),
         })
     }
@@ -278,6 +282,10 @@ impl ImportSink for SqlImportSink {
         vault::bump_revisions(&ctx).await?;
         scope::refresh_marks(&ctx).await?;
         ctx.txn.commit().await.store()?;
+        // Only now: a pass that failed or rolled back leaves the server's token key as it was.
+        if let Some(key) = &ctx.rsa_key {
+            files::write_rsa_key(&ctx.opts.files_root, key)?;
+        }
         Ok(())
     }
 }

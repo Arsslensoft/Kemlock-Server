@@ -7,7 +7,7 @@ use crate::ports::StoreError;
 use crate::sso::error::SsoError;
 use crate::sso::model::{
     AuthorizationRequest, ClientConfig, CodeExchange, GroupAssignment, IdentityClaims,
-    LogoutClaims, SpaceRole, SsoIdentity, SsoSettings, VerifiedDomain,
+    LogoutClaims, SpaceRole, SsoIdentity, SsoSession, SsoSettings, VerifiedDomain,
 };
 use kemlock_domain::{SpaceId, UserId};
 use std::future::Future;
@@ -48,6 +48,21 @@ pub trait SsoIdentityRepo: Send + Sync {
         email: &str,
         at: OffsetDateTime,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
+    /// Remembers that `device` of `user` was signed in by this identity, and the provider's
+    /// session id (`sid`) when the ID token carried one: what a back-channel logout ends. One row
+    /// per device; a later sign-in of the same device replaces it.
+    fn record_sso_session(
+        &self,
+        session: &SsoSession,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+    /// The sessions a logout token names: those of `issuer` with this subject, this session id, or
+    /// both (when both are given, both must match).
+    fn sso_sessions(
+        &self,
+        issuer: &str,
+        subject: Option<&str>,
+        session_id: Option<&str>,
+    ) -> impl Future<Output = Result<Vec<SsoSession>, StoreError>> + Send;
 }
 
 /// The domains an admin claims, proven or pending (`verified_domains`).

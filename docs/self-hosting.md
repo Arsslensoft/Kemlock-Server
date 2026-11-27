@@ -119,20 +119,33 @@ are open to people you don't know, or limited to a domain.
 
 ### Single sign-on and linking by email (`SSO_*`)
 
-`SSO_SIGNUPS_MATCH_EMAIL` (default `true`, as in Vaultwarden) lets a person's first sign-in with the
-provider link to the account that already has the email the provider vouches for. That is the risk
-to weigh: whoever controls an address at the provider (an open sign-up, an alias, a mail domain the
+`SSO_SIGNUPS_MATCH_EMAIL` (default `false` for a new install; Vaultwarden's default is `true`) lets a
+person's first sign-in with the provider link to the account that already has the email the provider
+vouches for. A new install also asks for a proven domain (`KEMLOCK_SSO_REQUIRE_VERIFIED_DOMAIN`, default
+`true`; the console's "Only accept people whose email domain is verified here"). A server whose settings
+are stored already keeps the values it has. That is the risk to weigh: whoever controls an address at the provider (an open sign-up, an alias, a mail domain the
 provider doesn't check) gets the Kemlock account of that address. Kemlock narrows it:
 
 - the provider's `email_verified` must be true (`SSO_ALLOW_UNKNOWN_EMAIL_VERIFICATION` accepts a
   token with no such claim only where the domain is proven by DNS in the console);
 - an account whose email was never confirmed (see `SIGNUPS_VERIFY`) is never linked;
-- a link made to an account that has a second step is recorded as unconfirmed, and the account's
-  own second step is asked at every sign-in with it, whatever the provider's `amr` says (abandoning
-  the first challenge and signing in again doesn't help). The `amr` skip ("Via SSO") applies only
-  to identities of accounts SSO made, links made while the account had no second step, and
-  identities linked before this rule; An administrator's account counts as an admin only with a second step turned on, so
-  linking to one by email asks for it before any token is issued.
+- an account that has a second step is not linked at all: its own second step is asked at every
+  sign-in the provider makes by email, whatever the provider's `amr` says, and nothing is stored
+  that an abandoned challenge could leave behind. The `amr` skip ("Via SSO") applies only to
+  identities of accounts SSO made and links made while the account had no second step. Links of
+  accounts with a second step that were stored before this rule are unconfirmed from the update on,
+  so their second step is asked at each sign-in too. An administrator's account counts as an admin
+  only with a second step turned on, so linking to one by email asks for it before any token is
+  issued;
+- a back-channel logout ends only the devices that identity (or that provider session, `sid`)
+  signed in (a device that passed the account's second step after SSO included), never the
+  account's other devices. Devices SSO signed in before the update have no record and are not ended
+  by a logout. Signing a device in some other way takes its record away.
+
+To restore the old defaults of a server whose settings you want to behave like before this change
+(link by email on, no proven domain needed), set `SSO_SIGNUPS_MATCH_EMAIL=true` and
+`KEMLOCK_SSO_REQUIRE_VERIFIED_DOMAIN=false` for a new install, or tick the same two settings in the
+console (a stored setting is never changed by an update).
 
 Safer settings: set `SSO_SIGNUPS_MATCH_EMAIL=false` and let SSO make its own accounts (an existing
 account then stays out of SSO and the sign-in answers `sso-linking-off`); or keep it on, require a
@@ -345,9 +358,13 @@ accounts or spaces that aren't its own. Running a move again over its own earlie
 before, but never over what this server has changed since: an account whose record, vault or
 password was changed here after the import wrote it, a space that was renamed or whose members
 changed, and an item revised here after the source's date are left as they are, with everything
-that hangs off them. `--adopt-existing` overrides that too. Imported `config.json` settings become the console's own settings (Settings screen; an
-environment variable still wins) when the console has a setting of that name and accepts the
-value; the others, and every secret, are not carried and are listed in the result.
+that hangs off them. `--adopt-existing` overrides that too. Imported `config.json` settings become the
+console's own settings (Settings screen; an environment variable still wins), but only these: `signups_allowed`,
+`signups_verify`, `signups_domains_whitelist`, `invitations_allowed` and the `smtp_host`, `smtp_port`,
+`smtp_security`, `smtp_username`, `smtp_from` and `smtp_from_name` of the SMTP settings, and only when the console
+accepts the value. The source is not trusted to set anything else: Kemlock's own security, backup, push and
+federation settings, and every secret, are not carried. The dry-run plan lists each value that would be written
+and the move's entries in the admin event log (`admin.migration.setting`) name each one that was.
 
 What was left alone is listed in the move's result and in the admin event log
 (`admin.migration.done`, `admin.migration.failed` for the console and `admin.migration.cli` for
@@ -567,16 +584,12 @@ holds keys only.
   migrations and file storage. The image's `HEALTHCHECK` runs `kemlock-server healthcheck`, because
   the image has no shell or curl.
 - Logs: text, or `KEMLOCK_LOG_FORMAT=json`.
-- Direct uploads to a bucket. With `KEMLOCK_ATTACHMENT_PRESIGN=true` (off by default; Kemlock API
-  only, bucket storage only) clients `PUT` files straight to the bucket through a pre-signed URL
-  that lives `KEMLOCK_ATTACHMENT_PRESIGN_TTL` seconds (default 300). A signed URL can't fix the
-  length of what is sent, so the URL names `staging/<blob id>`, not the file's own name. When the
-  client finishes the upload the server checks the object there (it must be the size announced
-  and a `KMA1` file), writes it again under the file's own name and deletes the staging object; a
-  `PUT` to the URL after that only makes a new staging object that nothing reads. Set a lifecycle
-  rule on the bucket that expires `staging/` after a day, so such objects, and the ones of
-  uploads that never finish, don't pile up (the orphan purge also deletes the staging object of
-  an upload nobody finished).
+- Direct uploads to a bucket are off. `KEMLOCK_ATTACHMENT_PRESIGN` and
+  `KEMLOCK_ATTACHMENT_PRESIGN_TTL` are still accepted but ignored (one warning at start when it is
+  `true`), and every file goes through the server, which holds the size announced and the quota: a
+  pre-signed `PUT` can't be bound to that length. A POST policy with `content-length-range` could
+  bring direct uploads back (future work). Objects an earlier version left under `staging/` are
+  deleted by the orphan purge once they are older than the orphan grace period.
 - File permissions. On Unix a data folder the server creates is `0700`, and the SQLite database
   (with its `-wal` and `-shm` files and the copy made before a migration) and `server.key` are
   `0600`. A data folder that already exists keeps its mode, and the server warns at start-up when
@@ -588,8 +601,19 @@ holds keys only.
   and, if you have a PGP key, `KEMLOCK_SECURITY_ENCRYPTION` (an `https:` or `openpgp4fpr:`
   address). The file always also lists where flaws in Kemlock Server itself are reported, and its
   `Expires` is always 180 days ahead.
+- One-time Bitwarden token key replacement. Backup archives made before the Bitwarden token key was
+  left out of them hold the live `rsa_key.pem`. At the first start after that change the server
+  deletes `rsa_key.pem` and `rsa_key.pub.pem` once (recorded in the `bw_token_key_rotated` setting)
+  and the Bitwarden API makes a new pair, so a copy of an old archive signs nothing here. The log
+  says so. What it ends: "remember this device", invitation and verification tokens made before
+  (people's second step is asked once more, and pending organization invitation links must be sent
+  again). Bitwarden refresh tokens are database rows, so apps refresh silently. A key a Vaultwarden
+  move brings later is kept, unless the server has Bitwarden accounts of its own (then the move
+  leaves its key alone); an adopted source key signs tokens for every later account too, so move
+  only from a Vaultwarden whose data nobody else ever held.
 - Upgrades: migrations run forward at start-up. On SQLite the server first copies the database to
-  `/data/backups/pre-<version>.sqlite3`. Within a major version migrations only add, so the
+  `/data/backups/pre-<version>.sqlite3` and keeps the last three such copies (each is a plaintext
+  copy of the whole database, so older ones are deleted). Within a major version migrations only add, so the
   previous release still runs on the new schema.
 - Several replicas need PostgreSQL or MySQL, S3-compatible storage and one shared server key.
 
@@ -648,10 +672,14 @@ made yourself before archives carried a code, check it with the drill and restor
 archive. A server with no `server.key` at hand writes archives with no code and logs a warning.
 
 A restore also limits what an archive can do. It refuses an archive that names `server.key` or a
-database file, and installs only the sealed secrets (`*.sealed`), `rsa_key.pem` and `config.json`
-from the data folder, and a `config/<name>.toml` (put beside an existing configuration file as
+database file, and installs only the sealed secrets (`*.sealed`) and `config.json` from the data
+folder, and a `config/<name>.toml` (put beside an existing configuration file as
 `.from-backup`, never over it); it says what it skipped. Every file it writes is readable by its
-owner only. It unpacks at most 16 GiB for one file, 50 times the archive's own size in total
+owner only. A backup leaves out the Bitwarden token key (`rsa_key.pem`), which is a plain file, and a
+restore removes the data folder's copy: the server writes a new one at its next start. Bitwarden
+apps refresh their tokens silently (refresh tokens are database rows); "remember this device",
+invitation and verification tokens end. It
+unpacks at most 16 GiB for one file, 50 times the archive's own size in total
 (between 1 GiB and 4 TiB) and 2 million files.
 
 The manifest, and with it the authentication code, is the last entry of an archive, so a restore

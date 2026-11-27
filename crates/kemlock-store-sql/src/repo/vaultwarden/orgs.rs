@@ -544,11 +544,19 @@ pub(super) async fn put_events(ctx: &Ctx, table: &Table) -> Res<()> {
 
 /// `config.json` settings, under the key the settings code reads them from (`setting.<name>`): a
 /// string as it is, anything else as JSON text, checked as the console checks a value it is given.
-/// Only the names of the admin settings registry are kept, and never a secret (those are sealed
+/// Only the names the move carries ([`kemlock_vaultwarden::settings::CARRIED_SETTINGS`]) that are
+/// also in the admin settings registry are kept, and never a secret (those are sealed
 /// elsewhere): a `config.json` can't make this write any other row of `settings`, which also
 /// holds the move's own status and the server's markers. A value the console would refuse is left
 /// out.
 pub(super) async fn put_settings(ctx: &mut Ctx, mapped: &MappedSettings) -> Res<()> {
+    let prefix = kemlock_app::admin::settings::KEY_PREFIX;
+    let password_key = format!("{prefix}smtp_password");
+    let mut password_stored = settings::Entity::find_by_id(password_key.clone())
+        .one(&ctx.txn)
+        .await
+        .store()?
+        .is_some();
     for (name, value) in &mapped.values {
         let text = match value {
             Value::String(s) => s.clone(),
@@ -558,6 +566,31 @@ pub(super) async fn put_settings(ctx: &mut Ctx, mapped: &MappedSettings) -> Res<
             ctx.refuse("setting", name);
             continue;
         };
+        // The stored SMTP password belongs to the host it was made for, as in the console: a source
+        // that names another host takes the password with it, never to the new host.
+        if name == "smtp_host" && password_stored {
+            let old = settings::Entity::find_by_id(format!("{prefix}smtp_host"))
+                .one(&ctx.txn)
+                .await
+                .store()?
+                .map(|row| row.value.trim().to_ascii_lowercase())
+                .unwrap_or_default();
+            if stored.trim().to_ascii_lowercase() != old {
+                settings::Entity::delete_by_id(password_key.clone())
+                    .exec(&ctx.txn)
+                    .await
+                    .store()?;
+                password_stored = false;
+                tracing::warn!(
+                    "the move named another SMTP host: the stored SMTP password was cleared"
+                );
+            }
+        }
+        // A source can't turn off the encryption of the connection the stored password goes over.
+        if name == "smtp_security" && stored == "off" && password_stored {
+            ctx.refuse("setting", name);
+            continue;
+        }
         let key = format!("{}{name}", kemlock_app::admin::settings::KEY_PREFIX);
         settings::Entity::delete_by_id(key.clone())
             .exec(&ctx.txn)
@@ -581,9 +614,12 @@ fn is_registered(name: &str) -> bool {
         .is_some_and(|d| d.kind != kemlock_app::admin::settings::Kind::Secret)
 }
 
-/// What the settings code stores for `name` set to `text`; `None` for a name it doesn't have, a
-/// secret, or a value it would refuse.
+/// What the settings code stores for `name` set to `text`; `None` for a name a move doesn't carry,
+/// one the settings code doesn't have, a secret, or a value it would refuse.
 fn stored_value(name: &str, text: &str) -> Option<String> {
+    if !kemlock_vaultwarden::settings::CARRIED_SETTINGS.contains(&name) {
+        return None;
+    }
     let definition = kemlock_app::admin::settings::definition(name)?;
     if definition.kind == kemlock_app::admin::settings::Kind::Secret {
         return None;
@@ -609,6 +645,10 @@ mod tests {
         assert_eq!(stored_value("smtp_port", "not a port"), None);
         assert_eq!(stored_value("smtp_password", "hunter2"), None);
         assert_eq!(stored_value("domain", "https://vault.example.org"), None);
+        // A Kemlock-only security setting is not carried, though the console has it.
+        assert_eq!(stored_value("federation_promotion", "auto"), None);
+        assert_eq!(stored_value("bw_invites_auto_accept", "true"), None);
+        assert_eq!(stored_value("backup_recipient", "age1x"), None);
     }
 
     #[test]

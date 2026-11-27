@@ -416,6 +416,45 @@ async fn a_move_leaves_an_existing_account_alone_and_the_event_log_says_what_it_
 }
 
 #[tokio::test]
+async fn each_setting_a_move_carries_is_in_the_event_log_by_name_and_value() {
+    let rig = rig().await;
+    vwfix::create_sample_folder(&rig.vw_folder()).await;
+    let request = rig.request(&rig.vw_path());
+    rig.runner.start(request).await.expect("started");
+    let done = rig.finished().await;
+    assert_eq!(done.state, MigrationState::Done, "{done:?}");
+
+    let events = rig
+        .store
+        .query_events(
+            &EventFilter {
+                action: Some("admin.migration.setting".to_owned()),
+                ..EventFilter::default()
+            },
+            None,
+            10,
+        )
+        .await
+        .expect("events");
+    let mut targets: Vec<&str> = events
+        .events
+        .iter()
+        .filter_map(|e| e.target.as_deref())
+        .collect();
+    targets.sort_unstable();
+    // The sample's config.json carries these two; its `domain` is not a setting a move carries.
+    assert_eq!(targets.len(), 2, "{targets:?}");
+    assert!(
+        targets[0].ends_with("signups_allowed = false"),
+        "{targets:?}"
+    );
+    assert!(
+        targets[1].ends_with("smtp_host = \"mail.example.org\""),
+        "{targets:?}"
+    );
+}
+
+#[tokio::test]
 async fn a_failed_move_is_in_the_event_log_too() {
     let rig = rig().await;
     std::fs::write(rig.vw_folder().join("db.sqlite3"), b"this is not sqlite").expect("a file");

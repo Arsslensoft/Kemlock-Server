@@ -8,7 +8,7 @@ mod common;
 use common::{draft, kind, memory, unique_email, user};
 use kemlock_app::Actor;
 use kemlock_app::b64url;
-use kemlock_app::bitwarden::BwAccountRepo;
+use kemlock_app::bitwarden::{BwAccount, BwAccountRepo};
 use kemlock_app::ports::{Clock, DeviceRepo, ItemStore, TwoFactorRepo, UserRepo};
 use kemlock_app::spaces::{CreateSpace, CreateSpaceInput, NewCollection, SpaceRepo};
 use kemlock_crypto::seal::ServerSeal;
@@ -206,6 +206,100 @@ async fn pass_with(
     apply(mapped, &[], &mut sink)
         .await
         .expect("the pass applies")
+}
+
+/// A pass over `mapped` that writes into `dest`.
+async fn pass_into(store: &SqlStore, mapped: &MappedImport, dest: &std::path::Path) -> ApplyReport {
+    let options = ImportOptions::new(dest, Arc::new(Files::default()), NOW);
+    let mut sink = SqlImportSink::begin(store, ServerSeal::new(&[7u8; 32]), options)
+        .await
+        .expect("a pass opens");
+    apply(mapped, &[], &mut sink)
+        .await
+        .expect("the pass applies")
+}
+
+/// The Bitwarden record of an account of this server.
+fn bw_record(user: UserId) -> BwAccount {
+    BwAccount {
+        user,
+        password_hash: vec![7; 32],
+        salt: vec![8; 64],
+        password_iterations: 600_000,
+        kdf_type: 0,
+        kdf_iterations: 600_000,
+        kdf_memory: None,
+        kdf_parallelism: None,
+        akey: "2.iv|data|mac".to_owned(),
+        private_key: None,
+        public_key: None,
+        password_hint: None,
+        api_key: None,
+        avatar_color: None,
+        revision_ms: 1_000,
+    }
+}
+
+fn token_key() -> kemlock_vaultwarden::mapping::MappedRsaKey {
+    kemlock_vaultwarden::mapping::MappedRsaKey {
+        private_pem: b"the source's key".to_vec(),
+        public_pem: None,
+    }
+}
+
+#[tokio::test]
+async fn the_sources_token_key_is_kept_only_when_the_server_has_no_bitwarden_accounts_of_its_own() {
+    // A server with an account of its own that has a Bitwarden record: its key stays.
+    let store = memory().await;
+    let own = native(&store, "own-bitwarden").await;
+    BwAccountRepo::insert(&store, &bw_record(own))
+        .await
+        .expect("a Bitwarden record");
+    let dest = tempfile::tempdir().expect("a temp dir");
+    let mapped = MappedImport {
+        rsa_key: Some(token_key()),
+        ..Default::default()
+    };
+    let report = pass_into(&store, &mapped, dest.path()).await;
+    assert!(!report.rsa_key);
+    assert_eq!(refused(&report, "rsa_key"), vec!["rsa_key.pem".to_owned()]);
+    assert!(!dest.path().join("rsa_key.pem").exists());
+
+    // A server with only the accounts the move made takes the key, once the pass has committed.
+    let store = memory().await;
+    let dest = tempfile::tempdir().expect("a temp dir");
+    let mapped = MappedImport {
+        accounts: vec![account(UserId::random(), "moved@example.org", "Moved")],
+        rsa_key: Some(token_key()),
+        ..Default::default()
+    };
+    let report = pass_into(&store, &mapped, dest.path()).await;
+    assert!(report.rsa_key, "{:?}", report.refused);
+    assert_eq!(
+        std::fs::read(dest.path().join("rsa_key.pem")).expect("the key"),
+        b"the source's key"
+    );
+}
+
+#[tokio::test]
+async fn a_pass_that_is_never_finished_leaves_the_token_key_alone() {
+    let store = memory().await;
+    let dest = tempfile::tempdir().expect("a temp dir");
+    let options = ImportOptions::new(dest.path(), Arc::new(Files::default()), NOW);
+    let mut sink = SqlImportSink::begin(&store, ServerSeal::new(&[7u8; 32]), options)
+        .await
+        .expect("a pass opens");
+    let mapped = MappedImport {
+        rsa_key: Some(token_key()),
+        ..Default::default()
+    };
+    // `apply` puts the key and then finishes; put it alone and drop the sink, as a failed pass does.
+    use kemlock_vaultwarden::ImportSink;
+    sink.put_rsa_key(mapped.rsa_key.as_ref().expect("a key"))
+        .await
+        .expect("taken");
+    drop(sink);
+    assert!(!dest.path().join("rsa_key.pem").exists());
 }
 
 async fn native(store: &SqlStore, prefix: &str) -> UserId {
@@ -569,6 +663,8 @@ async fn config_json_can_only_set_the_names_of_the_settings_list() {
         ("setting.smtp_host", json!("evil.example.org")),
         ("smtp_password", json!("hunter2")),
         ("domain", json!("https://vault.example.org")),
+        ("federation_promotion", json!("auto")),
+        ("bw_invites_auto_accept", json!(true)),
     ] {
         settings.values.insert(name.to_owned(), value);
     }
@@ -601,6 +697,8 @@ async fn config_json_can_only_set_the_names_of_the_settings_list() {
         "setting.setting.smtp_host",
         "setting.smtp_password",
         "setting.domain",
+        "setting.federation_promotion",
+        "setting.bw_invites_auto_accept",
         "smtp_password",
         "domain",
     ] {
@@ -614,7 +712,7 @@ async fn config_json_can_only_set_the_names_of_the_settings_list() {
             .as_deref(),
         Some("kept")
     );
-    assert_eq!(refused(&report, "setting").len(), 6);
+    assert_eq!(refused(&report, "setting").len(), 8);
 }
 
 #[tokio::test]
@@ -1018,6 +1116,190 @@ async fn an_account_the_api_changed_since_is_not_rolled_back_by_a_rerun() {
         .expect("touched");
     let again = pass(&store, &mapped, false).await;
     assert_eq!(refused(&again, "user-changed"), vec![user.0.to_string()]);
+}
+
+/// A `twofactor` row of a known id.
+fn twofactor_of(id: Uuid, user: UserId) -> Table {
+    Table::from_rows(
+        &schema::TWOFACTOR,
+        vec![vec![
+            text(id),
+            text(user.0),
+            Cell::Int(0),
+            Cell::Int(1),
+            text("JBSWY3DPEHPK3PXP"),
+            Cell::Int(0),
+        ]],
+    )
+}
+
+/// A confirmed owner's membership of a known id.
+fn membership_of(id: Uuid, space: SpaceId, user: UserId) -> Table {
+    Table::from_rows(
+        &schema::USERS_ORGANIZATIONS,
+        vec![vec![
+            text(id),
+            text(user.0),
+            text(space.0),
+            Cell::Null,
+            Cell::Int(0),
+            text("2.key|iv|mac"),
+            Cell::Int(2),
+            Cell::Int(0),
+            Cell::Null,
+            Cell::Null,
+        ]],
+    )
+}
+
+#[tokio::test]
+async fn a_second_pass_drops_two_step_and_membership_rows_only_of_what_it_owns() {
+    let store = memory().await;
+    let user = UserId::random();
+    let space = SpaceId::random();
+    let (factor, member) = (Uuid::new_v4(), Uuid::new_v4());
+    let mut mapped = MappedImport::default();
+    mapped
+        .accounts
+        .push(account(user, &unique_email("dropped"), "Dropped"));
+    mapped.carried = vec![
+        organizations(&[(space, "Family")]),
+        membership_of(member, space, user),
+        twofactor_of(factor, user),
+    ];
+    let first = pass(&store, &mapped, false).await;
+    assert!(first.refused.is_empty(), "{:?}", first.refused);
+    let deletions = [
+        kemlock_vaultwarden::Deletion {
+            table: "twofactor",
+            key: vec![factor.to_string()],
+        },
+        kemlock_vaultwarden::Deletion {
+            table: "users_organizations",
+            key: vec![member.to_string()],
+        },
+    ];
+    let delete = |store: SqlStore, adopt: bool| {
+        let deletions = deletions.clone();
+        async move {
+            let dest = tempfile::tempdir().expect("a temp dir");
+            let mut options = ImportOptions::new(dest.path(), Arc::new(Files::default()), NOW);
+            options.adopt_existing = adopt;
+            let mut sink = SqlImportSink::begin(&store, ServerSeal::new(&[7u8; 32]), options)
+                .await
+                .expect("a pass opens");
+            apply(&MappedImport::default(), &deletions, &mut sink)
+                .await
+                .expect("the pass applies")
+        }
+    };
+
+    // The person changes their account here. A later pass that says the rows are gone leaves
+    // them, and says so.
+    let mut changed = UserRepo::by_id(&store, user)
+        .await
+        .expect("a read")
+        .expect("the account");
+    changed.name = Some("Changed here".to_owned());
+    changed.updated_at = NOW + time::Duration::hours(1);
+    UserRepo::update(&store, &changed).await.expect("updated");
+    let refused_pass = delete(store.clone(), false).await;
+    assert_eq!(refused(&refused_pass, "twofactor"), vec![factor.to_string()]);
+    assert_eq!(
+        refused(&refused_pass, "users_organizations"),
+        vec![member.to_string()]
+    );
+    assert_eq!(
+        TwoFactorRepo::list(&store, user)
+            .await
+            .expect("a read")
+            .len(),
+        1,
+        "the two-step setup stays"
+    );
+    let state = SpaceRepo::load(&store, space)
+        .await
+        .expect("a read")
+        .expect("the space");
+    assert_eq!(state.members.len(), 1, "the member stays");
+
+    // An operator who means it adopts: then the rows go.
+    let adopted = delete(store.clone(), true).await;
+    assert!(adopted.refused.is_empty(), "{:?}", adopted.refused);
+    assert!(
+        TwoFactorRepo::list(&store, user)
+            .await
+            .expect("a read")
+            .is_empty()
+    );
+    let state = SpaceRepo::load(&store, space)
+        .await
+        .expect("a read")
+        .expect("the space");
+    assert!(state.members.is_empty());
+}
+
+#[tokio::test]
+async fn an_imported_smtp_host_takes_the_stored_password_with_it_and_security_stays_on() {
+    use kemlock_app::admin::SettingsRepo;
+    let carry = |pairs: &[(&str, serde_json::Value)]| {
+        let mut settings = MappedSettings::default();
+        for (name, value) in pairs {
+            settings.values.insert((*name).to_owned(), value.clone());
+        }
+        MappedImport {
+            settings,
+            ..Default::default()
+        }
+    };
+    let seed = |store: SqlStore| async move {
+        for (key, value) in [
+            ("setting.smtp_host", "mail.example.org"),
+            ("setting.smtp_security", "starttls"),
+            ("setting.smtp_password", "sealed-password"),
+        ] {
+            store.put_setting(key, value).await.expect("seeded");
+        }
+        store
+    };
+    let value = |store: SqlStore, key: &'static str| async move {
+        SettingsRepo::settings_with_prefix(&store, key)
+            .await
+            .expect("a read")
+            .into_iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v)
+    };
+
+    // The same host (in another case) keeps the password; a different host clears it.
+    let store = seed(memory().await).await;
+    pass(&store, &carry(&[("smtp_host", json!("MAIL.example.org"))]), false).await;
+    assert_eq!(
+        value(store.clone(), "setting.smtp_password").await.as_deref(),
+        Some("sealed-password")
+    );
+    pass(&store, &carry(&[("smtp_host", json!("evil.example.net"))]), false).await;
+    assert_eq!(value(store.clone(), "setting.smtp_password").await, None);
+    assert_eq!(
+        value(store.clone(), "setting.smtp_host").await.as_deref(),
+        Some("evil.example.net")
+    );
+
+    // With a password stored, a source can't turn the connection's encryption off.
+    let store = seed(memory().await).await;
+    let report = pass(&store, &carry(&[("smtp_security", json!("off"))]), false).await;
+    assert_eq!(refused(&report, "setting"), vec!["smtp_security".to_owned()]);
+    assert_eq!(
+        value(store.clone(), "setting.smtp_security").await.as_deref(),
+        Some("starttls")
+    );
+    // Without a stored password it may.
+    let bare = memory().await;
+    pass(&bare, &carry(&[("smtp_security", json!("off"))]), false).await;
+    assert_eq!(
+        value(bare, "setting.smtp_security").await.as_deref(),
+        Some("off")
+    );
 }
 
 #[tokio::test]

@@ -286,6 +286,11 @@ impl RetentionStore for FakePrivacy {
         self.lock().calls.push(("email_log", before));
         Ok(5)
     }
+
+    async fn purge_held_signups(&self, before: OffsetDateTime) -> Result<u64, StoreError> {
+        self.lock().calls.push(("held_signups", before));
+        Ok(2)
+    }
 }
 
 impl ProcessingSource for FakePrivacy {

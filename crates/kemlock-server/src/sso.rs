@@ -7,8 +7,9 @@
 //!
 //! Read: `SSO_ENABLED`, `SSO_AUTHORITY`, `SSO_CLIENT_ID`, `SSO_CLIENT_SECRET`, `SSO_SCOPES`
 //! (space separated, default `email profile`), `SSO_ALLOW_UNKNOWN_EMAIL_VERIFICATION` and
-//! `SSO_SIGNUPS_MATCH_EMAIL` (default true) from Vaultwarden, and `KEMLOCK_SSO_NAME` (the sign-in
-//! button's label) of Kemlock's own. PKCE is always on, so `SSO_PKCE` has nothing to switch.
+//! `SSO_SIGNUPS_MATCH_EMAIL` (default false here, true in Vaultwarden) from Vaultwarden, and
+//! `KEMLOCK_SSO_NAME` (the sign-in button's label) and `KEMLOCK_SSO_REQUIRE_VERIFIED_DOMAIN` (default
+//! true) of Kemlock's own. PKCE is always on, so `SSO_PKCE` has nothing to switch.
 
 use crate::adapters::ServerCrypto;
 use crate::sends::SystemClock;
@@ -128,7 +129,10 @@ pub fn settings_from_env(
     }
     settings.allow_unknown_email_verification =
         flag(env, "SSO_ALLOW_UNKNOWN_EMAIL_VERIFICATION", false)?;
-    settings.link_by_email = flag(env, "SSO_SIGNUPS_MATCH_EMAIL", true)?;
+    // A new install links nobody by email and asks for a proven domain unless told otherwise: a
+    // provider that says an address is its user's would otherwise sign in as that account.
+    settings.link_by_email = flag(env, "SSO_SIGNUPS_MATCH_EMAIL", false)?;
+    settings.require_verified_domain = flag(env, "KEMLOCK_SSO_REQUIRE_VERIFIED_DOMAIN", true)?;
     Ok(Some(EnvSso {
         settings,
         client_secret: text(env, "SSO_CLIENT_SECRET"),
@@ -225,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn the_defaults_match_vaultwardens() {
+    fn a_new_install_links_by_email_only_when_asked_and_wants_a_proven_domain() {
         let s = read(&[
             ("SSO_ENABLED", "1"),
             ("SSO_AUTHORITY", "https://idp.test"),
@@ -236,7 +240,8 @@ mod tests {
         .settings;
         assert_eq!(s.scopes, vec!["email", "profile"]);
         assert!(!s.allow_unknown_email_verification);
-        assert!(s.link_by_email);
+        assert!(!s.link_by_email);
+        assert!(s.require_verified_domain);
         assert!(s.create_accounts);
     }
 

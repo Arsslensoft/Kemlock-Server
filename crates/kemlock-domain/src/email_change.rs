@@ -26,6 +26,9 @@ pub struct EmailChange {
     pub kdf: KdfParams,
     /// The root key wrapped under that master key and the new record's export key.
     pub wrapped_root_key: Vec<u8>,
+    /// The account's key version when the change was asked for, which the wrap was made for. A
+    /// root-key rotation replaces the root key, so a change of another version is never applied.
+    pub key_version: u32,
     pub requested_at: OffsetDateTime,
     pub expires_at: OffsetDateTime,
 }
@@ -64,6 +67,7 @@ mod tests {
             opaque_record: vec![1, 2, 3],
             kdf: KdfParams::new_account([4; 16]),
             wrapped_root_key: vec![5; 92],
+            key_version: 1,
             requested_at: datetime!(2026-11-25 10:00 UTC),
             expires_at,
         }

@@ -268,6 +268,26 @@ pub trait DeviceRepo: Send + Sync {
     /// Deletes the device, its refresh tokens and any key copy it holds.
     fn remove(&self, id: DeviceId) -> impl Future<Output = Result<(), StoreError>> + Send;
 
+    /// Remembers that an SSO sign-in started this device (what a back-channel logout ends). The
+    /// default keeps nothing: a store with no SSO has no logout to serve.
+    fn record_sso_session(
+        &self,
+        session: &crate::sso::SsoSession,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        let _ = session;
+        async { Ok(()) }
+    }
+
+    /// Forgets which identity signed the device in: a sign-in by another way makes it no longer an
+    /// SSO session, and a removed device has none.
+    fn forget_sso_session(
+        &self,
+        id: DeviceId,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        let _ = id;
+        async { Ok(()) }
+    }
+
     /// Records that the device was seen at `at`, only while it is still registered with the DPoP
     /// key `jkt`, and says whether it was. A device whose key was cleared meanwhile (a refresh
     /// token used twice, sessions ended everywhere) stays as it is: writing back the whole row a

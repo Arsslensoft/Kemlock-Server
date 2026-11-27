@@ -895,19 +895,28 @@ impl<R: SettingsRepo, S: SecretSeal, E: EnvSettings> Settings<R, S, E> {
                 }
             }
         }
-        // The stored SMTP password was made for the host it was saved with. Pointing the server at
-        // another host while keeping it would send it there, and an admin who can set the host
-        // could collect it: a new host starts without a password unless one is set with it.
-        if let Some(change) = changes.get("smtp_host")
-            && !changes.contains_key("smtp_password")
-        {
-            let now = match change {
-                Change::Set(value) => value.trim().to_owned(),
+        // A password kept across a new mail host would be sent to whoever answers there, and an
+        // admin could point the host at a server of their own to read it: a new host takes a new
+        // password (or none) in the same save.
+        if let Some(change) = changes.get("smtp_host") {
+            let new_host = match change {
+                Change::Set(value) => value.trim().to_ascii_lowercase(),
                 Change::Reset => String::new(),
             };
-            let before = self.get("smtp_host").await?.unwrap_or_default();
-            if now != before.trim() {
-                writes.push(("smtp_password", None));
+            let old_host = self
+                .get("smtp_host")
+                .await?
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase();
+            let kept = !changes.contains_key("smtp_password")
+                && self.saved().await?.contains_key("smtp_password");
+            if new_host != old_host && kept {
+                return Err(AdminError::Invalid(
+                    "smtp_host changed: enter the SMTP password again, or clear it \
+                     (smtp_password), in the same save"
+                        .to_owned(),
+                ));
             }
         }
         // A link can't be mailed without a mail server, and an account held back for one that never

@@ -35,6 +35,10 @@ fn seal() -> Seal {
 }
 
 async fn pass(store: &SqlStore) {
+    // A database kept between runs holds the flag of the last one.
+    SettingsRepo::delete_setting(store, SECRETS_BOUND_KEY)
+        .await
+        .expect("the flag is cleared");
     let seal = seal();
     let sam = user(&unique_email("bind-sam"));
     let kim = user(&unique_email("bind-kim"));
@@ -104,6 +108,30 @@ async fn pass(store: &SqlStore) {
     // Run again: nothing is left to do, and the flag says it was done.
     let again = store.bind_secrets(&seal).await.expect("the pass runs");
     assert_eq!(again.sealed_again, 0);
+
+    // A blob sealed the old way that turns up after the pass is not the migration's: it is left
+    // as it is, and never sealed to the account it was put in.
+    let planted = seal.seal("totp", b"a seed the database writer chose");
+    TwoFactorRepo::put(
+        store,
+        &TwoFactor {
+            user: kim.id,
+            method: TwoFactorMethod::YubiKey,
+            sealed_secret: planted.clone(),
+            enabled: true,
+            created_at: datetime!(2026-11-25 10:00:00 UTC),
+        },
+    )
+    .await
+    .expect("put");
+    let later = store.bind_secrets(&seal).await.expect("the pass runs");
+    assert_eq!(later, kemlock_store_sql::BindReport::default());
+    let kims = TwoFactorRepo::list(store, kim.id).await.expect("list");
+    let yubikey = kims
+        .iter()
+        .find(|r| r.method == TwoFactorMethod::YubiKey)
+        .expect("the planted row");
+    assert_eq!(yubikey.sealed_secret, planted, "not sealed to the account");
     let flag = SettingsRepo::settings_with_prefix(store, SECRETS_BOUND_KEY)
         .await
         .expect("settings");

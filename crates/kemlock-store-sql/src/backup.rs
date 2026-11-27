@@ -206,6 +206,7 @@ fn registry() -> Result<Vec<TableSpec>, StoreError> {
         device_key_copies::Entity,
         emergency_access::Entity,
         sso::identities::Entity,
+        sso::sessions::Entity,
         sso::settings::Entity,
         sso::domains::Entity,
         server_meta::Entity,
@@ -835,6 +836,7 @@ mod tests {
         assert!(at("devices") < at("device_key_copies"));
         assert!(at("users") < at("emergency_access"));
         assert!(at("users") < at("sso_identities"));
+        assert!(at("users") < at("sso_sessions"));
     }
 
     /// Applies the migrations one at a time to an empty SQLite database and holds the registry to

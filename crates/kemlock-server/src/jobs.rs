@@ -8,7 +8,8 @@
 //!   ([`ApproveDue`]);
 //! - the five-minute purge of device-approval requests that expired a day ago
 //!   ([`PurgeApprovals`]);
-//! - the hourly purge of attachments no item names any more.
+//! - the hourly purge of attachments no item names any more;
+//! - the daily re-check of verified SSO domains: a proof whose DNS record is gone is taken back.
 //!
 //! The leases are released as soon as a run ends, so the next run never waits on one; a replica
 //! that crashes mid-run holds its lease until the lease's own time is up.
@@ -17,6 +18,7 @@ use crate::adapters::ServerCrypto;
 use crate::files::Files;
 use kemlock_app::devices::{LogNotices, PurgeApprovals};
 use kemlock_app::emergency::ApproveDue;
+use kemlock_app::sso::DomainProofs;
 use kemlock_app::ports::{ItemStore, StoreError};
 use kemlock_crypto::rand;
 use kemlock_store_sql::SqlStore;
@@ -37,6 +39,8 @@ pub const APPROVE_DUE_LEASE: &str = "emergency-approve-due";
 pub const PURGE_APPROVALS_LEASE: &str = "purge-device-approvals";
 /// The lease of the orphaned-file purge.
 pub const PURGE_FILES_LEASE: &str = "purge-orphan-files";
+/// The lease of the verified-domain re-check.
+pub const RECHECK_DOMAINS_LEASE: &str = "recheck-verified-domains";
 /// How long a replica holds the purge lease: far more than a purge takes, so a crashed holder
 /// is only an obstacle until it lapses.
 const LEASE_TTL: time::Duration = time::Duration::hours(1);
@@ -55,6 +59,10 @@ pub const APPROVE_DUE_EVERY: Duration = Duration::from_secs(60 * 60);
 pub const PURGE_APPROVALS_EVERY: Duration = Duration::from_secs(5 * 60);
 /// How often orphaned files are purged.
 pub const PURGE_FILES_EVERY: Duration = Duration::from_secs(60 * 60);
+/// How often verified SSO domains are looked at again.
+pub const RECHECK_DOMAINS_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
+/// How old a domain's proof must be before it is looked at again.
+pub const RECHECK_DOMAINS_AFTER: time::Duration = time::Duration::days(7);
 /// How long after the server starts the quick jobs first run.
 const FIRST_RUN_AFTER: Duration = Duration::from_secs(30);
 
@@ -173,6 +181,34 @@ pub async fn purge_approvals_once(
     .await
 }
 
+/// One run of the verified-domain re-check, under its lease: looks again for the DNS record of every
+/// domain proven `RECHECK_DOMAINS_AFTER` ago or longer, and takes the proof back where it is gone.
+/// `Ok(Some(n))` is how many proofs were taken back.
+pub async fn recheck_domains_once(
+    store: &SqlStore,
+    env: &ServerCrypto,
+    dns: &Arc<kemlock_identity::DnsTxtResolver>,
+    holder: &str,
+) -> Result<Option<u64>, JobError> {
+    under_lease(
+        store,
+        RECHECK_DOMAINS_LEASE,
+        holder,
+        SHORT_LEASE_TTL,
+        || async {
+            DomainProofs {
+                repos: store.clone(),
+                dns: Arc::clone(dns),
+                env: env.clone(),
+            }
+            .recheck_stale(RECHECK_DOMAINS_AFTER)
+            .await
+            .map(|done| done.dropped)
+        },
+    )
+    .await
+}
+
 /// One run of the orphaned-file purge, under its lease: removes the files no item names any more
 /// and the uploads that never finished. `Ok(Some(n))` is how many went.
 pub async fn purge_files_once(
@@ -272,6 +308,24 @@ pub fn spawn_all(store: &SqlStore, env: &ServerCrypto, files: Files) -> Jobs {
             async move {
                 let outcome = purge_approvals_once(&s, &e, &h).await;
                 report("approval purge", outcome, "purged expired device approvals");
+            }
+        },
+    ));
+
+    let (s, e, h) = (store.clone(), env.clone(), holder.clone());
+    let dns = Arc::new(kemlock_identity::DnsTxtResolver::new());
+    handles.push(spawn_every(
+        FIRST_RUN_AFTER,
+        RECHECK_DOMAINS_EVERY,
+        move || {
+            let (s, e, h, d) = (s.clone(), e.clone(), h.clone(), Arc::clone(&dns));
+            async move {
+                let outcome = recheck_domains_once(&s, &e, &d, &h).await;
+                report(
+                    "domain re-check",
+                    outcome,
+                    "verified domains whose DNS record is gone are pending again",
+                );
             }
         },
     ));
@@ -497,6 +551,7 @@ mod tests {
             APPROVE_DUE_LEASE,
             PURGE_APPROVALS_LEASE,
             PURGE_FILES_LEASE,
+            RECHECK_DOMAINS_LEASE,
         ];
         let distinct: std::collections::BTreeSet<_> = leases.iter().collect();
         assert_eq!(distinct.len(), leases.len());

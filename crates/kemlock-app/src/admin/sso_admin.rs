@@ -116,6 +116,50 @@ fn issuer_ok(issuer: &str) -> bool {
     matches!(host, "localhost" | "127.0.0.1" | "::1")
 }
 
+/// What the audit entry of a save says: the issuer, and each setting that decides who may sign in
+/// as whom, with what it was, so an entry shows a provider swapped or linking turned on. Never a
+/// secret.
+fn change_summary(previous: Option<&SsoSettings>, issuer: &str, input: &SsoInput) -> String {
+    let onoff = |on: bool| if on { "on" } else { "off" };
+    let mut text = String::from("changed the single sign-on settings");
+    if !input.enabled {
+        text.push_str(" (sign-in is off)");
+    }
+    text.push_str(&format!(": issuer {issuer}"));
+    match previous {
+        Some(old) if old.issuer != issuer => {
+            text.push_str(&format!(" (was {})", old.issuer));
+        }
+        None => text.push_str(" (new connection)"),
+        _ => {}
+    }
+    let link = |label: &str, now: bool, was: Option<bool>| match was {
+        Some(was) if was != now => format!("; {label} {} (was {})", onoff(now), onoff(was)),
+        _ => format!("; {label} {}", onoff(now)),
+    };
+    text.push_str(&link(
+        "link by email",
+        input.link_by_email,
+        previous.map(|p| p.link_by_email),
+    ));
+    text.push_str(&link(
+        "verified domain required",
+        input.require_verified_domain,
+        previous.map(|p| p.require_verified_domain),
+    ));
+    text.push_str(&link(
+        "create accounts",
+        input.create_accounts,
+        previous.map(|p| p.create_accounts),
+    ));
+    match &input.client_secret {
+        SecretChange::Keep => {}
+        SecretChange::Clear => text.push_str("; client secret cleared"),
+        SecretChange::Set(_) => text.push_str("; client secret replaced"),
+    }
+    text
+}
+
 fn scope_ok(scope: &str) -> bool {
     (1..=64).contains(&scope.len())
         && scope
@@ -208,14 +252,24 @@ where
         }
 
         let now = self.env.now();
-        let mut settings = match self.sso.sso_settings().await? {
+        let previous = self.sso.sso_settings().await?;
+        // The stored secret belongs to the provider it was made for: kept across a new issuer, it
+        // would be sent to whoever answers there, and an admin could point the connection at a
+        // server of their own to read it. A new issuer takes a new secret, or none.
+        if let Some(old) = &previous
+            && input.client_secret == SecretChange::Keep
+            && old.sealed_client_secret.is_some()
+            && old.issuer.trim_end_matches('/') != issuer.trim_end_matches('/')
+        {
+            return Err(invalid(
+                "the issuer changed: enter the client secret again, or clear it",
+            ));
+        }
+        let summary = change_summary(previous.as_ref(), &issuer, &input);
+        let mut settings = match previous {
             Some(existing) => existing,
             None => SsoSettings::new(issuer.clone(), client_id.clone(), now),
         };
-        // A stored secret belongs to the provider it was made for. Pointing the connection at
-        // another issuer while keeping it would send it there, and an admin could read it back that
-        // way: a new issuer starts without one unless a new secret comes with it.
-        let issuer_changed = settings.issuer != issuer;
         settings.enabled = input.enabled;
         settings.display_name = display_name;
         settings.issuer = issuer;
@@ -228,7 +282,6 @@ where
         settings.group_rules = input.group_rules;
         settings.updated_at = now;
         match &input.client_secret {
-            SecretChange::Keep if issuer_changed => settings.sealed_client_secret = None,
             SecretChange::Keep => {}
             SecretChange::Clear => settings.sealed_client_secret = None,
             SecretChange::Set(secret) => settings.set_client_secret(&self.env, secret),
@@ -240,11 +293,7 @@ where
                 ip,
                 "admin.sso.update",
                 None,
-                if settings.enabled {
-                    "changed the single sign-on settings"
-                } else {
-                    "changed the single sign-on settings (sign-in is off)"
-                },
+                &summary,
             )
             .await;
         Ok(self.view(Some(settings)))

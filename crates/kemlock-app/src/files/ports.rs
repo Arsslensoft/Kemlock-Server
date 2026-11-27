@@ -115,6 +115,17 @@ pub trait BlobStore: Send + Sync {
         &self,
         blob: BlobId,
     ) -> impl Future<Output = Result<Option<PresignedUrl>, BlobError>> + Send;
+
+    /// Removes what pre-signed uploads left behind that no upload still waits for: objects under
+    /// the staging name older than `older_than`. Returns how many went. A store with no staging
+    /// area has none.
+    fn purge_staging(
+        &self,
+        older_than: std::time::Duration,
+    ) -> impl Future<Output = Result<u64, BlobError>> + Send {
+        let _ = older_than;
+        async { Ok(0) }
+    }
 }
 
 /// The request body of an upload, read chunk by chunk.

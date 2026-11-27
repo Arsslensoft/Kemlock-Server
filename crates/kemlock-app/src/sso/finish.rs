@@ -16,13 +16,13 @@ use crate::ports::{
 };
 use crate::privacy::ensure_not_pending;
 use crate::register::MAX_NAME_LEN;
-use crate::sealed::{Challenge, PURPOSE_CHALLENGE};
+use crate::sealed::{Challenge, PURPOSE_CHALLENGE, SsoOrigin};
 use crate::session::{DeviceInfo, Sessions};
 use crate::sign_in::{SecondStep, SignedIn};
 use crate::sso::claims::{EmailTrust, amr_shows_mfa, email_domain, email_trust};
 use crate::sso::config::{SsoConfig, valid_verifier};
 use crate::sso::error::SsoError;
-use crate::sso::model::{CodeExchange, IdentityClaims, SsoIdentity, SsoSettings};
+use crate::sso::model::{CodeExchange, IdentityClaims, SsoIdentity, SsoSession, SsoSettings};
 use crate::sso::ports::{
     GroupSync, OidcProvider, SsoIdentityRepo, SsoSettingsRepo, VerifiedDomainRepo,
 };
@@ -153,9 +153,16 @@ where
             return Err(AppError::AccountDisabled.into());
         }
         ensure_not_pending(&self.users, user.id).await?;
-        self.repos
+        // An account with a second step is signed in by email each time and has no stored link to
+        // touch.
+        match self
+            .repos
             .touch_identity(&claims.issuer, &claims.subject, email.as_str(), now)
-            .await?;
+            .await
+        {
+            Ok(()) | Err(StoreError::NotFound) => {}
+            Err(e) => return Err(e.into()),
+        }
         if new_account {
             self.sessions
                 .record("account.sso_created", user.id, None)
@@ -197,6 +204,13 @@ where
                 device_kind: input.device.kind,
                 jkt: input.jkt,
                 via_sso: true,
+                // The second step that finishes this sign-in records the session under this
+                // identity, so a logout for it ends the device.
+                sso: Some(SsoOrigin {
+                    issuer: claims.issuer.clone(),
+                    subject: claims.subject.clone(),
+                    session_id: claims.session_id.clone(),
+                }),
             };
             return Ok(SsoSignedIn {
                 outcome: SignedIn::SecondStep(SecondStep {
@@ -214,6 +228,17 @@ where
             .sessions
             .register_device(user.id, &input.device, &input.jkt)
             .await?;
+        // The device this identity signed in, for a back-channel logout to end and no other.
+        let started = SsoSession {
+            device: device.id,
+            user: user.id,
+            issuer: claims.issuer.clone(),
+            subject: claims.subject.clone(),
+            session_id: claims.session_id.clone(),
+            started_at: now,
+        };
+        // A session no logout could end is not one to hand out: a failed write fails the sign-in.
+        self.repos.record_sso_session(&started).await?;
         let tokens = self
             .sessions
             .issue(&user, &device, &input.jkt, None)
@@ -323,18 +348,26 @@ where
             if self.sessions.config.signups_verify && self.users.email_unconfirmed(user.id).await? {
                 return Err(AppError::EmailNotConfirmed.into());
             }
-            // A link made while the account has a second step is not confirmed: nothing has shown
-            // this sign-in is the account's owner, so the provider's `amr` never stands in for
-            // that second step.
+            // An account that has a second step is not linked here, and its second step is asked
+            // at this sign-in and every one like it: nothing has shown this sign-in is the
+            // account's owner, and a link stored before the second step passes would stay behind
+            // if the challenge were abandoned (the holder of the provider identity could then
+            // end the owner's sessions with a back-channel logout, and `amr` could never stand
+            // in for the second step).
             let owes_second_step = self
                 .two_factor
                 .list(user.id)
                 .await?
                 .iter()
                 .any(|t| t.enabled);
-            let confirmed = self
-                .link(&user, claims, email, now, !owes_second_step)
-                .await?;
+            if owes_second_step {
+                return Ok((user, false, false));
+            }
+            let confirmed = self.link(&user, claims, email, now, true).await?;
+            // The account's own events say that an identity was linked to it, by email.
+            self.sessions
+                .record("account.sso_linked", user.id, None)
+                .await;
             return Ok((user, false, confirmed));
         }
 

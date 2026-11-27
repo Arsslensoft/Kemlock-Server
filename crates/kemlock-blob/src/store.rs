@@ -516,11 +516,34 @@ impl BlobStore for ObjectBlobStore {
         self.delete_path(staging_path_of(blob)).await
     }
 
-    /// The URL names the staging path, not the blob's own: the signature can't limit the length of
-    /// what is sent or end when the upload is settled, so what arrives there is checked and moved
-    /// by `verify`, and a later `PUT` to the URL only makes a new staging object.
-    async fn presigned_upload(&self, blob: BlobId) -> Result<Option<PresignedUrl>, BlobError> {
-        self.presigned(Method::PUT, &staging_path_of(blob)).await
+    /// Never a URL: a pre-signed `PUT` can't be bound to the length the upload announced (the
+    /// signer refuses to sign `Content-Length`, and a checksum is the uploader's own choice), so it
+    /// would take up to 5 GB. Uploads go through the server's streamed path, which holds the size
+    /// and the quota. A later POST policy with `content-length-range` could bring this back.
+    async fn presigned_upload(&self, _blob: BlobId) -> Result<Option<PresignedUrl>, BlobError> {
+        Ok(None)
+    }
+
+    /// Deletes the objects under `staging/` last written `older_than` ago or longer.
+    async fn purge_staging(&self, older_than: Duration) -> Result<u64, BlobError> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+        let cutoff = now.saturating_sub(i64::try_from(older_than.as_secs()).unwrap_or(i64::MAX));
+        let prefix = Path::from("staging");
+        let mut stale = Vec::new();
+        let mut listing = self.store.list(Some(&prefix));
+        while let Some(meta) = listing.try_next().await.map_err(backend)? {
+            if meta.last_modified.timestamp() <= cutoff {
+                stale.push(meta.location);
+            }
+        }
+        let mut gone = 0u64;
+        for path in stale {
+            self.delete_path(path).await?;
+            gone += 1;
+        }
+        Ok(gone)
     }
 
     async fn presigned_download(&self, blob: BlobId) -> Result<Option<PresignedUrl>, BlobError> {

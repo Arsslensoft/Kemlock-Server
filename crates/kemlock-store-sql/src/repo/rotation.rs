@@ -14,9 +14,9 @@ use crate::error::{StoreResult, is_unique_violation, map_db};
 use crate::store::SqlStore;
 use crate::tables::items::{owner_parts, stored_signature};
 use crate::tables::{
-    auth_requests, device_key_copies, devices, emergency_access, items, passkeys, recovery_kits,
-    rotation_previous_keys, rotation_staged_items, sends, space_recovery, space_tables::members,
-    users,
+    account_bundles, auth_requests, device_key_copies, devices, email_changes, emergency_access,
+    items, passkeys, recovery_kits, rotation_previous_keys, rotation_staged_items, sends,
+    space_recovery, space_tables::members, users,
 };
 use kemlock_app::ports::StoreError;
 use kemlock_app::rotation::{
@@ -398,6 +398,37 @@ impl SqlStore {
         if written.rows_affected != 1 {
             return Err(RotationError::AccountChanged);
         }
+
+        // The bundle history: the bundle this replaces (if the history lacks it) and the new one,
+        // in this transaction. The new one's time is when the old one was retired
+        // (`bundle_retired_at`), and a federated write signed by the replaced key is refused after
+        // it. `record` keeps a version only once, so a row already there stays as it was.
+        account_bundles::record(
+            txn,
+            user.0,
+            i64::from(install.before.key_version),
+            &install.before.public_bundle,
+            &install.before.bundle_signature,
+            install.before.updated_at,
+        )
+        .await?;
+        account_bundles::record(
+            txn,
+            user.0,
+            i64::from(install.after.key_version),
+            &install.after.public_bundle,
+            &install.after.bundle_signature,
+            install.after.updated_at,
+        )
+        .await?;
+
+        // A pending change of address holds a password wrap of the root key this install
+        // replaces. Opening its link would put that wrap back next to the new key version, so it
+        // goes with the rotation (the person asks again), inside the same transaction.
+        db(email_changes::Entity::delete_many()
+            .filter(email_changes::Column::UserId.eq(user.0))
+            .exec(txn)
+            .await)?;
 
         // What the account holds, as of now, against what the request names.
         let holdings = holdings_in(txn, user).await?;

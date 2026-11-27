@@ -206,8 +206,10 @@ where
     let crypto = ServerCrypto::new(seal, opaque);
     // Secrets stored before they were sealed to their accounts are sealed again, bound, and the
     // old form then stops opening: it would let someone who can write the database keep a copy of
-    // a secret sealed the old way and paste it into any row. Run at every start, since a restore
-    // can bring old rows back. A failure leaves the old form readable and says so.
+    // a secret sealed the old way and paste it into any row. The pass runs once and records it, so
+    // it never seals a bare blob that turns up later; a restore of a database from before the pass
+    // brings no record, and the pass runs for it. A failure leaves the old form readable and says
+    // so.
     match store.bind_secrets(&crypto).await {
         Ok(report) => {
             kemlock_app::sealed::allow_bare_secrets(false);
@@ -230,6 +232,16 @@ where
         Ok(0) => {}
         Ok(spaces) => tracing::info!(spaces, "the policies of chained spaces follow their chains"),
         Err(e) => tracing::warn!(error = %e, "couldn't project the policies of chained spaces"),
+    }
+    // Archives made before the Bitwarden token key was left out of them hold the live key. Once, at
+    // the first start after that change, the key is replaced (the Bitwarden API makes a new one
+    // below), so a copy of an old archive signs nothing on this server.
+    match keys::rotate_token_key_once(&store, &config.data_folder).await {
+        Ok(true) => tracing::warn!(
+            "the Bitwarden token key was replaced once: \n             \"remember this device\", invitation and verification tokens made before end, \n             second steps are asked once more, and pending invitation links must be sent again"
+        ),
+        Ok(false) => {}
+        Err(e) => tracing::warn!(error = %e, "couldn't replace the Bitwarden token key"),
     }
     // SSO settings from `SSO_*` fill an empty table; a bad value turns SSO off and says why.
     match sso::seed_from_env(&store, &crypto, &|name| std::env::var(name).ok()).await {

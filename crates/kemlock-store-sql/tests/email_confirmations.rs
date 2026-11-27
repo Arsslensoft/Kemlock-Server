@@ -7,9 +7,10 @@
 
 mod common;
 
-use common::{external, file, memory, unique_email, user};
-use kemlock_app::ports::{EmailConfirmation, StoreError, UserRepo};
-use kemlock_domain::UserId;
+use common::{draft, external, file, memory, unique_email, user};
+use kemlock_app::ports::{EmailConfirmation, ItemStore, StoreError, UserRepo};
+use kemlock_app::privacy::RetentionStore;
+use kemlock_domain::{ItemId, Owner, UserId};
 use kemlock_store_sql::SqlStore;
 use time::macros::datetime;
 use time::{Duration, OffsetDateTime};
@@ -117,22 +118,78 @@ async fn holds(store: &SqlStore) {
     );
 }
 
+/// The retention job erases a signup still held a week after its link ran out, and nothing else:
+/// not one whose link still works, not an account nobody held, and not a held account that holds
+/// items (verification was off when it was used).
+async fn held_signups_are_purged_after_their_link_runs_out(store: &SqlStore) {
+    let stale = user(&unique_email("held-stale"));
+    let waiting = user(&unique_email("held-waiting"));
+    let confirmed = account(store, "held-confirmed").await;
+    let used = user(&unique_email("held-used"));
+    store
+        .insert_held(&used, hash(), T0, T0 + Duration::hours(24))
+        .await
+        .expect("holds");
+    ItemStore::put(store, draft(ItemId::random(), Owner::User(used.id), None, 1))
+        .await
+        .expect("an item of the held account");
+    store
+        .insert_held(&stale, hash(), T0, T0 + Duration::hours(24))
+        .await
+        .expect("holds");
+    store
+        .insert_held(&waiting, hash(), T0, T0 + Duration::days(10))
+        .await
+        .expect("holds");
+
+    // Inside the week after the link ran out, nothing is erased.
+    let early = RetentionStore::purge_held_signups(store, T0 + Duration::days(2))
+        .await
+        .expect("purges");
+    assert_eq!(store.by_id(stale.id).await.map(|u| u.is_some()), Ok(true), "{early}");
+
+    let now = T0 + Duration::days(9);
+    let purged = RetentionStore::purge_held_signups(store, now)
+        .await
+        .expect("purges");
+    assert!(purged >= 1, "{purged}");
+
+    // The one whose link ran out is gone, with its hold. One whose link still works stays, and so
+    // does an account nobody held.
+    assert_eq!(store.by_id(stale.id).await, Ok(None));
+    assert_eq!(store.email_unconfirmed(stale.id).await, Ok(false));
+    assert_eq!(store.by_id(waiting.id).await.map(|u| u.is_some()), Ok(true));
+    assert_eq!(store.email_unconfirmed(waiting.id).await, Ok(true));
+    assert_eq!(store.by_id(confirmed).await.map(|u| u.is_some()), Ok(true));
+    // A held account that was used is kept.
+    assert_eq!(store.by_id(used.id).await.map(|u| u.is_some()), Ok(true));
+
+    // Its address is free for whoever owns it.
+    let owner = user(stale.email.as_str());
+    UserRepo::insert(store, &owner)
+        .await
+        .expect("the address is free again");
+}
+
 #[tokio::test]
 async fn sqlite_in_memory() {
     let store = memory().await;
     holds(&store).await;
+    held_signups_are_purged_after_their_link_runs_out(&store).await;
 }
 
 #[tokio::test]
 async fn sqlite_in_a_file() {
     let (store, _dir) = file().await;
     holds(&store).await;
+    held_signups_are_purged_after_their_link_runs_out(&store).await;
 }
 
 #[tokio::test]
 async fn postgres_when_configured() {
     if let Some(store) = external("KEMLOCK_TEST_POSTGRES_URL").await {
         holds(&store).await;
+        held_signups_are_purged_after_their_link_runs_out(&store).await;
     }
 }
 
@@ -140,5 +197,6 @@ async fn postgres_when_configured() {
 async fn mysql_when_configured() {
     if let Some(store) = external("KEMLOCK_TEST_MYSQL_URL").await {
         holds(&store).await;
+        held_signups_are_purged_after_their_link_runs_out(&store).await;
     }
 }

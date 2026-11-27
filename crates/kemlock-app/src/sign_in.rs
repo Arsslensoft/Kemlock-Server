@@ -209,6 +209,7 @@ where
             device_kind: input.device.kind,
             jkt: input.jkt,
             via_sso: false,
+            sso: None,
         };
         Ok(SignedIn::SecondStep(SecondStep {
             challenge: self.seal.seal(PURPOSE_CHALLENGE, &challenge.encode()),
@@ -347,6 +348,9 @@ where
                 },
                 &input.jkt,
             )
+            .await?;
+        self.sessions
+            .start_sso_session(challenge.sso.as_ref(), user.id, &device)
             .await?;
         self.complete(&user, device, &input.jkt).await
     }

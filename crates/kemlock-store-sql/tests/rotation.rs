@@ -11,6 +11,7 @@ use kemlock_app::devices::{ApprovalRepo, KeyCopyRepo};
 use kemlock_app::emergency::EmergencyRepo;
 use kemlock_app::passkeys::PasskeyRepo;
 use kemlock_app::ports::{DeviceRepo, ItemStore, StoreError, UserRepo};
+use kemlock_app::profile::ProfileRepo;
 use kemlock_app::recovery_kit::RecoveryKitRepo;
 use kemlock_app::rotation::{
     Install, InstallRequest, ResetGrant, RotationError, RotationStore, StagedItem,
@@ -24,8 +25,8 @@ use kemlock_domain::unlock::{
     EmergencyState, GrantId, KeyProtection, SEALED_BOX_OVERHEAD,
 };
 use kemlock_domain::{
-    DeviceId, Email, ItemId, Owner, Passkey, PasskeyId, PrfWrap, RecoveryKit, Revision, SpaceId,
-    User,
+    DeviceId, Email, EmailChange, ItemId, KdfParams, Owner, Passkey, PasskeyId, PrfWrap,
+    RecoveryKit, Revision, SpaceId, User,
 };
 use kemlock_store_sql::SqlStore;
 use time::OffsetDateTime;
@@ -780,6 +781,72 @@ async fn a_wrap_for_the_old_key_version_is_refused_after_the_install(store: &Sql
         .expect("an old client says no version");
 }
 
+async fn an_install_keeps_both_bundles_and_when_the_old_one_was_retired(store: &SqlStore) {
+    let sam = account(store).await;
+    let first = UserRepo::bundle_at(store, sam.id, 1)
+        .await
+        .expect("read")
+        .expect("the first bundle");
+    RotationStore::install(store, install_of(&sam, request()))
+        .await
+        .expect("the install");
+    // The old bundle is in the history, retired when the install was made.
+    assert_eq!(
+        UserRepo::bundle_at(store, sam.id, 1).await.expect("read"),
+        Some(first)
+    );
+    assert_eq!(
+        UserRepo::bundle_retired_at(store, sam.id, 1)
+            .await
+            .expect("read"),
+        Some(T0.unix_timestamp())
+    );
+    // The new one is kept, and is not retired.
+    let second = UserRepo::bundle_at(store, sam.id, 2)
+        .await
+        .expect("read")
+        .expect("the new bundle");
+    assert_eq!(second.public_bundle, request().public_bundle);
+    assert_eq!(
+        UserRepo::bundle_retired_at(store, sam.id, 2)
+            .await
+            .expect("read"),
+        None
+    );
+    assert_eq!(
+        UserRepo::bundles_of(store, sam.id).await.expect("read").len(),
+        2
+    );
+}
+
+async fn a_pending_change_of_address_does_not_survive_the_install(store: &SqlStore) {
+    let sam = account(store).await;
+    let mut token_hash = [0u8; 32];
+    token_hash[..16].copy_from_slice(Uuid::new_v4().as_bytes());
+    token_hash[16..].copy_from_slice(Uuid::new_v4().as_bytes());
+    let pending = EmailChange {
+        user: sam.id,
+        email: Email::parse(&unique_email("rotation-new")).expect("an address"),
+        token_hash,
+        opaque_record: vec![1; 192],
+        kdf: KdfParams::new_account([3; 16]),
+        wrapped_root_key: vec![2; 92],
+        key_version: 1,
+        requested_at: T0 - time::Duration::hours(1),
+        expires_at: T0 + time::Duration::hours(23),
+    };
+    store.put_email_change(&pending).await.expect("pending");
+    assert!(store.email_change_of(sam.id).await.expect("read").is_some());
+
+    RotationStore::install(store, install_of(&sam, request()))
+        .await
+        .expect("the install");
+
+    // Its wrap was of the old root key: it is gone, and its link opens nothing.
+    assert_eq!(store.email_change_of(sam.id).await, Ok(None));
+    assert_eq!(store.email_change_by_token(token_hash).await, Ok(None));
+}
+
 async fn all(store: &SqlStore) {
     a_vault_that_takes_signed_writes_only_installs_no_unsigned_item(store).await;
     rotation(store).await;
@@ -791,6 +858,8 @@ async fn all(store: &SqlStore) {
     a_writer_that_waited_for_the_install_is_refused(store).await;
     an_install_after_a_writer_is_refused_until_it_names_the_wrap(store).await;
     a_wrap_for_the_old_key_version_is_refused_after_the_install(store).await;
+    an_install_keeps_both_bundles_and_when_the_old_one_was_retired(store).await;
+    a_pending_change_of_address_does_not_survive_the_install(store).await;
 }
 
 #[tokio::test]

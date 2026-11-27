@@ -75,6 +75,10 @@ mod m20261204_050001_vault_rank_pins;
 mod m20261204_050002_held_rotations;
 mod m20261204_050003_peer_events_received;
 mod m20261204_050004_peer_blob_cursors;
+mod m20261204_060001_email_change_key_version;
+mod m20261204_060002_sso_sessions;
+mod m20261204_060003_sso_identity_unconfirm;
+mod m20261204_060004_exact_text_columns;
 
 use sea_orm_migration::prelude::*;
 
@@ -155,6 +159,10 @@ impl MigratorTrait for Migrator {
             Box::new(m20261204_050002_held_rotations::Migration),
             Box::new(m20261204_050003_peer_events_received::Migration),
             Box::new(m20261204_050004_peer_blob_cursors::Migration),
+            Box::new(m20261204_060001_email_change_key_version::Migration),
+            Box::new(m20261204_060002_sso_sessions::Migration),
+            Box::new(m20261204_060003_sso_identity_unconfirm::Migration),
+            Box::new(m20261204_060004_exact_text_columns::Migration),
         ]
     }
 }

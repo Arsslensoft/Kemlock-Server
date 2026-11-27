@@ -466,33 +466,64 @@ async fn a_local_folder_has_no_presigned_urls() {
 }
 
 #[tokio::test]
-async fn a_bucket_signs_urls_only_when_the_setting_is_on() {
+async fn a_bucket_signs_download_urls_only_when_the_setting_is_on_and_never_upload_ones() {
     let blob = BlobId::random();
 
     let off = ObjectBlobStore::s3(&bucket(), None).expect("a bucket store");
     assert_eq!(off.presigned_upload(blob).await, Ok(None));
+    assert_eq!(off.presigned_download(blob).await, Ok(None));
 
     let on =
         ObjectBlobStore::s3(&bucket(), Some(Duration::from_secs(300))).expect("a bucket store");
-    for url in [
-        on.presigned_upload(blob)
+    // A pre-signed `PUT` can't be held to the announced length, so there is none.
+    assert_eq!(on.presigned_upload(blob).await, Ok(None));
+    let url = on
+        .presigned_download(blob)
+        .await
+        .expect("signs")
+        .expect("a URL");
+    assert_eq!(url.expires_in, Duration::from_secs(300));
+    assert!(
+        url.url.starts_with("http://localhost:9000/kemlock/"),
+        "{}",
+        url.url
+    );
+    assert!(url.url.contains(&blob.to_string()), "{}", url.url);
+    assert!(url.url.contains("X-Amz-Signature="), "{}", url.url);
+}
+
+#[tokio::test]
+async fn the_purge_removes_only_the_staging_objects_past_the_grace_period() {
+    let store = ObjectBlobStore::memory();
+    let (a, b) = (BlobId::random(), BlobId::random());
+    store
+        .put_raw(&format!("staging/{a}"), b"left behind".to_vec())
+        .await
+        .expect("put");
+    store
+        .put_raw(&format!("staging/{b}"), b"left behind too".to_vec())
+        .await
+        .expect("put");
+    store
+        .put_blob_raw(a, b"a finished blob".to_vec())
+        .await
+        .expect("put");
+
+    // Nothing is old enough yet.
+    assert_eq!(store.purge_staging(Duration::from_secs(3600)).await, Ok(0));
+    assert!(
+        store
+            .get_raw(&format!("staging/{a}"))
             .await
-            .expect("signs")
-            .expect("a URL"),
-        on.presigned_download(blob)
-            .await
-            .expect("signs")
-            .expect("a URL"),
-    ] {
-        assert_eq!(url.expires_in, Duration::from_secs(300));
-        assert!(
-            url.url.starts_with("http://localhost:9000/kemlock/"),
-            "{}",
-            url.url
-        );
-        assert!(url.url.contains(&blob.to_string()), "{}", url.url);
-        assert!(url.url.contains("X-Amz-Signature="), "{}", url.url);
+            .expect("read")
+            .is_some()
+    );
+    // Past the grace period they go, and a finished blob is not under `staging/`.
+    assert_eq!(store.purge_staging(Duration::ZERO).await, Ok(2));
+    for blob in [a, b] {
+        assert_eq!(store.get_raw(&format!("staging/{blob}")).await, Ok(None));
     }
+    assert!(store.get_blob_raw(a).await.expect("read").is_some());
 }
 
 #[tokio::test]
@@ -518,9 +549,10 @@ async fn the_settings_build_the_store_they_describe() {
         presign_ttl: Duration::from_secs(60),
     };
     let store = ObjectBlobStore::from_config(&config).expect("a bucket store");
+    assert_eq!(store.presigned_upload(BlobId::random()).await, Ok(None));
     assert!(
         store
-            .presigned_upload(BlobId::random())
+            .presigned_download(BlobId::random())
             .await
             .expect("signs")
             .is_some()

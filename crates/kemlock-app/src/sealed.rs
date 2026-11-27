@@ -14,9 +14,9 @@ pub const PURPOSE_CHALLENGE: &str = "two-factor-challenge";
 pub const PURPOSE_TOTP: &str = "totp";
 
 /// The `settings` key that says the stored per-account secrets were sealed again, bound
-/// ([`bound_purpose`]), by the start-up pass. It is a record only: the pass runs at every start, so
-/// secrets a restored backup brings back sealed the old way are sealed again before the server
-/// serves.
+/// ([`bound_purpose`]), by the start-up pass. The pass runs once, for the migration it exists for, and
+/// does nothing once this is recorded: a bare-sealed blob that turns up later is not sealed to an
+/// account.
 pub const SECRETS_BOUND_KEY: &str = "secrets_bound";
 
 /// Whether [`open_bound`] still falls back to the bare purpose. On until the server has sealed every
@@ -194,7 +194,18 @@ impl LoginState {
     }
 }
 
-/// What a two-step challenge remembers: who passed the password, on which device and key.
+/// The SSO identity whose sign-in a challenge belongs to. Sealed with the challenge, so the second
+/// step that finishes it records the session under the issuer, subject and `sid` the ID token
+/// had, and a client can't name another.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SsoOrigin {
+    pub(crate) issuer: String,
+    pub(crate) subject: String,
+    pub(crate) session_id: Option<String>,
+}
+
+/// What a two-step challenge remembers: who passed the password (or the provider), on which device
+/// and key.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Challenge {
     pub(crate) expires_at: i64,
@@ -206,6 +217,9 @@ pub(crate) struct Challenge {
     /// Whether the first step was the identity provider (SSO) and not the password: Require SSO
     /// blocks the other first steps, so the second step of an SSO sign-in is not held to it.
     pub(crate) via_sso: bool,
+    /// The identity of that SSO sign-in, which the second step records its session under. Only
+    /// ever set together with `via_sso`; a challenge sealed before the origin was kept has none.
+    pub(crate) sso: Option<SsoOrigin>,
 }
 
 fn kind_code(kind: DeviceKind) -> u8 {
@@ -238,8 +252,10 @@ fn kind_from_code(code: u8) -> Option<DeviceKind> {
 impl Challenge {
     pub(crate) fn encode(&self) -> Vec<u8> {
         let mut w = Writer::new();
-        // Version 2 ends with whether the first step was SSO; version 1 (a challenge sealed before
-        // that, good for five minutes at most) has no such byte and is read as a password's.
+        // Version 2 ends with whether the first step was SSO, and for an SSO sign-in the issuer,
+        // subject and `sid` it came from; version 1 (a challenge sealed before that, good for five
+        // minutes at most) has no such byte and is read as a password's. A version 2 challenge
+        // that ends after the flag (sealed before the origin was kept) has no origin.
         w.u8(2);
         w.u64(self.expires_at.max(0) as u64);
         w.raw(self.user.as_bytes());
@@ -247,14 +263,25 @@ impl Challenge {
         w.lp(self.device_name.as_bytes());
         w.u8(kind_code(self.device_kind));
         w.lp(self.jkt.as_bytes());
-        w.u8(u8::from(self.via_sso));
+        w.u8(u8::from(self.via_sso || self.sso.is_some()));
+        if let Some(sso) = &self.sso {
+            w.lp(sso.issuer.as_bytes());
+            w.lp(sso.subject.as_bytes());
+            match &sso.session_id {
+                Some(sid) => {
+                    w.u8(1);
+                    w.lp(sid.as_bytes());
+                }
+                None => w.u8(0),
+            }
+        }
         w.0
     }
 
     pub(crate) fn decode(bytes: &[u8]) -> Option<Self> {
         let mut r = Reader(bytes);
         let version = r.u8()?;
-        if version != 1 && version != 2 {
+        if !matches!(version, 1 | 2) {
             return None;
         }
         let expires_at = i64::try_from(r.u64()?).ok()?;
@@ -272,6 +299,23 @@ impl Challenge {
         } else {
             false
         };
+        // The origin follows the flag when there is one; it never comes without the flag.
+        let sso = if via_sso && !r.done() {
+            let issuer = String::from_utf8(r.lp()?.to_vec()).ok()?;
+            let subject = String::from_utf8(r.lp()?.to_vec()).ok()?;
+            let session_id = match r.u8()? {
+                0 => None,
+                1 => Some(String::from_utf8(r.lp()?.to_vec()).ok()?),
+                _ => return None,
+            };
+            Some(SsoOrigin {
+                issuer,
+                subject,
+                session_id,
+            })
+        } else {
+            None
+        };
         r.done().then_some(Challenge {
             expires_at,
             user,
@@ -280,6 +324,7 @@ impl Challenge {
             device_kind,
             jkt,
             via_sso,
+            sso,
         })
     }
 }
@@ -350,6 +395,7 @@ mod tests {
                 device_kind: kind,
                 jkt: "abc".into(),
                 via_sso: kind == DeviceKind::KemlockBrowser,
+                sso: None,
             };
             assert_eq!(Challenge::decode(&c.encode()), Some(c));
         }
@@ -365,6 +411,7 @@ mod tests {
             device_kind: DeviceKind::KemlockAndroid,
             jkt: "abc".into(),
             via_sso: false,
+            sso: None,
         };
         let bytes = c.encode();
         assert_eq!(Challenge::decode(&bytes), Some(c));
@@ -381,6 +428,7 @@ mod tests {
             device_kind: DeviceKind::KemlockAndroid,
             jkt: "abc".into(),
             via_sso: true,
+            sso: None,
         };
         assert_eq!(Challenge::decode(&c.encode()), Some(c));
         // A challenge sealed before the flag existed has version 1 and no last byte: a password's.
@@ -392,6 +440,7 @@ mod tests {
             device_kind: DeviceKind::KemlockAndroid,
             jkt: "abc".into(),
             via_sso: true,
+            sso: None,
         };
         let mut old = sso.encode();
         old[0] = 1;
@@ -404,5 +453,56 @@ mod tests {
         let last = odd.len() - 1;
         odd[last] = 7;
         assert_eq!(Challenge::decode(&odd), None);
+    }
+
+    #[test]
+    fn a_challenge_keeps_the_identity_of_its_sso_sign_in() {
+        let with_sid = Challenge {
+            expires_at: 5,
+            user: UserId::random(),
+            device: DeviceId::random(),
+            device_name: "Pixel".into(),
+            device_kind: DeviceKind::KemlockAndroid,
+            jkt: "abc".into(),
+            via_sso: true,
+            sso: Some(SsoOrigin {
+                issuer: "https://idp.example".into(),
+                subject: "sub-1".into(),
+                session_id: Some("sid-1".into()),
+            }),
+        };
+        let bytes = with_sid.encode();
+        assert_eq!(bytes[0], 2);
+        assert_eq!(Challenge::decode(&bytes), Some(with_sid));
+        assert_eq!(Challenge::decode(&bytes[..bytes.len() - 1]), None);
+
+        let without_sid = Challenge {
+            expires_at: 5,
+            user: UserId::random(),
+            device: DeviceId::random(),
+            device_name: "Pixel".into(),
+            device_kind: DeviceKind::KemlockAndroid,
+            jkt: "abc".into(),
+            via_sso: true,
+            sso: Some(SsoOrigin {
+                issuer: "https://idp.example".into(),
+                subject: "sub-1".into(),
+                session_id: None,
+            }),
+        };
+        assert_eq!(Challenge::decode(&without_sid.encode()), Some(without_sid));
+
+        // A version 2 challenge that ends after the flag has no origin but is still an SSO one.
+        let flag_only = Challenge {
+            expires_at: 5,
+            user: UserId::random(),
+            device: DeviceId::random(),
+            device_name: "Pixel".into(),
+            device_kind: DeviceKind::KemlockAndroid,
+            jkt: "abc".into(),
+            via_sso: true,
+            sso: None,
+        };
+        assert_eq!(Challenge::decode(&flag_only.encode()), Some(flag_only));
     }
 }

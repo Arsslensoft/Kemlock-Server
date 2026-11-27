@@ -784,19 +784,18 @@ async fn the_sign_in_that_links_by_email_never_takes_the_providers_word_for_the_
         panic!("a second step expected");
     };
     assert_eq!(step.methods, vec![TwoFactorMethod::Totp]);
-    assert_eq!(sso.repos.identities().len(), 1, "the identity is linked");
     assert!(
-        !sso.repos.identities()[0].confirmed,
-        "linked while the account owes a second step"
+        sso.repos.identities().is_empty(),
+        "nothing is linked while the account owes a second step"
     );
     assert!(
         sso.world.store.devices_of(existing).is_empty(),
         "no device before the second step"
     );
 
-    // The challenge was abandoned. Signing in again is no way round it: the identity is linked
-    // now, but a link made to an account with a second step is not one the provider's `amr` may
-    // stand in for.
+    // The challenge was abandoned. Signing in again is no way round it: nothing was linked, so
+    // the provider's `amr` has no identity to stand in for the second step, and the abandoned
+    // sign-in left no link and no SSO session behind.
     for n in 2..=3 {
         sso.provider.say(mfa());
         let again = sso
@@ -811,7 +810,8 @@ async fn the_sign_in_that_links_by_email_never_takes_the_providers_word_for_the_
     }
     assert!(sso.world.store.devices_of(existing).is_empty());
     assert!(sso.world.store.refresh_tokens().is_empty());
-    assert_eq!(sso.repos.identities().len(), 1);
+    assert!(sso.repos.identities().is_empty());
+    assert!(sso.repos.sessions().is_empty());
 }
 
 #[tokio::test]
@@ -1363,7 +1363,7 @@ async fn a_logout_token_ends_the_subjects_sessions_on_every_device() {
             .authenticate()
             .execute(&phone_token.access_token, JKT)
             .await,
-        Err(AppError::SessionEnded("security-stamp-changed")),
+        Err(AppError::SessionEnded("signed-out")),
         "an access token already issued stops at once"
     );
     assert_eq!(
@@ -1393,6 +1393,185 @@ async fn a_logout_token_ends_the_subjects_sessions_on_every_device() {
     );
 }
 
+#[tokio::test]
+async fn a_logout_ends_only_the_devices_the_identity_signed_in() {
+    let sso = Sso::new();
+    let signed_in = sso.sign_in("provider-code-1").await.expect("phone");
+    // The same account has another device, signed in some other way than by this identity.
+    let other = sso
+        .world
+        .sessions()
+        .register_device(signed_in.user, &device("Laptop"), "jkt-laptop")
+        .await
+        .expect("a device of the account");
+
+    let stamp = sso
+        .world
+        .store
+        .user(signed_in.user)
+        .map(|u| u.security_stamp);
+
+    let outcome = sso.logout().execute("t").await.expect("logs out");
+    assert_eq!(
+        outcome,
+        LogoutOutcome::Revoked {
+            user: signed_in.user,
+            devices: 1
+        }
+    );
+    let devices = sso.world.store.devices_of(signed_in.user);
+    let laptop = devices
+        .iter()
+        .find(|d| d.id == other.id)
+        .expect("the other device");
+    assert_eq!(
+        laptop.dpop_jkt.as_deref(),
+        Some("jkt-laptop"),
+        "a device this identity didn't sign in keeps its key"
+    );
+    let phone = devices
+        .iter()
+        .find(|d| d.id != other.id)
+        .expect("the phone");
+    assert!(phone.dpop_jkt.is_none());
+    // The account itself is untouched: no new security stamp ends its other sessions.
+    assert_eq!(
+        sso.world
+            .store
+            .user(signed_in.user)
+            .map(|u| u.security_stamp),
+        stamp
+    );
+}
+
+#[tokio::test]
+async fn a_logout_naming_a_provider_session_ends_the_devices_that_session_signed_in() {
+    let sso = Sso::new();
+    let with_sid = |sid: &str| {
+        let mut c = claims("sub-1", "ada@example.org");
+        c.session_id = Some(sid.to_owned());
+        c
+    };
+    sso.provider.say(with_sid("sid-a"));
+    sso.sign_in("provider-code-1").await.expect("first session");
+    sso.provider.say(with_sid("sid-b"));
+    sso.sign_in("provider-code-2").await.expect("second session");
+    assert_eq!(sso.world.store.refresh_tokens().len(), 2);
+
+    // The subject and one session id: only that session's device.
+    sso.provider.say_logout(Ok(kemlock_app::sso::LogoutClaims {
+        issuer: ISSUER.to_owned(),
+        subject: Some("sub-1".to_owned()),
+        session_id: Some("sid-a".to_owned()),
+    }));
+    let outcome = sso.logout().execute("t").await.expect("logs out");
+    assert!(matches!(
+        outcome,
+        LogoutOutcome::Revoked { devices: 1, .. }
+    ));
+    assert_eq!(sso.world.store.refresh_tokens().len(), 1);
+
+    // A session id alone names the other one.
+    sso.provider.say_logout(Ok(kemlock_app::sso::LogoutClaims {
+        issuer: ISSUER.to_owned(),
+        subject: None,
+        session_id: Some("sid-b".to_owned()),
+    }));
+    let outcome = sso.logout().execute("t").await.expect("logs out");
+    assert!(matches!(
+        outcome,
+        LogoutOutcome::Revoked { devices: 1, .. }
+    ));
+    assert!(sso.world.store.refresh_tokens().is_empty());
+}
+
+
+#[tokio::test]
+async fn a_device_that_passed_a_second_step_after_sso_is_ended_by_a_logout() {
+    let sso = Sso::new();
+    let existing = make_user(&sso.world, "ada@example.org").await;
+    enable_totp(&sso.world, existing).await;
+    let signed_in = sso.sign_in("provider-code-1").await.expect("owes a second step");
+    let SignedIn::SecondStep(step) = &signed_in.outcome else {
+        panic!("a second step expected");
+    };
+    // Nothing is recorded until the second step is passed.
+    assert!(sso.world.store.sso_sessions().is_empty());
+    let tokens = sso
+        .world
+        .sign_in()
+        .second_step(SecondStepInput {
+            challenge: step.challenge.clone(),
+            method: TwoFactorMethod::Totp,
+            code: totp_code(&sso.world, existing),
+            jkt: JKT.to_owned(),
+        })
+        .await
+        .expect("the second step completes");
+
+    // The device is an SSO session of this identity and provider session now.
+    let recorded = sso.world.store.sso_sessions();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].subject, "sub-1");
+    assert_eq!(recorded[0].session_id.as_deref(), Some("provider-session-1"));
+    sso.repos.adopt_sessions(recorded);
+
+    let outcome = sso.logout().execute("t").await.expect("logs out");
+    assert_eq!(
+        outcome,
+        LogoutOutcome::Revoked {
+            user: existing,
+            devices: 1
+        }
+    );
+    assert_eq!(
+        sso.world
+            .authenticate()
+            .execute(&tokens.access_token, JKT)
+            .await,
+        Err(AppError::SessionEnded("signed-out"))
+    );
+    assert!(sso.world.store.refresh_tokens().is_empty());
+}
+
+#[tokio::test]
+async fn a_password_sign_in_of_the_same_device_is_no_longer_an_sso_session() {
+    use kemlock_app::ports::DeviceRepo;
+    let sso = Sso::new();
+    let signed_in = sso.sign_in("provider-code-1").await.expect("signs in");
+    let device = sso.world.store.devices_of(signed_in.user)[0].id;
+    DeviceRepo::record_sso_session(
+        &sso.world.store,
+        &kemlock_app::sso::SsoSession {
+            device,
+            user: signed_in.user,
+            issuer: ISSUER.to_owned(),
+            subject: "sub-1".to_owned(),
+            session_id: None,
+            started_at: sso.world.env.now(),
+        },
+    )
+    .await
+    .expect("recorded");
+    assert_eq!(sso.world.store.sso_sessions().len(), 1);
+
+    // The same device signs in some other way: it registers again, and the record goes.
+    sso.world
+        .sessions()
+        .register_device(
+            signed_in.user,
+            &DeviceInfo {
+                id: Some(device),
+                name: "Pixel".to_owned(),
+                kind: DeviceKind::KemlockAndroid,
+                bitwarden_identifier: None,
+            },
+            JKT,
+        )
+        .await
+        .expect("registers");
+    assert!(sso.world.store.sso_sessions().is_empty());
+}
 #[tokio::test]
 async fn a_logout_for_another_account_leaves_this_one_signed_in() {
     let sso = Sso::new();

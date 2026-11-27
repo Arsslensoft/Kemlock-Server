@@ -10,7 +10,7 @@ yanked = "deny"
 # The same ids, with the same reasons, as .cargo/audit.toml.
 ignore = [
     { id = "RUSTSEC-2023-0071", reason = "rsa Marvin attack: the server only verifies RSA signatures; pgp decrypts client-side on the user's own file" },
-    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5 timing: reached only via pgp in the client-side importer; pgp 0.21.1 is the newest" },
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5 timing: reached through pgp in the client-side importer (pgp 0.21.1 is the newest) and, in the server, through opaque-ke 4.0.1 then ecdsa and elliptic-curve 0.13.8. Not exploitable as configured: the OPAQUE suite is Ristretto255 on curve25519-dalek, and voprf uses elliptic-curve only for hash2curve message expansion, with no bigint arithmetic on secrets. Review this ignore if the OPAQUE suite moves to a P-256 curve" },
     { id = "RUSTSEC-2026-0374", reason = "basic-toml unmaintained, no fixed release" },
     { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained, no fixed release" },
     { id = "RUSTSEC-2026-0542", reason = "humantime unmaintained, no fixed release" },

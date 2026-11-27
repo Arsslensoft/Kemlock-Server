@@ -1841,73 +1841,53 @@ async fn the_audit_trail_records_what_a_setting_was_and_became_but_never_a_secre
 }
 
 #[tokio::test]
-async fn a_new_smtp_host_starts_without_the_saved_smtp_password() {
+async fn a_new_smtp_host_does_not_keep_the_stored_password() {
     let rig = Rig::new();
     let root = rig.admin(ADMIN).await;
     let token = root.step_up(&rig).await;
     let put = |changes: Value| {
-        root.write(
-            "PUT",
-            "/admin/v1/settings",
-            Some(json!({ "changes": changes })),
-            &token,
-        )
+        let root = &root;
+        let token = &token;
+        async move {
+            root.write(
+                "PUT",
+                "/admin/v1/settings",
+                Some(json!({ "changes": changes })),
+                token,
+            )
+            .await
+        }
     };
-    assert_eq!(
-        put(json!({"smtp_host": "mail.example.org", "smtp_password": "hunter2-hunter2"}))
-            .await
-            .status,
-        StatusCode::OK
-    );
-    assert!(rig.admin.saved_setting("setting.smtp_password").is_some());
-    // Another setting of the mail server, or the same host again: the password stays.
-    assert_eq!(
-        put(json!({"smtp_host": "mail.example.org", "smtp_port": "465"}))
-            .await
-            .status,
-        StatusCode::OK
-    );
-    assert!(rig.admin.saved_setting("setting.smtp_password").is_some());
-    // A new host with a new password keeps the new one.
-    assert_eq!(
-        put(json!({"smtp_host": "smtp.other.example", "smtp_password": "another-secret-1"}))
-            .await
-            .status,
-        StatusCode::OK
-    );
-    assert!(rig.admin.saved_setting("setting.smtp_password").is_some());
-    // A new host alone drops the password the old one was given.
-    assert_eq!(
-        put(json!({"smtp_host": "evil.example"})).await.status,
-        StatusCode::OK
-    );
-    assert_eq!(rig.admin.saved_setting("setting.smtp_password"), None);
-}
+    let first =
+        put(json!({"smtp_host": "mail.example.org", "smtp_password": "hunter2-hunter2"})).await;
+    assert_eq!(first.status, StatusCode::OK, "{:?}", first.json());
 
-#[tokio::test]
-async fn a_new_sso_issuer_starts_without_the_stored_client_secret() {
-    let rig = Rig::new();
-    let root = rig.admin(ADMIN).await;
-    let token = root.step_up(&rig).await;
-    let saved = root
-        .write("PUT", "/admin/v1/sso", Some(sso_body()), &token)
-        .await;
-    assert_eq!(saved.status, StatusCode::OK, "{:?}", saved.json());
-    // The same issuer, the secret left out: kept.
-    let mut keep = sso_body();
-    keep.as_object_mut().expect("object").remove("clientSecret");
-    let kept = root
-        .write("PUT", "/admin/v1/sso", Some(keep.clone()), &token)
-        .await
-        .json();
-    assert_eq!(kept["clientSecretSet"], true);
-    // Another issuer with the secret left out: the secret does not follow it.
-    keep["issuer"] = json!("https://idp.attacker.example/realms/kemlock");
-    let moved = root
-        .write("PUT", "/admin/v1/sso", Some(keep), &token)
-        .await
-        .json();
-    assert_eq!(moved["clientSecretSet"], false);
+    // Pointing the host elsewhere while keeping the stored password is refused, and nothing is
+    // saved: the password would go to whoever answers at the new host.
+    let moved = put(json!({"smtp_host": "evil.example.net"})).await;
+    assert_eq!(moved.status, StatusCode::BAD_REQUEST, "{:?}", moved.json());
+    assert_eq!(
+        rig.admin.saved_setting("setting.smtp_host").as_deref(),
+        Some("mail.example.org")
+    );
+
+    // The same host, or a new host with a new password (or none), is fine.
+    assert_eq!(
+        put(json!({"smtp_host": "Mail.Example.org"})).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        put(json!({"smtp_host": "other.example.net", "smtp_password": "another-password-1"}))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        put(json!({"smtp_host": "third.example.net", "smtp_password": null}))
+            .await
+            .status,
+        StatusCode::OK
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1953,7 +1933,9 @@ async fn sso_settings_are_saved_and_the_secret_is_never_returned() {
         "openid is implied"
     );
     assert_eq!(shown["groupRules"][0]["role"], "admin");
-    assert_eq!(shown["linkByEmail"], true);
+    // A new install links by email only when the admin turns it on, and asks for a proven domain.
+    assert_eq!(shown["linkByEmail"], false);
+    assert_eq!(shown["requireVerifiedDomain"], true);
 
     // The stored secret is sealed: the SSO area can open it, the table doesn't hold it in clear.
     let stored = rig.sso.settings().expect("stored");
@@ -1972,6 +1954,17 @@ async fn sso_settings_are_saved_and_the_secret_is_never_returned() {
         .json();
     assert_eq!(kept["displayName"], "Renamed");
     assert_eq!(kept["clientSecretSet"], true);
+    // A new issuer takes a new secret: the stored one would go to the provider at the new address.
+    let mut moved = keep.clone();
+    moved["issuer"] = json!("https://other.example.org/realms/kemlock");
+    let refused = root
+        .write("PUT", "/admin/v1/sso", Some(moved), &token)
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{:?}", refused.json());
+    assert_eq!(
+        rig.sso.settings().expect("stored").issuer,
+        "https://idp.example.org/realms/kemlock"
+    );
     keep["clearClientSecret"] = json!(true);
     let cleared = root
         .write("PUT", "/admin/v1/sso", Some(keep), &token)
