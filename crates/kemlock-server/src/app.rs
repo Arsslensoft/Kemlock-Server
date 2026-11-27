@@ -340,10 +340,10 @@ where
     )
     .map_err(RunError::Config)?;
     let router = Router::new()
-        .merge(health::router(HealthState {
-            store: store.clone(),
-            data_folder: config.data_folder.clone(),
-        }))
+        .merge(health::router(HealthState::new(
+            store.clone(),
+            config.data_folder.clone(),
+        )))
         // /LICENSE.txt, /NOTICE.txt and /THIRD-PARTY-NOTICES.txt, ahead of the web vault.
         .merge(source::router(source::third_party_paths()))
         .merge(kemlock_api_kem::router(api.clone(), store.clone()))
