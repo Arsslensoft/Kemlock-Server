@@ -58,6 +58,9 @@ use sea_orm::{
 use std::collections::HashMap;
 use std::net::IpAddr;
 use time::OffsetDateTime;
+
+/// How long past its link's expiry a held signup is kept before the retention job erases it.
+const HELD_SIGNUP_GRACE: time::Duration = time::Duration::days(7);
 use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
 
@@ -1019,6 +1022,9 @@ impl RetentionStore for SqlStore {
     }
 
     async fn purge_held_signups(&self, before: OffsetDateTime) -> Result<u64, StoreError> {
+        // A week past the link's expiry, so a mail that came late, or verification turned back on,
+        // doesn't cost anyone their account.
+        let before = before - HELD_SIGNUP_GRACE;
         let expired = email_confirmations::Entity::find()
             .filter(email_confirmations::Column::ExpiresAt.lt(utc(before)))
             .all(self.writer())
@@ -1051,6 +1057,19 @@ impl RetentionStore for SqlStore {
                     return Ok(false);
                 };
                 let user = row.into_domain()?;
+                // An account that holds anything has been used: verification was off, or it was
+                // confirmed another way. It is never erased as a held signup.
+                let (owner_type, owner_id) = owner_parts(kemlock_domain::Owner::User(user.id));
+                let used = items::Entity::find()
+                    .filter(items::Column::OwnerType.eq(owner_type))
+                    .filter(items::Column::OwnerId.eq(owner_id))
+                    .one(&txn)
+                    .await
+                    .store()?
+                    .is_some();
+                if used {
+                    return Ok(false);
+                }
                 let rows = erase_in(&txn, &user, self.origin()).await?;
                 if !rows.blobs.is_empty() || !rows.cipher_files.is_empty() {
                     // A held account can't have used its vault, so this should not happen.
