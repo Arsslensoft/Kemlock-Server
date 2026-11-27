@@ -601,6 +601,8 @@ where
         let by_id: BTreeMap<ItemId, &SpaceItemInfo> = infos.iter().map(|i| (i.id, i)).collect();
         let held: BTreeSet<ItemId> = request.held.iter().copied().collect();
         let me = id_of(actor);
+        // Whether the space takes signed writes only, asked once for all the re-writes.
+        let signed_only = self.items.signed_writes_required(Owner::Space(space)).await?;
         let mut written: BTreeSet<ItemId> = BTreeSet::new();
         let mut drafts = Vec::with_capacity(request.writes.len());
         for (collection, write) in &request.writes {
@@ -650,7 +652,7 @@ where
             // The re-write is a write like any other: a space that takes signed writes only
             // refuses a `kem1` one that carries no signature. Asked after the access and revision
             // checks, so a caller who may not re-write the item learns nothing of the flag.
-            if crate::signed_writes::refuses_unsigned(&self.items, &draft).await? {
+            if signed_only && draft.format == ItemFormat::Kem1 && draft.signature.is_none() {
                 return Err(AppendError::SignatureRequired);
             }
             drafts.push((draft, *collection));
