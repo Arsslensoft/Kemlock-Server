@@ -5,8 +5,13 @@
 //! ([`kemlock_app::sealed::bound_purpose`]), so a value copied into another account's row doesn't
 //! open there. Rows written before that are sealed under the bare purpose. This pass seals each of
 //! those again, bound, in one transaction, and the server then stops opening the bare form
-//! ([`kemlock_app::sealed::allow_bare_secrets`]), which would otherwise let someone who can write
+//! (`kemlock_app::sealed::allow_bare_secrets`), which would otherwise let someone who can write
 //! the database keep a copy of a secret sealed the old way and paste it into any row later.
+//!
+//! The pass runs once, for the migration it exists for, and records that it did
+//! ([`SECRETS_BOUND_KEY`]). A pass at every start would seal again any bare blob a database writer
+//! planted in a row, binding their own seed to the account they chose. A database restored from a
+//! backup that was made before the pass brings no record with it, so the pass runs for it.
 
 use crate::error::StoreResult;
 use crate::store::SqlStore;
@@ -63,9 +68,17 @@ fn rebind<S: SecretSeal>(seal: &S, purpose: &str, user: UserId, sealed: &[u8]) -
 
 impl SqlStore {
     /// Seals every stored per-account secret that opens only the old way to its account, in one
-    /// transaction, then records that it was done ([`SECRETS_BOUND_KEY`]). Cheap when there is
-    /// nothing to do, so the server runs it at every start: a restore can bring old rows back.
+    /// transaction, then records that it was done ([`SECRETS_BOUND_KEY`]). Once it is recorded the
+    /// pass does nothing: a bare-sealed blob that appears later is not one the migration made, and
+    /// is never sealed to an account. The server may run it at every start.
     pub async fn bind_secrets<S: SecretSeal>(&self, seal: &S) -> Result<BindReport, StoreError> {
+        let done = SettingsRepo::settings_with_prefix(self, SECRETS_BOUND_KEY)
+            .await?
+            .iter()
+            .any(|(key, value)| key == SECRETS_BOUND_KEY && value == "1");
+        if done {
+            return Ok(BindReport::default());
+        }
         let mut report = BindReport::default();
         let txn = self.writer().begin().await.store()?;
 

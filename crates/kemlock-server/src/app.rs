@@ -181,8 +181,10 @@ where
     let crypto = ServerCrypto::new(seal, opaque);
     // Secrets stored before they were sealed to their accounts are sealed again, bound, and the
     // old form then stops opening: it would let someone who can write the database keep a copy of
-    // a secret sealed the old way and paste it into any row. Run at every start, since a restore
-    // can bring old rows back. A failure leaves the old form readable and says so.
+    // a secret sealed the old way and paste it into any row. The pass runs once and records it, so
+    // it never seals a bare blob that turns up later; a restore of a database from before the pass
+    // brings no record, and the pass runs for it. A failure leaves the old form readable and says
+    // so.
     match store.bind_secrets(&crypto).await {
         Ok(report) => {
             kemlock_app::sealed::allow_bare_secrets(false);
