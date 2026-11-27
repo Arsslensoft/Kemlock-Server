@@ -269,6 +269,7 @@ where
     // A genuine, fresh challenge names the account its failures count against; the attempt is
     // reserved before the code is looked at.
     let user = step.challenge_user(&challenge)?;
+    api.sign_in().check_second_step_allowed(&challenge).await?;
     attempts::reserve_second_step(api, user, now).await?;
     let finished = step
         .verify(TwoStepInput {
@@ -356,6 +357,7 @@ where
     // A genuine, fresh challenge names the account its failures count against; the attempt is
     // reserved before the code is looked at.
     let user = step.challenge_user(&challenge)?;
+    api.sign_in().check_second_step_allowed(&challenge).await?;
     attempts::reserve_second_step(&api, user, now).await?;
     let finished = step.recover(&challenge, &request.code, &proof.jkt).await;
     attempts::settle_second_step(&api, user, &finished).await;

@@ -203,6 +203,9 @@ pub(crate) struct Challenge {
     pub(crate) device_name: String,
     pub(crate) device_kind: DeviceKind,
     pub(crate) jkt: String,
+    /// Whether the first step was the identity provider (SSO) and not the password: Require SSO
+    /// blocks the other first steps, so the second step of an SSO sign-in is not held to it.
+    pub(crate) via_sso: bool,
 }
 
 fn kind_code(kind: DeviceKind) -> u8 {
@@ -235,19 +238,23 @@ fn kind_from_code(code: u8) -> Option<DeviceKind> {
 impl Challenge {
     pub(crate) fn encode(&self) -> Vec<u8> {
         let mut w = Writer::new();
-        w.u8(1);
+        // Version 2 ends with whether the first step was SSO; version 1 (a challenge sealed before
+        // that, good for five minutes at most) has no such byte and is read as a password's.
+        w.u8(2);
         w.u64(self.expires_at.max(0) as u64);
         w.raw(self.user.as_bytes());
         w.raw(self.device.as_bytes());
         w.lp(self.device_name.as_bytes());
         w.u8(kind_code(self.device_kind));
         w.lp(self.jkt.as_bytes());
+        w.u8(u8::from(self.via_sso));
         w.0
     }
 
     pub(crate) fn decode(bytes: &[u8]) -> Option<Self> {
         let mut r = Reader(bytes);
-        if r.u8()? != 1 {
+        let version = r.u8()?;
+        if version != 1 && version != 2 {
             return None;
         }
         let expires_at = i64::try_from(r.u64()?).ok()?;
@@ -256,6 +263,15 @@ impl Challenge {
         let device_name = String::from_utf8(r.lp()?.to_vec()).ok()?;
         let device_kind = kind_from_code(r.u8()?)?;
         let jkt = String::from_utf8(r.lp()?.to_vec()).ok()?;
+        let via_sso = if version == 2 {
+            match r.u8()? {
+                0 => false,
+                1 => true,
+                _ => return None,
+            }
+        } else {
+            false
+        };
         r.done().then_some(Challenge {
             expires_at,
             user,
@@ -263,6 +279,7 @@ impl Challenge {
             device_name,
             device_kind,
             jkt,
+            via_sso,
         })
     }
 }
@@ -332,6 +349,7 @@ mod tests {
                 device_name: "Kemlock for browsers, Chrome".into(),
                 device_kind: kind,
                 jkt: "abc".into(),
+                via_sso: kind == DeviceKind::KemlockBrowser,
             };
             assert_eq!(Challenge::decode(&c.encode()), Some(c));
         }
@@ -346,9 +364,45 @@ mod tests {
             device_name: "Pixel".into(),
             device_kind: DeviceKind::KemlockAndroid,
             jkt: "abc".into(),
+            via_sso: false,
         };
         let bytes = c.encode();
         assert_eq!(Challenge::decode(&bytes), Some(c));
         assert_eq!(Challenge::decode(&bytes[..bytes.len() - 1]), None);
+    }
+
+    #[test]
+    fn a_challenge_remembers_an_sso_first_step_and_still_reads_the_old_form() {
+        let c = Challenge {
+            expires_at: 5,
+            user: UserId::random(),
+            device: DeviceId::random(),
+            device_name: "Pixel".into(),
+            device_kind: DeviceKind::KemlockAndroid,
+            jkt: "abc".into(),
+            via_sso: true,
+        };
+        assert_eq!(Challenge::decode(&c.encode()), Some(c));
+        // A challenge sealed before the flag existed has version 1 and no last byte: a password's.
+        let sso = Challenge {
+            expires_at: 5,
+            user: UserId::random(),
+            device: DeviceId::random(),
+            device_name: "Pixel".into(),
+            device_kind: DeviceKind::KemlockAndroid,
+            jkt: "abc".into(),
+            via_sso: true,
+        };
+        let mut old = sso.encode();
+        old[0] = 1;
+        old.pop();
+        let read = Challenge::decode(&old).expect("the old form reads");
+        assert!(!read.via_sso);
+        assert_eq!(read.jkt, "abc");
+        // A flag that is neither 0 nor 1 is refused.
+        let mut odd = sso.encode();
+        let last = odd.len() - 1;
+        odd[last] = 7;
+        assert_eq!(Challenge::decode(&odd), None);
     }
 }

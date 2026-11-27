@@ -857,3 +857,43 @@ async fn an_account_at_its_device_cap_refuses_a_new_device_but_not_a_known_one()
         .await
         .expect("a known device is not a new one");
 }
+
+#[tokio::test]
+async fn every_second_step_finish_checks_the_policy_and_a_pending_erasure() {
+    use kemlock_app::sso::{SpaceMembership, SpaceRole};
+    use kemlock_domain::SpaceId;
+    let (world, user) = two_step_world().await;
+    let challenge = challenge_for(&world).await;
+    assert_eq!(world.sign_in().check_second_step_allowed(&challenge).await, Ok(()));
+
+    // A space turns Require SSO on after the password step: the second step is refused for
+    // whatever method answers it, not only for the authenticator app.
+    let space = SpaceId::random();
+    world.store.set_memberships(
+        user,
+        vec![SpaceMembership {
+            space,
+            role: SpaceRole::Member,
+            require_sso: true,
+        }],
+    );
+    assert_eq!(
+        world.sign_in().check_second_step_allowed(&challenge).await,
+        Err(AppError::SsoRequired { space })
+    );
+    world.store.set_memberships(user, Vec::new());
+    assert_eq!(world.sign_in().check_second_step_allowed(&challenge).await, Ok(()));
+
+    // A disabled account, and one waiting out its erasure, are refused too.
+    world.store.set_account_disabled(user, true);
+    assert_eq!(
+        world.sign_in().check_second_step_allowed(&challenge).await,
+        Err(AppError::AccountDisabled)
+    );
+    world.store.set_account_disabled(user, false);
+    // A challenge that is garbage is refused as one.
+    assert!(matches!(
+        world.sign_in().check_second_step_allowed(&[1, 2, 3]).await,
+        Err(AppError::Invalid(_))
+    ));
+}

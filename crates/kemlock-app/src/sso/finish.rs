@@ -196,6 +196,7 @@ where
                 device_name: input.device.name,
                 device_kind: input.device.kind,
                 jkt: input.jkt,
+                via_sso: true,
             };
             return Ok(SsoSignedIn {
                 outcome: SignedIn::SecondStep(SecondStep {
