@@ -153,12 +153,25 @@ impl<U: UserRepo, R: EmergencyRepo, N: EmergencyNotices, E: Platform, V: EventLo
         id: GrantId,
         sealed_key: Vec<u8>,
     ) -> Result<EmergencyGrant, AppError> {
+        self.confirm_at(actor, id, sealed_key, None).await
+    }
+
+    /// [`confirm`](EmergencyAccess::confirm) with a box of the root key at `key_version`: refused
+    /// (`StaleKeyVersion`) when the grantor has replaced their keys since. A client that doesn't
+    /// say passes `None`.
+    pub async fn confirm_at(
+        &self,
+        actor: &Actor,
+        id: GrantId,
+        sealed_key: Vec<u8>,
+        key_version: Option<u32>,
+    ) -> Result<EmergencyGrant, AppError> {
         let mut grant = self.owned(actor, id).await?;
         let from = grant.state;
         grant
             .confirm(sealed_key, self.env.now())
             .map_err(grant_error)?;
-        self.save(&grant, from).await?;
+        self.save_at(&grant, from, key_version).await?;
         self.record("emergency.confirm", actor, id).await;
         self.notify(
             grant.grantee_email.clone(),
@@ -312,6 +325,19 @@ impl<U: UserRepo, R: EmergencyRepo, N: EmergencyNotices, E: Platform, V: EventLo
 
     async fn save(&self, grant: &EmergencyGrant, from: EmergencyState) -> Result<(), AppError> {
         if self.grants.save_grant(grant, from).await? {
+            Ok(())
+        } else {
+            Err(AppError::Invalid("the grant changed; look again and retry"))
+        }
+    }
+
+    async fn save_at(
+        &self,
+        grant: &EmergencyGrant,
+        from: EmergencyState,
+        key_version: Option<u32>,
+    ) -> Result<(), AppError> {
+        if self.grants.save_grant_at(grant, from, key_version).await? {
             Ok(())
         } else {
             Err(AppError::Invalid("the grant changed; look again and retry"))

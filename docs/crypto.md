@@ -551,13 +551,15 @@ a wrap that is for another version is refused (`409 key-version-stale`, with `cu
 account at version 0 accepts any), so a write made from keys read before the install can't leave a
 wrap of `R` behind. The version comes from what the write carries: a PRF wrap's and a kit's
 `keyVersion`, the `u32be` that begins a new Send's `sealedKey`, and the optional `keyVersion` of a
-Send's edit (`PUT /kem/v1/sends/{id}`). **What this does not cover:** an edit of a Send from a client
-that doesn't send `keyVersion` is accepted, and so its `meta`, sealed under the old key, could land
-after an install that replaced it; and the device copy, an emergency box, a recovery box and a device
-approval carry no key version, so a write of one that waited for an install is not refused by the
-store (the next rotation covers it, as it covers any wrap, and a copy of an old version opens
-nothing). Nothing else the server holds refers to `R` afterwards: **no wrap of `R` stays in this
-server's database** except those. That holds for this server only: a backup taken earlier still has the old
+Send's edit (`PUT /kem/v1/sends/{id}`), of a device copy (`PUT /kem/v1/devices/key-copy`), of an
+emergency confirmation (`POST .../emergency/grants/{id}/confirm`) and of a space recovery
+enrolment. **What this does not cover:** a request from a client that doesn't send `keyVersion`
+(one made before this field) is accepted without the check, so a Send edit's `meta`, a device copy,
+an emergency box or a recovery box made from the old keys could land after an install that replaced
+them (the next rotation covers it, as it covers any wrap, and a copy of an old version opens
+nothing); and a device approval, which carries no key version, is never checked. Nothing else the
+server holds refers to `R` afterwards: **no wrap of `R` stays in this server's database** except
+those. That holds for this server only: a backup taken earlier still has the old
 wraps and ciphertexts, a device that was offline keeps its own copy of what it opened (its trusted
 copy on the server is deleted with the device), and another server's copies are why a federated
 account is refused. After the commit, and best effort, the other devices are signed out and their rows and

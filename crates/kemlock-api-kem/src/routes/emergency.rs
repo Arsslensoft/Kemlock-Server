@@ -55,6 +55,9 @@ pub(crate) struct EmergencyInviteRequest {
 pub(crate) struct EmergencyConfirmRequest {
     /// The root key sealed to the contact's `kx1` key, base64url.
     pub(crate) sealed_key: String,
+    /// The key version of the root key in the box. A box for a version that is no longer the
+    /// account's is refused with `409 key-version-stale`; absent (an old client) is accepted.
+    pub(crate) key_version: Option<u32>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -251,7 +254,12 @@ impl<S: Store + EmergencyRepo, P: Crypto, K: TokenSigner + Clone + 'static> Api<
         let request: EmergencyConfirmRequest = body.json()?;
         let grant = api
             .emergency_access()
-            .confirm(&authed.actor, id, decode("sealedKey", &request.sealed_key)?)
+            .confirm_at(
+                &authed.actor,
+                id,
+                decode("sealedKey", &request.sealed_key)?,
+                request.key_version,
+            )
             .await?;
         Ok(Json(EmergencyGrantDto::from_grant(&grant)))
     }

@@ -61,6 +61,9 @@ pub(crate) struct EnrolRecoveryRequest {
     /// The `seq` of the chain record that set the recovery key the box is sealed to, and that is
     /// in the box's aad.
     key_seq: u64,
+    /// The key version of the root key in the box. A box for a version that is no longer the
+    /// account's is refused with `409 key-version-stale`; absent (an old client) is accepted.
+    key_version: Option<u32>,
 }
 
 /// An enrolled box.
@@ -112,6 +115,12 @@ impl From<RecoveryError> for Problem {
             .detail("keySeq isn't the record that set the chain's current recovery key")
             .with("current", json!(current)),
             RecoveryError::Invalid(why) => Problem::bad_request(why),
+            RecoveryError::StaleKeyVersion { current } => Problem::new(
+                StatusCode::CONFLICT,
+                "key-version-stale",
+                "The account's keys changed since this device unlocked",
+            )
+            .with("currentKeyVersion", serde_json::json!(current)),
             RecoveryError::Store(message) => Problem::from(AppError::Store(message)),
         }
     }
@@ -162,7 +171,13 @@ where
     let request: EnrolRecoveryRequest = body.json()?;
     let sealed = decode("box", &request.sealed)?;
     use_case(&env)
-        .enrol(&actor, space_id(&id)?, request.key_seq, sealed)
+        .enrol_at(
+            &actor,
+            space_id(&id)?,
+            request.key_seq,
+            sealed,
+            request.key_version,
+        )
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }

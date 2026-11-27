@@ -14,6 +14,7 @@ use kemlock_app::ports::{DeviceRepo, ItemStore, StoreError, UserRepo};
 use kemlock_app::recovery_kit::RecoveryKitRepo;
 use kemlock_app::rotation::{Install, InstallRequest, RotationError, RotationStore, StagedItem};
 use kemlock_app::sends::SendRepo;
+use kemlock_app::spaces::{RecoveryBox, SpaceRecoveryRepo};
 use kemlock_domain::DeviceKind;
 use kemlock_domain::sends::{SendId, SendKind, SendRecord};
 use kemlock_domain::unlock::{
@@ -21,7 +22,8 @@ use kemlock_domain::unlock::{
     EmergencyState, GrantId, KeyProtection, SEALED_BOX_OVERHEAD,
 };
 use kemlock_domain::{
-    DeviceId, Email, ItemId, Owner, Passkey, PasskeyId, PrfWrap, RecoveryKit, Revision, User,
+    DeviceId, Email, ItemId, Owner, Passkey, PasskeyId, PrfWrap, RecoveryKit, Revision, SpaceId,
+    User,
 };
 use kemlock_store_sql::SqlStore;
 use time::OffsetDateTime;
@@ -668,6 +670,52 @@ async fn a_wrap_for_the_old_key_version_is_refused_after_the_install(store: &Sql
         .put_key_copy_at(&copy, Some(2))
         .await
         .expect("a copy for the current version");
+
+    // An emergency box and a space recovery box say it too, when the client does.
+    let contact = account(store).await;
+    let mut grant = EmergencyGrant::invite(
+        GrantId::random(),
+        sam.id,
+        Email::parse(contact.email.as_str()).expect("email"),
+        EmergencyKind::View,
+        7,
+        T0,
+    )
+    .expect("a grant");
+    grant.accept(contact.id, T0).expect("accepted");
+    EmergencyRepo::insert_grant(store, &grant)
+        .await
+        .expect("grant");
+    let mut confirmed = grant.clone();
+    confirmed
+        .confirm(vec![3; SEALED_BOX_OVERHEAD + 64], T0)
+        .expect("confirmed");
+    assert_eq!(
+        EmergencyRepo::save_grant_at(store, &confirmed, EmergencyState::Accepted, Some(1)).await,
+        Err(stale.clone())
+    );
+    let kept = EmergencyRepo::grant(store, grant.id)
+        .await
+        .expect("read")
+        .expect("the grant");
+    assert_eq!((kept.state, kept.sealed_key), (EmergencyState::Accepted, None));
+    assert_eq!(
+        EmergencyRepo::save_grant_at(store, &confirmed, EmergencyState::Accepted, Some(2)).await,
+        Ok(true)
+    );
+    let space = SpaceId::random();
+    let recovery = RecoveryBox {
+        space,
+        user: sam.id,
+        key_seq: 1,
+        sealed: vec![4; 1693],
+        enrolled_at: T0,
+    };
+    assert_eq!(
+        store.put_recovery_box_at(recovery, Some(1)).await,
+        Err(stale.clone())
+    );
+    assert_eq!(store.recovery_box(space, sam.id).await, Ok(None));
 
     // A Send is sealed for the version its sealed key says; an edit says which it was made for.
     let send = SendRecord {
