@@ -551,7 +551,8 @@ where
 
 /// `GET /kem/v1/live`: a WebSocket of "sync now" nudges for the account's vault and the spaces
 /// it is in when the socket opens. The upgrade is authenticated like any other request; a
-/// membership that changes later reaches the socket when it reconnects with a fresh token.
+/// membership that ends later stops that space's nudges at the socket's next session check (a
+/// minute), and one that starts is picked up when the client reconnects with a fresh token.
 async fn live<S, P, K, R>(
     State(env): State<Env<S, P, K, R>>,
     caller: Caller,
@@ -565,6 +566,7 @@ where
 {
     let api = env.api.clone();
     let hub = api.hub.clone();
+    let spaces = env.spaces.clone();
     let owners = owners_of(&env.spaces, caller.0.actor.user).await?;
     // The socket ends with the access token that opened it, and sooner if the session ends.
     let lifetime = crate::live::until_expiry(caller.0.expires_at, api.now());
@@ -574,15 +576,26 @@ where
         security_stamp,
         ..
     } = caller.0;
+    let user = actor.user;
     Ok(upgrade.on_upgrade(move |socket| {
-        crate::live::serve_socket(socket, hub, owners, lifetime, move || {
-            let api = api.clone();
-            let jkt = jkt.clone();
-            async move {
-                api.session_is_live(actor.user, actor.device, &jkt, security_stamp)
-                    .await
-            }
-        })
+        crate::live::serve_socket(
+            socket,
+            hub,
+            owners,
+            lifetime,
+            move || {
+                let api = api.clone();
+                let jkt = jkt.clone();
+                async move {
+                    api.session_is_live(actor.user, actor.device, &jkt, security_stamp)
+                        .await
+                }
+            },
+            move || {
+                let spaces = spaces.clone();
+                async move { owners_of(&spaces, user).await.ok() }
+            },
+        )
     }))
 }
 

@@ -126,16 +126,21 @@ pub fn until_expiry(expires_at: i64, now: i64) -> Duration {
 /// time: a client reconnects with a fresh token), and every [`RECHECK_EVERY`] it asks
 /// `still_valid`, which says whether the session still stands (the security stamp, the device
 /// and its key), so a password change, a sign-out or a detected refresh-token reuse ends the
-/// stream within a minute instead of at the token's end.
-pub async fn serve_socket<F, Fut>(
+/// stream within a minute instead of at the token's end. At the same check `current_owners` gives
+/// the owners the account syncs now (`None` when it can't be read), so a member removed from a space
+/// stops getting that space's nudges within a minute too, not at the token's end.
+pub async fn serve_socket<F, Fut, G, Own>(
     mut socket: WebSocket,
     hub: LiveHub,
-    owners: Vec<Owner>,
+    mut owners: Vec<Owner>,
     lifetime: Duration,
     mut still_valid: F,
+    mut current_owners: G,
 ) where
     F: FnMut() -> Fut + Send,
     Fut: Future<Output = bool> + Send,
+    G: FnMut() -> Own + Send,
+    Own: Future<Output = Option<Vec<Owner>>> + Send,
 {
     let mut nudges = hub.subscribe();
     let expiry = tokio::time::sleep(lifetime);
@@ -147,6 +152,11 @@ pub async fn serve_socket<F, Fut>(
             _ = recheck.tick() => {
                 if !still_valid().await {
                     break;
+                }
+                // A member taken out of a space since the socket opened gets no more of its
+                // nudges. A failed read keeps the list: the next check tries again.
+                if let Some(now) = current_owners().await {
+                    owners = now;
                 }
             }
             nudge = nudges.recv() => {
