@@ -369,6 +369,31 @@ async fn a_malformed_kit_is_refused_and_nothing_is_kept() {
 }
 
 #[tokio::test]
+async fn a_replacement_kit_for_another_key_version_is_a_409_and_keeps_the_old_kit() {
+    let rig = rig();
+    let (device, session, user) = rig.plain().await;
+    let token = session.access_token.as_str();
+    let first = rig.kit_body(user).await;
+    let made = rig
+        .authed(&device, "POST", KIT, token, Some(first.clone()))
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.json());
+
+    let proof = rig.proof(&device, token).await;
+    let stale = with(
+        with(rig.kit_body(user).await, "keyVersion", json!(99)),
+        "proof",
+        json!(proof),
+    );
+    let reply = rig.authed(&device, "PUT", KIT, token, Some(stale)).await;
+    assert_eq!(reply.status, StatusCode::CONFLICT, "{:?}", reply.json());
+    assert_eq!(reply.problem(), "key-version-stale");
+    assert!(reply.json()["currentKeyVersion"].is_number());
+    let shown = rig.authed(&device, "GET", KIT, token, None).await.json();
+    assert_eq!(shown["kitId"], first["kitId"], "the old kit is untouched");
+}
+
+#[tokio::test]
 async fn a_kit_for_another_key_version_is_a_409_with_the_current_one() {
     let rig = rig();
     let (device, session, user) = rig.plain().await;

@@ -577,7 +577,7 @@ and **422** on a signed item write whose signature is for a key version the acco
 both carry `currentKeyVersion` and mean "the account's keys changed after this device unlocked:
 unlock again". `stale-key-version` (409) is another rule: a write of an item under a collection
 key version that a `keys` record has replaced (the scenario of "A write under the old version leaves
-it held"), and carries no `currentKeyVersion`.
+it held"), and its `currentKeyVersion` is the collection's, not the account's.
 
 Other devices' sessions end with the stamp: each signs in again and sees at
 `GET /kem/v1/account/keys` a `keyVersion` it did not hold, so it opens with the password, a passkey,

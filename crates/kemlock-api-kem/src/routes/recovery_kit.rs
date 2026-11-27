@@ -292,7 +292,6 @@ where
     responses(
         (status = 200, description = "The account's kit", body = KitDto),
         (status = 404, description = "The account has no kit", body = ProblemDoc, content_type = "application/problem+json"),
-        (status = 409, description = "`key-version-stale`: the wrap is for another key version than the account's (`currentKeyVersion`)", body = ProblemDoc, content_type = "application/problem+json"),
     )
 )]
 #[allow(dead_code)]
@@ -319,6 +318,7 @@ fn doc_create() {}
         (status = 200, description = "The new kit is kept; the old pieces no longer work", body = KitDto),
         (status = 400, description = "The proof is wrong or spent, or the id or wrap is malformed", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 404, description = "The account has no kit", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 409, description = "`key-version-stale`: the wrap is for another key version than the account's (`currentKeyVersion`)", body = ProblemDoc, content_type = "application/problem+json"),
     )
 )]
 #[allow(dead_code)]
