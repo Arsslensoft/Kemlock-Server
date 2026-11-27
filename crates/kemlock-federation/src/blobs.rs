@@ -451,7 +451,22 @@ impl<S: FedStore> Replica<S> {
             }
             after = *last.attachment.0.as_bytes();
             for entry in &entries {
-                if self.store.attachment(entry.attachment).await?.is_none() {
+                if let Some(row) = self.store.attachment(entry.attachment).await? {
+                    // A row this server already holds says which file it is: what the peer names
+                    // is checked against it, never taken. Otherwise a peer that knows an
+                    // attachment id could name the file of another row (one still being
+                    // uploaded, say) and fill it with bytes of its own.
+                    if row.owner != vault
+                        || row.item != entry.item
+                        || row.blob != entry.blob
+                        || row.size != entry.size
+                        || !row.is_ready()
+                    {
+                        tracing::info!(%peer, attachment = ?entry.attachment, "an attachment of a peer didn't match the row this server holds: left out");
+                        report.skipped += 1;
+                        continue;
+                    }
+                } else {
                     // The peer says which item the file belongs to and which file it is, and
                     // neither is checked by its signature: the item must be one of this vault's,
                     // and the file one no other row (an attachment, or a Send's) holds, or the
@@ -689,5 +704,62 @@ mod tests {
         assert!(held.contains(&good.attachment));
         assert!(!held.contains(&unknown_item.attachment));
         assert!(!held.contains(&stolen_file.attachment));
+    }
+
+    #[tokio::test]
+    async fn a_peer_cannot_name_another_file_for_an_attachment_this_server_already_holds() {
+        use crate::memory::MemoryStore;
+        use crate::message::BlobEntry;
+        use crate::suite::Suite;
+        use crate::testing::{draft, identity};
+        use kemlock_domain::{ItemId, UserId};
+
+        const NOW: u64 = 1_800_000_000;
+        let ia = identity(1, NOW, &Suite::IMPLEMENTED);
+        let ib = identity(2, NOW, &Suite::IMPLEMENTED);
+        let home = ia.server;
+        let me = Replica::new(MemoryStore::new(ib.server), Arc::new(ib.clone()));
+        me.pin_peer(&ia.descriptor, NOW).await.expect("pin");
+        let vault = Owner::User(UserId::random());
+        me.accept_vault(vault, home, vec![ib.server])
+            .await
+            .expect("accept");
+        let item = ItemId::random();
+        me.store
+            .put(draft(item, vault, None, 1, 1_000))
+            .expect("an item");
+        // An upload this server's own user has started: the row is pending and its file not here.
+        let pending = Attachment {
+            id: AttachmentId(uuid::Uuid::new_v4()),
+            item,
+            owner: vault,
+            blob: BlobId::random(),
+            size: 10,
+            status: AttachmentStatus::Pending,
+            created_at: OffsetDateTime::now_utc(),
+        };
+        me.store.put_attachment(pending.clone());
+        // The peer lists that attachment id (it knows it) with a file it names itself, and again
+        // with the row's own file, which is not ready here.
+        let other_file = BlobEntry {
+            attachment: pending.id,
+            item,
+            blob: BlobId::random(),
+            size: 10,
+        };
+        let own_file = BlobEntry {
+            blob: pending.blob,
+            ..other_file.clone()
+        };
+        let mut channel = Canned(vec![Response::Blobs {
+            vault,
+            entries: vec![other_file, own_file],
+            more: false,
+        }]);
+        let report = me
+            .sync_blobs(&mut channel, home, vault)
+            .await
+            .expect("sync");
+        assert_eq!((report.rows, report.fetched, report.skipped), (0, 0, 2));
     }
 }
