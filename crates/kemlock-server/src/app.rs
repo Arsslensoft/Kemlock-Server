@@ -609,6 +609,15 @@ pub async fn run(config: Config) -> Result<(), RunError> {
              the clear"
         );
     }
+    if let Some(header) = &config.ip_header_ignored {
+        tracing::warn!(
+            header = %header,
+            "IP_HEADER is set but KEMLOCK_TRUSTED_PROXIES is empty, so the header is IGNORED: \
+             every client counts as the proxy and shares one rate-limit budget, so a few failed \
+             sign-ins can lock everyone out. Set KEMLOCK_TRUSTED_PROXIES to the address of your \
+             reverse proxy"
+        );
+    }
     if !config.ignored.is_empty() {
         tracing::warn!(
             settings = %config.ignored.join(", "),

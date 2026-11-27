@@ -515,8 +515,8 @@ WebSocket through it. Kemlock serves the API, the web vault and both WebSocket r
   `KEMLOCK_TRUSTED_PROXIES`, so rate limits and connection caps see the real client. Set both:
   without them every client looks like the proxy and shares one budget, so a few slow requests
   from one person can lock everyone out. `KEMLOCK_TRUSTED_PROXIES` takes addresses and blocks of
-  them (`10.0.0.1, 10.244.0.0/16, fd00::/8`; `/0` is refused), and Kemlock refuses to start when
-  `IP_HEADER` is set with no trusted proxy. `compose.yaml` trusts `X-Forwarded-For` from
+  them (`10.0.0.1, 10.244.0.0/16, fd00::/8`; `/0` is refused), and when
+  `IP_HEADER` is set with no trusted proxy, Kemlock still starts but ignores the header and logs a warning at start (a Vaultwarden `IP_HEADER` moved over keeps working that way, with every client counted as the proxy until you list it). `compose.yaml` trusts `X-Forwarded-For` from
   `172.16.0.0/12`, the Docker bridge networks the host's proxy arrives from; the Helm chart does
   the same from the private ranges when the ingress is on (set `ipHeader` and `trustedProxies` to
   narrow it to your controller). Kemlock reads every line of the header and takes

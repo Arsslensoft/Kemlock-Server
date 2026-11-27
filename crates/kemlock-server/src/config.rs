@@ -92,8 +92,12 @@ pub struct Config {
     pub server_key: Option<String>,
     /// `KEMLOCK_TRUSTED_PROXIES`: addresses, or blocks of them (`10.0.0.0/8`).
     pub trusted_proxies: Vec<Proxy>,
-    /// `IP_HEADER`.
+    /// `IP_HEADER`, when it is believed: `None` when it is unset, and also when it is set with
+    /// no trusted proxy (see `ip_header_ignored`).
     pub ip_header: Option<String>,
+    /// The `IP_HEADER` that was set but is not used, as no proxy is trusted to send it. The
+    /// server starts and warns; every client then counts as the proxy.
+    pub ip_header_ignored: Option<String>,
     /// `KEMLOCK_BROWSER_EXTENSION_IDS`: the ids of the Kemlock browser extensions whose redirect
     /// addresses (`https://<id>.chromiumapp.org/`, `https://<hash>.extensions.allizom.org/`) a
     /// `KemlockBrowser` device may use for SSO, lower case. Default empty: none may.
@@ -353,21 +357,18 @@ impl Config {
             Some(value) => parse_proxies(value.split(','))?,
             None => parse_proxies(file.trusted_proxies.iter().flatten().map(String::as_str))?,
         };
-        let ip_header = lookup(env, "IP_HEADER")
+        let mut ip_header = lookup(env, "IP_HEADER")
             .or(file.ip_header)
             .filter(|header| !header.trim().is_empty());
         // A header naming the client is believed only from a trusted proxy. With none listed it
-        // would be ignored, and every client would count as the proxy: say so at start, not at
-        // the first lockout.
-        if let Some(header) = &ip_header
-            && trusted_proxies.is_empty()
-        {
-            return Err(ConfigError::Bad {
-                name: "IP_HEADER",
-                expected: "set together with KEMLOCK_TRUSTED_PROXIES, the proxies it is believed from",
-                value: header.clone(),
-            });
-        }
+        // is ignored, as if unset (a Vaultwarden deployment moved here often has `IP_HEADER` and
+        // no proxy list, and must still start): `run` warns loudly, because every client then
+        // counts as the proxy and shares one budget.
+        let ip_header_ignored = if trusted_proxies.is_empty() {
+            ip_header.take()
+        } else {
+            None
+        };
         let browser_extension_ids = match lookup(env, "KEMLOCK_BROWSER_EXTENSION_IDS") {
             Some(value) => parse_extension_ids(value.split(','))?,
             None => parse_extension_ids(
@@ -430,6 +431,7 @@ impl Config {
             server_key: lookup(env, "KEMLOCK_SERVER_KEY"),
             trusted_proxies,
             ip_header,
+            ip_header_ignored,
             browser_extension_ids,
             source_url,
             federation_probe_seconds,
@@ -699,33 +701,31 @@ mod tests {
     }
 
     #[test]
-    fn a_client_address_header_without_a_trusted_proxy_is_refused_at_start() {
-        let refused = config(&[("IP_HEADER", "X-Forwarded-For")], None);
-        assert!(
-            matches!(
-                refused,
-                Err(ConfigError::Bad {
-                    name: "IP_HEADER",
-                    ..
-                })
-            ),
-            "{refused:?}"
-        );
+    fn a_client_address_header_without_a_trusted_proxy_is_ignored_and_reported() {
+        // A Vaultwarden deployment moved here often has IP_HEADER and no proxy list: it starts,
+        // the header is not believed, and `run` warns about it.
+        let c = config(&[("IP_HEADER", "X-Real-IP")], None).expect("starts");
+        assert_eq!(c.ip_header, None);
+        assert_eq!(c.ip_header_ignored.as_deref(), Some("X-Real-IP"));
         // From the file too.
-        assert!(config(&[], Some("ip_header = \"X-Real-IP\"\n")).is_err());
-        // With a proxy it is fine, and an empty value counts as unset.
-        assert!(
-            config(
-                &[
-                    ("IP_HEADER", "X-Forwarded-For"),
-                    ("KEMLOCK_TRUSTED_PROXIES", "10.0.0.0/8")
-                ],
-                None
-            )
-            .is_ok()
-        );
+        let c = config(&[], Some("ip_header = \"X-Real-IP\"\n")).expect("starts");
+        assert_eq!(c.ip_header, None);
+        assert_eq!(c.ip_header_ignored.as_deref(), Some("X-Real-IP"));
+        // With a proxy it is believed, and nothing is ignored.
+        let c = config(
+            &[
+                ("IP_HEADER", "X-Forwarded-For"),
+                ("KEMLOCK_TRUSTED_PROXIES", "10.0.0.0/8"),
+            ],
+            None,
+        )
+        .expect("valid");
+        assert_eq!(c.ip_header.as_deref(), Some("X-Forwarded-For"));
+        assert_eq!(c.ip_header_ignored, None);
+        // An empty value counts as unset: nothing to ignore.
         let c = config(&[("IP_HEADER", " ")], None).expect("empty is unset");
         assert_eq!(c.ip_header, None);
+        assert_eq!(c.ip_header_ignored, None);
     }
 
     #[test]

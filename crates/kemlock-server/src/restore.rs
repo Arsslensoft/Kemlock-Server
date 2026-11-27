@@ -627,6 +627,7 @@ pub async fn restore_check(
         server_key: None,
         trusted_proxies: Vec::new(),
         ip_header: None,
+        ip_header_ignored: None,
         browser_extension_ids: Vec::new(),
         source_url: None,
         federation_probe_seconds: 60,
