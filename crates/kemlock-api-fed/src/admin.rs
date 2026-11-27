@@ -1413,17 +1413,29 @@ where
     ))
 }
 
+/// `?rehome=true` on an accept: the admin means to take the account of a personal vault that this
+/// server holds as a copy from another server over to the offering server.
+#[derive(Debug, Default, Deserialize)]
+struct AcceptOffer {
+    #[serde(default)]
+    rehome: bool,
+}
+
 async fn accept_offer<S, C>(
     State(state): State<AdminState<S, C>>,
     Admin(actor): Admin,
     Path(owner): Path<String>,
+    Query(accept): Query<AcceptOffer>,
 ) -> Result<Json<VaultDto>, ApiError>
 where
     S: FedStore + Leases + 'static,
     C: Connector + 'static,
 {
     require_step_up(&actor)?;
-    let settings = state.federation.accept_offer(parse_owner(&owner)?).await?;
+    let settings = state
+        .federation
+        .accept_offer_rehoming(parse_owner(&owner)?, accept.rehome)
+        .await?;
     Ok(Json(settings_dto(&settings, false)))
 }
 

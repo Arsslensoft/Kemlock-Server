@@ -626,6 +626,10 @@ already holds the vault under another home or epoch, or whose account or space i
 `pending` like any other offer and keeps nothing, so an offer can't tell a peer which ids exist
 here. An accepted vault takes a new replica
 order the home sends under the same epoch; nothing is copied to a replica that hasn't accepted.
+An offer of a personal vault whose account this server holds as a copy that came from another server
+is kept, but its admin can accept it only as a re-homing (`POST .../offers/{owner}/accept?rehome=true`):
+the account then follows the offering server, so one acceptance of what looks like a new vault can't
+hand a peer an account another peer owns.
 
 **Files.** `Blobs` pages through the ready attachments of a vault in attachment id order; a replica
 adds a row for each it lacks and, for a file of at most 50 MiB, fetches it with `Blob` requests of
@@ -862,8 +866,9 @@ peer's next session, soon after it is queued, and completes it when the peer ans
 that is down keeps it queued, and one that refuses (the sender is not the vault's home) leaves it
 queued too, to be tried at the regular visits.
 
-A replica accepts `Erase` only from a paired peer that is the vault's home by the settings it holds
-(or by the offer, for a vault its admin never accepted). It then deletes, in one transaction, the
+A replica accepts `Erase` only from a paired peer that is the vault's home by the settings it holds,
+that is, for a vault its admin accepted; an offer, accepted or not, is no ground for it (a vault with
+no settings is acknowledged, and a pending offer of that home is closed). It then deletes, in one transaction, the
 vault's items and every version of them, the change log, attachment rows, home records, cursors,
 the offer and the federation settings, and, for a personal vault, the copied account with its
 devices; then it deletes the attachment files. A personal vault whose account lives on the

@@ -781,7 +781,17 @@ impl<S: FedStore + Leases, C: Connector> Federation<S, C> {
 
     /// The admin of a replica accepts the vault a home offered: it is copied here from now on.
     pub async fn accept_offer(&self, vault: Owner) -> Result<VaultFederation> {
-        let accepted = self.replica.accept_offer(vault).await?;
+        self.accept_offer_rehoming(vault, false).await
+    }
+
+    /// [`accept_offer`](Self::accept_offer) for a personal vault whose account is a copy from
+    /// another server, when the admin means to re-home it to the offering server.
+    pub async fn accept_offer_rehoming(
+        &self,
+        vault: Owner,
+        rehome: bool,
+    ) -> Result<VaultFederation> {
+        let accepted = self.replica.accept_offer_rehoming(vault, rehome).await?;
         self.runner.mark_dirty(accepted.home);
         Ok(accepted)
     }
