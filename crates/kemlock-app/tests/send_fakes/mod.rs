@@ -9,6 +9,7 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use kemlock_app::files::{BlobError, BlobRead, BlobStore, BlobUpload, PresignedUrl};
 use kemlock_app::policies::{PolicyRepo, StoredPolicies};
+use kemlock_app::quota::QuotaRefusal;
 use kemlock_app::ports::StoreError;
 use kemlock_app::sends::{SendBlobs, SendPolicies, SendRepo, SendRules};
 use kemlock_domain::policies::{PoliciesBySpace, SpacePolicies};
@@ -24,6 +25,9 @@ use time::OffsetDateTime;
 #[derive(Clone, Default)]
 pub(crate) struct FakeSends {
     rows: Arc<Mutex<HashMap<SendId, SendRecord>>>,
+    /// The key version of the owners' accounts, which a wrap made for another is refused under;
+    /// `None` checks nothing.
+    key_version: Arc<Mutex<Option<u32>>>,
 }
 
 impl FakeSends {
@@ -37,6 +41,22 @@ impl FakeSends {
 
     pub(crate) fn get(&self, id: SendId) -> Option<SendRecord> {
         self.lock().get(&id).cloned()
+    }
+
+    /// Says which key version the owners' accounts are at, as the real store reads from the
+    /// account row.
+    pub(crate) fn set_account_key_version(&self, version: u32) {
+        *self.key_version.lock().expect("the lock isn't poisoned") = Some(version);
+    }
+
+    fn check_key_version(&self, key_version: Option<u32>) -> Result<(), StoreError> {
+        let current = *self.key_version.lock().expect("the lock isn't poisoned");
+        match (current, key_version) {
+            (Some(current), Some(asked)) if current != 0 && current != asked => {
+                Err(StoreError::StaleKeyVersion { current })
+            }
+            _ => Ok(()),
+        }
     }
 
     pub(crate) fn count(&self) -> usize {
@@ -57,6 +77,25 @@ impl SendRepo for FakeSends {
         }
         rows.insert(send.id, send.clone());
         Ok(())
+    }
+
+    async fn add_send_within_quota_at(
+        &self,
+        send: &SendRecord,
+        quota: Option<u64>,
+        key_version: Option<u32>,
+    ) -> Result<Result<(), QuotaRefusal>, StoreError> {
+        self.check_key_version(key_version)?;
+        self.add_send_within_quota(send, quota).await
+    }
+
+    async fn update_send_at(
+        &self,
+        send: &SendRecord,
+        key_version: Option<u32>,
+    ) -> Result<(), StoreError> {
+        self.check_key_version(key_version)?;
+        self.update_send(send).await
     }
 
     async fn send_by_id(&self, id: SendId) -> Result<Option<SendRecord>, StoreError> {

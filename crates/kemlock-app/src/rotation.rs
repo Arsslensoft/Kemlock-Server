@@ -17,7 +17,7 @@
 use crate::authenticate::Actor;
 use crate::config::AuthConfig;
 use crate::error::AppError;
-use crate::notices::{KeysRotatedNotice, Notice, Notices};
+use crate::notices::{EmergencyContactRekeyedNotice, KeysRotatedNotice, Notice, Notices};
 use crate::platform::{Platform, random_uuid};
 use crate::ports::{ItemStore, Notifier, StoreError, UserRepo};
 use crate::register::{
@@ -31,8 +31,8 @@ use kemlock_domain::unlock::{
     DeviceKeyCopy, EmergencyState, GrantId, KeyProtection, MAX_WRAPPED_KEY_LEN,
 };
 use kemlock_domain::{
-    AccountMode, ChangeId, DeviceId, ItemError, ItemFormat, ItemId, Owner, PasskeyId, PrfWrap,
-    Revision, SpaceId, User, UserId, WriteSignature,
+    AccountMode, ChangeId, DeviceId, Email, ItemError, ItemFormat, ItemId, Owner, PasskeyId,
+    PrfWrap, Revision, SpaceId, User, UserId, WriteSignature,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -184,6 +184,26 @@ impl std::fmt::Debug for Install {
     }
 }
 
+/// What a committed install reports to the use case.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Installed {
+    /// The last item the install wrote, to nudge the account's devices with.
+    pub change: Option<ChangeId>,
+    /// The emergency grants that named the account as the contact and held a box: the install sent
+    /// each back to waiting for its grantor's confirmation, so each grantor is told. Read in the
+    /// install's transaction, one entry per grant.
+    pub reset_grants: Vec<ResetGrant>,
+}
+
+/// An emergency grant the install sent back to waiting for its grantor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResetGrant {
+    pub grantor: UserId,
+    /// The contact's address as the grant itself names it, not as the account has it now: the
+    /// grantor knows the contact by it, and a changed address is not told to them.
+    pub contact: Email,
+}
+
 // ---- refusals ----
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -316,7 +336,7 @@ pub trait RotationStore: Send + Sync {
     fn install(
         &self,
         install: Install,
-    ) -> impl Future<Output = Result<Option<ChangeId>, RotationError>> + Send;
+    ) -> impl Future<Output = Result<Installed, RotationError>> + Send;
 
     /// The previous private keys, while they are kept.
     fn previous_keys(
@@ -672,7 +692,7 @@ where
             updated_at: now,
             ..before.clone()
         };
-        let change = self
+        let installed = self
             .store
             .install(Install {
                 request,
@@ -691,7 +711,28 @@ where
                 at: now,
             }))
             .await;
-        if let Some(change) = change {
+        // Each emergency grant the account was the contact of lost its box: its grantor has to
+        // confirm the contact again, and is told so. No key material is in the mail.
+        for reset in installed.reset_grants {
+            match self.users.by_id(reset.grantor).await {
+                Ok(Some(grantor)) => {
+                    self.notices
+                        .send(Notice::EmergencyContactRekeyed(
+                            EmergencyContactRekeyedNotice {
+                                to: grantor.email,
+                                contact: reset.contact,
+                                at: now,
+                            },
+                        ))
+                        .await;
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    tracing::warn!(%err, "the grantor of a reset emergency grant could not be read, no mail");
+                }
+            }
+        }
+        if let Some(change) = installed.change {
             self.push.sync_now(Owner::User(before.id), change).await;
         }
         Ok(after)

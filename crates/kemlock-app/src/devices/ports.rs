@@ -74,6 +74,15 @@ pub trait KeyCopyRepo: Send + Sync {
         copy: &DeviceKeyCopy,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
 
+    /// [`put_key_copy`](KeyCopyRepo::put_key_copy) for a copy the client made for `key_version`: a
+    /// store that can read the account refuses (`StaleKeyVersion`) a copy for a version that is no
+    /// longer the account's. `None` checks nothing. Every store implements the check.
+    fn put_key_copy_at(
+        &self,
+        copy: &DeviceKeyCopy,
+        key_version: Option<u32>,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
     /// Deletes the device's copy, if it has one.
     fn remove_key_copy(
         &self,

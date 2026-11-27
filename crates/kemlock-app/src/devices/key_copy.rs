@@ -30,6 +30,18 @@ impl<D: DeviceRepo, C: KeyCopyRepo, E: Clock> KeyCopies<D, C, E> {
         wrapped_key: Vec<u8>,
         protection: KeyProtection,
     ) -> Result<DeviceKeyCopy, AppError> {
+        self.put_at(actor, wrapped_key, protection, None).await
+    }
+
+    /// [`put`](KeyCopies::put) for a copy made for `key_version`: refused (`StaleKeyVersion`)
+    /// when the account has replaced its keys since. A client that doesn't say passes `None`.
+    pub async fn put_at(
+        &self,
+        actor: &Actor,
+        wrapped_key: Vec<u8>,
+        protection: KeyProtection,
+        key_version: Option<u32>,
+    ) -> Result<DeviceKeyCopy, AppError> {
         if wrapped_key.is_empty() || wrapped_key.len() > MAX_WRAPPED_KEY_LEN {
             return Err(AppError::Invalid("the wrapped key must be 1 to 1024 bytes"));
         }
@@ -53,7 +65,7 @@ impl<D: DeviceRepo, C: KeyCopyRepo, E: Clock> KeyCopies<D, C, E> {
             created_at,
             updated_at: now,
         };
-        self.copies.put_key_copy(&copy).await?;
+        self.copies.put_key_copy_at(&copy, key_version).await?;
         Ok(copy)
     }
 

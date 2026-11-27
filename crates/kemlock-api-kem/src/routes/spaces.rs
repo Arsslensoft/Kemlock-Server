@@ -226,6 +226,9 @@ impl From<SpacesError> for Problem {
                 "A space needs at least one confirmed owner",
             ),
             SpacesError::Duplicate => Problem::from(AppError::Duplicate),
+            SpacesError::StaleAccountKeys { current } => {
+                Problem::from(AppError::StaleKeyVersion { current })
+            }
             SpacesError::StaleItem { item, current } => {
                 Problem::from(AppError::Conflict { item, current })
             }

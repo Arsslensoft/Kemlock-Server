@@ -53,6 +53,8 @@ export type KeyProtection = 'secure-enclave' | 'keystore' | 'web-crypto' | 'brow
 export interface KeyCopyRequest {
   wrappedKey: string;
   protection: KeyProtection;
+  /** The key version the copy was made for; a copy for another is a `409 key-version-stale`. Absent is accepted. */
+  keyVersion?: number | undefined;
 }
 
 export interface KeyCopyResponse {

@@ -10,16 +10,22 @@ use common::{draft, external, file, memory, put, unique_email, user};
 use kemlock_app::devices::{ApprovalRepo, KeyCopyRepo};
 use kemlock_app::emergency::EmergencyRepo;
 use kemlock_app::passkeys::PasskeyRepo;
-use kemlock_app::ports::{DeviceRepo, ItemStore, UserRepo};
+use kemlock_app::ports::{DeviceRepo, ItemStore, StoreError, UserRepo};
 use kemlock_app::recovery_kit::RecoveryKitRepo;
-use kemlock_app::rotation::{Install, InstallRequest, RotationError, RotationStore, StagedItem};
+use kemlock_app::rotation::{
+    Install, InstallRequest, ResetGrant, RotationError, RotationStore, StagedItem,
+};
+use kemlock_app::sends::SendRepo;
+use kemlock_app::spaces::{RecoveryBox, SpaceRecoveryRepo};
 use kemlock_domain::DeviceKind;
+use kemlock_domain::sends::{SendId, SendKind, SendRecord};
 use kemlock_domain::unlock::{
     ApprovalId, ApprovalState, AuthRequest, DeviceKeyCopy, EmergencyGrant, EmergencyKind,
     EmergencyState, GrantId, KeyProtection, SEALED_BOX_OVERHEAD,
 };
 use kemlock_domain::{
-    DeviceId, Email, ItemId, Owner, Passkey, PasskeyId, PrfWrap, RecoveryKit, Revision, User,
+    DeviceId, Email, ItemId, Owner, Passkey, PasskeyId, PrfWrap, RecoveryKit, Revision, SpaceId,
+    User,
 };
 use kemlock_store_sql::SqlStore;
 use time::OffsetDateTime;
@@ -170,11 +176,11 @@ async fn rotation(store: &SqlStore) {
         .await,
         Ok(2)
     );
-    let change = RotationStore::install(store, install_of(&sam, request()))
+    let installed = RotationStore::install(store, install_of(&sam, request()))
         .await
         .expect("the install");
     assert!(
-        change.is_some(),
+        installed.change.is_some(),
         "the last item written names the change to nudge devices with"
     );
     let after = UserRepo::by_id(store, sam.id)
@@ -434,9 +440,17 @@ async fn a_grant_that_names_the_account_as_contact_goes_back_to_waiting(store: &
         "the account holds no box of its own for it"
     );
 
-    RotationStore::install(store, install_of(&sam, request()))
+    let installed = RotationStore::install(store, install_of(&sam, request()))
         .await
         .expect("the install");
+    assert_eq!(
+        installed.reset_grants,
+        vec![ResetGrant {
+            grantor: grantor.id,
+            contact: grant.grantee_email.clone(),
+        }],
+        "the install names the grantor to tell, and the contact as the grant has it"
+    );
     // The grantor's box was sealed to the keys the account no longer has: the grantor confirms
     // again, to the new bundle.
     let after = EmergencyRepo::grant(store, grant.id)
@@ -499,6 +513,273 @@ async fn a_vault_that_takes_signed_writes_only_installs_no_unsigned_item(store: 
         .expect("the install");
 }
 
+fn racing_passkey(user: &User, label: &str) -> Passkey {
+    Passkey {
+        id: PasskeyId::random(),
+        user: user.id,
+        credential_id: Uuid::new_v4().as_bytes().to_vec(),
+        name: label.to_owned(),
+        credential: vec![8; 32],
+        prf_wrap: Some(PrfWrap {
+            wrapped_key: vec![2; 92],
+            key_version: 1,
+        }),
+        created_at: T0,
+        last_used_at: None,
+    }
+}
+
+/// The install wins the race, deterministically: a transaction holds the account's row lock and
+/// has set the key version to 2 (what the install's first statements do), the writer starts and
+/// must block on the lock, and only after the commit does it run, meet version 2 and be refused.
+/// No wrap of the old version is left. On PostgreSQL and MySQL the writer waits on the row lock;
+/// on SQLite it waits for the one writer connection.
+async fn a_writer_that_waited_for_the_install_is_refused(store: &SqlStore) {
+    let sam = account(store).await;
+    let passkey = racing_passkey(&sam, "waits");
+    let hold = kemlock_store_sql::AccountHold::take(store, sam.id, 2)
+        .await
+        .expect("the lock and the new version");
+
+    let writer = {
+        let (store, passkey) = (store.clone(), passkey.clone());
+        tokio::spawn(async move { PasskeyRepo::insert_passkey(&store, &passkey).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(!writer.is_finished(), "the writer must wait for the lock");
+
+    hold.commit().await.expect("the commit");
+    assert_eq!(
+        writer.await.expect("the writer ran"),
+        Err(StoreError::StaleKeyVersion { current: 2 })
+    );
+    let held = PasskeyRepo::passkeys_of(store, sam.id)
+        .await
+        .expect("read");
+    assert!(held.is_empty(), "no wrap of the old version is left");
+    // A writer that read the new version is kept.
+    let current = Passkey {
+        prf_wrap: Some(PrfWrap {
+            wrapped_key: vec![2; 92],
+            key_version: 2,
+        }),
+        ..racing_passkey(&sam, "after")
+    };
+    PasskeyRepo::insert_passkey(store, &current)
+        .await
+        .expect("a wrap for the new version");
+}
+
+/// The writer wins the race, deterministically: its wrap is committed before the install reads,
+/// so the install sees a wrap its request does not name and is refused with nothing written, and
+/// the install that names the wrap replaces it.
+async fn an_install_after_a_writer_is_refused_until_it_names_the_wrap(store: &SqlStore) {
+    let sam = account(store).await;
+    let passkey = racing_passkey(&sam, "first");
+    PasskeyRepo::insert_passkey(store, &passkey)
+        .await
+        .expect("the writer commits first");
+
+    let refused = RotationStore::install(store, install_of(&sam, request())).await;
+    assert!(
+        matches!(refused, Err(RotationError::Incomplete(_))),
+        "{refused:?}"
+    );
+    let after = UserRepo::by_id(store, sam.id)
+        .await
+        .expect("read")
+        .expect("account");
+    assert_eq!(after.key_version, 1, "nothing written");
+    assert_eq!(after.security_stamp, sam.security_stamp);
+    let held = PasskeyRepo::passkeys_of(store, sam.id)
+        .await
+        .expect("read");
+    let wrap = held[0].prf_wrap.clone().expect("a wrap");
+    assert_eq!((wrap.wrapped_key, wrap.key_version), (vec![2; 92], 1));
+
+    let named = InstallRequest {
+        passkeys: vec![(passkey.id, vec![3; 92])],
+        ..request()
+    };
+    RotationStore::install(store, install_of(&sam, named))
+        .await
+        .expect("the install that names the wrap");
+    let held = PasskeyRepo::passkeys_of(store, sam.id)
+        .await
+        .expect("read");
+    let wrap = held[0].prf_wrap.clone().expect("a wrap");
+    assert_eq!(
+        (wrap.wrapped_key, wrap.key_version),
+        (vec![3; 92], 2),
+        "no wrap of the old key is left"
+    );
+}
+
+/// After an install, a wrap for the old key version is refused whichever way it is written, and
+/// one for the new version is kept.
+async fn a_wrap_for_the_old_key_version_is_refused_after_the_install(store: &SqlStore) {
+    let sam = account(store).await;
+    RotationStore::install(store, install_of(&sam, request()))
+        .await
+        .expect("the install");
+    let stale = StoreError::StaleKeyVersion { current: 2 };
+
+    let passkey = |version: u32| Passkey {
+        id: PasskeyId::random(),
+        user: sam.id,
+        credential_id: Uuid::new_v4().as_bytes().to_vec(),
+        name: "key".to_owned(),
+        credential: vec![8; 32],
+        prf_wrap: Some(PrfWrap {
+            wrapped_key: vec![2; 92],
+            key_version: version,
+        }),
+        created_at: T0,
+        last_used_at: None,
+    };
+    assert_eq!(
+        PasskeyRepo::insert_passkey(store, &passkey(1)).await,
+        Err(stale.clone())
+    );
+    let current = passkey(2);
+    PasskeyRepo::insert_passkey(store, &current)
+        .await
+        .expect("a wrap for the current version");
+    let old = PrfWrap {
+        wrapped_key: vec![5; 92],
+        key_version: 1,
+    };
+    assert_eq!(
+        PasskeyRepo::set_passkey_wrap(store, sam.id, current.id, Some(&old)).await,
+        Err(stale.clone())
+    );
+    let held = PasskeyRepo::passkeys_of(store, sam.id).await.expect("read");
+    assert_eq!(held.len(), 1, "only the passkey of the current version");
+    assert_eq!(held[0].prf_wrap, current.prf_wrap);
+
+    let kit = |version: u32| RecoveryKit {
+        kit_id: "AAAAAAAA".to_owned(),
+        wrapped_key: vec![1; 92],
+        key_version: version,
+        created_at: T0,
+    };
+    assert_eq!(
+        store.insert_recovery_kit(sam.id, &kit(1)).await,
+        Err(stale.clone())
+    );
+    assert_eq!(store.recovery_kit(sam.id).await, Ok(None));
+    assert_eq!(store.insert_recovery_kit(sam.id, &kit(2)).await, Ok(true));
+    assert_eq!(
+        store.replace_recovery_kit(sam.id, &kit(1)).await,
+        Err(stale.clone())
+    );
+
+    // A device copy says which version it was made for, when the client says.
+    let phone = common::device(sam.id, "phone", T0);
+    DeviceRepo::upsert(store, &phone).await.expect("device");
+    let copy = DeviceKeyCopy {
+        device: phone.id,
+        wrapped_key: vec![1; 80],
+        protection: KeyProtection::WebCrypto,
+        created_at: T0,
+        updated_at: T0,
+    };
+    assert_eq!(
+        store.put_key_copy_at(&copy, Some(1)).await,
+        Err(stale.clone())
+    );
+    assert_eq!(store.key_copy(phone.id).await, Ok(None));
+    store
+        .put_key_copy_at(&copy, Some(2))
+        .await
+        .expect("a copy for the current version");
+
+    // An emergency box and a space recovery box say it too, when the client does.
+    let contact = account(store).await;
+    let mut grant = EmergencyGrant::invite(
+        GrantId::random(),
+        sam.id,
+        Email::parse(contact.email.as_str()).expect("email"),
+        EmergencyKind::View,
+        7,
+        T0,
+    )
+    .expect("a grant");
+    grant.accept(contact.id, T0).expect("accepted");
+    EmergencyRepo::insert_grant(store, &grant)
+        .await
+        .expect("grant");
+    let mut confirmed = grant.clone();
+    confirmed
+        .confirm(vec![3; SEALED_BOX_OVERHEAD + 64], T0)
+        .expect("confirmed");
+    assert_eq!(
+        EmergencyRepo::save_grant_at(store, &confirmed, EmergencyState::Accepted, Some(1)).await,
+        Err(stale.clone())
+    );
+    let kept = EmergencyRepo::grant(store, grant.id)
+        .await
+        .expect("read")
+        .expect("the grant");
+    assert_eq!((kept.state, kept.sealed_key), (EmergencyState::Accepted, None));
+    assert_eq!(
+        EmergencyRepo::save_grant_at(store, &confirmed, EmergencyState::Accepted, Some(2)).await,
+        Ok(true)
+    );
+    let space = SpaceId::random();
+    let recovery = RecoveryBox {
+        space,
+        user: sam.id,
+        key_seq: 1,
+        sealed: vec![4; 1693],
+        enrolled_at: T0,
+    };
+    assert_eq!(
+        store.put_recovery_box_at(recovery, Some(1)).await,
+        Err(stale.clone())
+    );
+    assert_eq!(store.recovery_box(space, sam.id).await, Ok(None));
+
+    // A Send is sealed for the version its sealed key says; an edit says which it was made for.
+    let send = SendRecord {
+        id: SendId::random(),
+        owner: sam.id,
+        kind: SendKind::Text,
+        meta: vec![1; 40],
+        sealed_key: vec![2; 64],
+        payload: vec![3; 60],
+        file: None,
+        password: None,
+        max_access: None,
+        access_count: 0,
+        hide_email: false,
+        disabled: false,
+        expires_at: None,
+        deletion_at: T0 + time::Duration::days(7),
+        created_at: T0,
+        revised_at: T0,
+    };
+    assert_eq!(
+        SendRepo::add_send_within_quota_at(store, &send, None, Some(1)).await,
+        Err(stale.clone())
+    );
+    assert_eq!(SendRepo::send_by_id(store, send.id).await, Ok(None));
+    assert_eq!(
+        SendRepo::add_send_within_quota_at(store, &send, None, Some(2)).await,
+        Ok(Ok(()))
+    );
+    assert_eq!(
+        SendRepo::update_send_at(store, &send, Some(1)).await,
+        Err(stale)
+    );
+    SendRepo::update_send_at(store, &send, Some(2))
+        .await
+        .expect("an edit for the current version");
+    SendRepo::update_send_at(store, &send, None)
+        .await
+        .expect("an old client says no version");
+}
+
 async fn all(store: &SqlStore) {
     a_vault_that_takes_signed_writes_only_installs_no_unsigned_item(store).await;
     rotation(store).await;
@@ -507,6 +788,9 @@ async fn all(store: &SqlStore) {
     wraps_written_through_the_repos_are_all_seen_and_replaced(store).await;
     an_approval_that_holds_the_old_root_key_does_not_survive_the_install(store).await;
     a_grant_that_names_the_account_as_contact_goes_back_to_waiting(store).await;
+    a_writer_that_waited_for_the_install_is_refused(store).await;
+    an_install_after_a_writer_is_refused_until_it_names_the_wrap(store).await;
+    a_wrap_for_the_old_key_version_is_refused_after_the_install(store).await;
 }
 
 #[tokio::test]

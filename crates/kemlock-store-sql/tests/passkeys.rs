@@ -52,7 +52,7 @@ async fn passkeys(store: &SqlStore) {
     let second = Passkey {
         prf_wrap: Some(PrfWrap {
             wrapped_key: vec![7; 92],
-            key_version: 3,
+            key_version: 1,
         }),
         ..passkey(sam, "Phone", T0 + Duration::minutes(1))
     };
@@ -148,7 +148,7 @@ async fn passkeys(store: &SqlStore) {
     // The PRF copy is set, replaced and removed.
     let wrap = PrfWrap {
         wrapped_key: vec![8; 92],
-        key_version: 2,
+        key_version: 1,
     };
     PasskeyRepo::set_passkey_wrap(store, sam, first.id, Some(&wrap))
         .await

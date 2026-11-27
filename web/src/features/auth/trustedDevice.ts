@@ -26,7 +26,7 @@ export async function trustThisBrowser(deps: TrustedDeviceDeps, keyVersion: numb
   const { userId, deviceId } = deps.session.getState();
   if (!userId || !deviceId) throw new Error('nobody is signed in');
   const copy = await deps.crypto.deviceCopySeal(userId, deviceId, keyVersion);
-  await deps.devices.putKeyCopy({ wrappedKey: encodeB64(copy), protection: 'web-crypto' });
+  await deps.devices.putKeyCopy({ wrappedKey: encodeB64(copy), protection: 'web-crypto', keyVersion });
 }
 
 /** Opens the vault with this browser's copy; false when it has none that opens. */

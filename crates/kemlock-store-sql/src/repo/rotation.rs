@@ -20,14 +20,14 @@ use crate::tables::{
 };
 use kemlock_app::ports::StoreError;
 use kemlock_app::rotation::{
-    Holdings, Install, PreviousKeys, RotationError, RotationStore, StagedItem, check_install,
-    check_staged_write, device_copy_row,
+    Holdings, Install, Installed, PreviousKeys, ResetGrant, RotationError, RotationStore,
+    StagedItem, check_install, check_staged_write, device_copy_row,
 };
 use kemlock_domain::sends::SendId;
 use kemlock_domain::unlock::{EmergencyState, GrantId};
 use kemlock_domain::{
-    ChangeId, DeviceId, ItemDraft, ItemFormat, ItemId, Owner, PasskeyId, RecoveryKit, Revision,
-    SpaceId, UserId, WriteSignature,
+    DeviceId, Email, ItemDraft, ItemFormat, ItemId, Owner, PasskeyId, RecoveryKit, Revision, SpaceId,
+    UserId, WriteSignature,
 };
 use sea_orm::ActiveValue::Set;
 use sea_orm::{
@@ -323,7 +323,7 @@ impl RotationStore for SqlStore {
         Ok(())
     }
 
-    async fn install(&self, install: Install) -> Result<Option<ChangeId>, RotationError> {
+    async fn install(&self, install: Install) -> Result<Installed, RotationError> {
         let txn = db(self.writer().begin().await)?;
         let outcome = self.install_in(&txn, &install).await;
         finish(txn, outcome).await
@@ -360,7 +360,7 @@ impl SqlStore {
         &self,
         txn: &DatabaseTransaction,
         install: &Install,
-    ) -> Result<Option<ChangeId>, RotationError> {
+    ) -> Result<Installed, RotationError> {
         let request = &install.request;
         let user = install.before.id;
         let now = install.now;
@@ -579,20 +579,37 @@ impl SqlStore {
         // The grants that name the account as the contact hold a box sealed to its old exchange
         // key, which this rotation replaces: they go back to waiting for the grantor's
         // confirmation, who then seals to the new bundle.
+        // The rows are read again here so the grantors told are exactly the grants reset.
+        let mut reset_grants: Vec<ResetGrant> = Vec::new();
         if !holdings.as_contact.is_empty() {
-            let row = emergency_access::ActiveModel {
-                sealed_key: Set(None),
-                state: Set(EmergencyState::Accepted.as_str().to_owned()),
-                recovery_initiated_at: Set(None),
-                updated_at: Set(utc(now)),
-                ..Default::default()
-            };
-            db(emergency_access::Entity::update_many()
-                .set(row)
+            let held = db(emergency_access::Entity::find()
                 .filter(emergency_access::Column::GranteeId.eq(user.0))
                 .filter(emergency_access::Column::SealedKey.is_not_null())
-                .exec(txn)
+                .all(txn)
                 .await)?;
+            if !held.is_empty() {
+                let row = emergency_access::ActiveModel {
+                    sealed_key: Set(None),
+                    state: Set(EmergencyState::Accepted.as_str().to_owned()),
+                    recovery_initiated_at: Set(None),
+                    updated_at: Set(utc(now)),
+                    ..Default::default()
+                };
+                db(emergency_access::Entity::update_many()
+                    .set(row)
+                    .filter(emergency_access::Column::Id.is_in(held.iter().map(|grant| grant.id)))
+                    .exec(txn)
+                    .await)?;
+                for grant in &held {
+                    match Email::parse(&grant.grantee_email) {
+                        Ok(contact) => reset_grants.push(ResetGrant {
+                            grantor: UserId(grant.grantor_id),
+                            contact,
+                        }),
+                        Err(_) => tracing::warn!("a reset grant's contact address doesn't parse, no mail"),
+                    }
+                }
+            }
         }
 
         // The space recovery boxes: replaced, or deleted.
@@ -679,6 +696,9 @@ impl SqlStore {
             .filter(rotation_staged_items::Column::UserId.eq(user.0))
             .exec(txn)
             .await)?;
-        Ok(change)
+        Ok(Installed {
+            change,
+            reset_grants,
+        })
     }
 }

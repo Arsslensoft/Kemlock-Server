@@ -85,8 +85,14 @@ impl<S: SendRepo, Q: SendPolicies, V: EventLog, E: Platform> CreateSend<S, Q, V,
         )?;
         // The check above refuses early. This one is the one that holds: the sum and the insert
         // are one step, so Sends made together can't all pass it.
+        // The sealed key begins with the key version it was made for (docs/crypto.md, "Sends"): the
+        // store refuses it under the owner's lock when the account has replaced its keys since.
+        let key_version = send
+            .sealed_key
+            .first_chunk::<4>()
+            .map(|prefix| u32::from_be_bytes(*prefix));
         self.sends
-            .add_send_within_quota(&send, self.config.quota)
+            .add_send_within_quota_at(&send, self.config.quota, key_version)
             .await?
             .map_err(SendsError::Quota)?;
         record(&self.events, actor, "send.create", send.id, now).await;
@@ -120,6 +126,19 @@ impl<S: SendRepo, Q: SendPolicies, V: EventLog, E: Platform> UpdateSend<S, Q, V,
         id: SendId,
         input: UpdateSendInput,
     ) -> Result<SendRecord, SendsError> {
+        self.execute_at(actor, id, input, None).await
+    }
+
+    /// [`execute`](UpdateSend::execute) for a change whose sealed parts the client made for
+    /// `key_version`: the store refuses it when the account has replaced its keys since. A client
+    /// that doesn't say passes `None`, and nothing is checked.
+    pub async fn execute_at(
+        &self,
+        actor: &Actor,
+        id: SendId,
+        input: UpdateSendInput,
+        key_version: Option<u32>,
+    ) -> Result<SendRecord, SendsError> {
         let mut send = own_send(&self.sends, actor, id).await?;
         check_rules(
             self.policies.send_rules(actor.user).await?,
@@ -132,7 +151,7 @@ impl<S: SendRepo, Q: SendPolicies, V: EventLog, E: Platform> UpdateSend<S, Q, V,
         };
         let now = self.env.now();
         send.revise(input.meta, input.payload, input.options, password, now)?;
-        self.sends.update_send(&send).await?;
+        self.sends.update_send_at(&send, key_version).await?;
         record(&self.events, actor, "send.update", send.id, now).await;
         Ok(send)
     }

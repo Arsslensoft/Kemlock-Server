@@ -309,7 +309,9 @@ async fn a_passkey_without_prf_signs_in_but_opens_nothing_until_it_is_given_a_co
     let short = put(json!({"wrappedKey": b64(&WRAP[..91]), "keyVersion": FIRST_KEY_VERSION})).await;
     assert_eq!(short.status, StatusCode::BAD_REQUEST, "{:?}", short.json());
     let stale = put(json!({"wrappedKey": b64(&WRAP), "keyVersion": FIRST_KEY_VERSION + 1})).await;
-    assert_eq!(stale.status, StatusCode::BAD_REQUEST, "{:?}", stale.json());
+    assert_eq!(stale.status, StatusCode::CONFLICT, "{:?}", stale.json());
+    assert_eq!(stale.problem(), "key-version-stale");
+    assert_eq!(stale.json()["currentKeyVersion"], FIRST_KEY_VERSION);
     let stored = put(json!({"wrappedKey": b64(&WRAP), "keyVersion": FIRST_KEY_VERSION})).await;
     assert_eq!(stored.status, StatusCode::NO_CONTENT, "{:?}", stored.json());
 

@@ -54,6 +54,16 @@ pub trait SpaceRecoveryRepo: Send + Sync {
         recovery: RecoveryBox,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
 
+    /// [`put_recovery_box`](SpaceRecoveryRepo::put_recovery_box) for a box of the root key at
+    /// `key_version`: a store that can read the account refuses (`StaleKeyVersion`) a box for a
+    /// version that is no longer the account's. `None` checks nothing. Every store implements
+    /// the check.
+    fn put_recovery_box_at(
+        &self,
+        recovery: RecoveryBox,
+        key_version: Option<u32>,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
     /// Removes the member's box; false when there was none.
     fn delete_recovery_box(
         &self,
@@ -79,12 +89,19 @@ pub enum RecoveryError {
     },
     /// The box isn't the shape of a sealed root key.
     Invalid(&'static str),
+    /// The account replaced its keys after the box was made.
+    StaleKeyVersion {
+        current: u32,
+    },
     Store(String),
 }
 
 impl From<StoreError> for RecoveryError {
     fn from(e: StoreError) -> Self {
-        RecoveryError::Store(e.to_string())
+        match e {
+            StoreError::StaleKeyVersion { current } => RecoveryError::StaleKeyVersion { current },
+            other => RecoveryError::Store(other.to_string()),
+        }
     }
 }
 
@@ -153,6 +170,20 @@ where
         key_seq: u64,
         sealed: Vec<u8>,
     ) -> Result<(), RecoveryError> {
+        self.enrol_at(actor, space, key_seq, sealed, None).await
+    }
+
+    /// [`enrol`](SpaceRecovery::enrol) with a root key at `key_version`: refused
+    /// (`StaleKeyVersion`) when the account has replaced its keys since. A client that doesn't
+    /// say passes `None`.
+    pub async fn enrol_at(
+        &self,
+        actor: &Actor,
+        space: SpaceId,
+        key_seq: u64,
+        sealed: Vec<u8>,
+        key_version: Option<u32>,
+    ) -> Result<(), RecoveryError> {
         self.in_space(actor, space).await?;
         let Some((_, state)) = self.spaces.chain_state(space).await? else {
             return Err(RecoveryError::NotEnabled);
@@ -175,13 +206,16 @@ where
         }
         let now = self.clock.now();
         self.spaces
-            .put_recovery_box(RecoveryBox {
-                space,
-                user: actor.user,
-                key_seq,
-                sealed,
-                enrolled_at: now,
-            })
+            .put_recovery_box_at(
+                RecoveryBox {
+                    space,
+                    user: actor.user,
+                    key_seq,
+                    sealed,
+                    enrolled_at: now,
+                },
+                key_version,
+            )
             .await?;
         record(
             &self.events,

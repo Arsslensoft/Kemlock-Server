@@ -52,6 +52,9 @@ struct Inner {
 pub(crate) struct FakeSpaces<I> {
     inner: Arc<Mutex<Inner>>,
     items: I,
+    /// The key version of the accounts, which a wrap made for another is refused under; `None`
+    /// checks nothing.
+    key_version: Arc<Mutex<Option<u32>>>,
 }
 
 impl<I: Clone> Clone for FakeSpaces<I> {
@@ -59,6 +62,7 @@ impl<I: Clone> Clone for FakeSpaces<I> {
         FakeSpaces {
             inner: Arc::clone(&self.inner),
             items: self.items.clone(),
+            key_version: Arc::clone(&self.key_version),
         }
     }
 }
@@ -167,11 +171,17 @@ impl<I> FakeSpaces<I> {
         FakeSpaces {
             inner: Arc::new(Mutex::new(Inner::default())),
             items,
+            key_version: Arc::new(Mutex::new(None)),
         }
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().expect("the spaces lock isn't poisoned")
+    }
+
+    /// Says which key version the accounts are at, as the real store reads from the account row.
+    pub(crate) fn set_account_key_version(&self, version: u32) {
+        *self.key_version.lock().expect("the lock isn't poisoned") = Some(version);
     }
 
     fn state_of(g: &Inner, id: SpaceId) -> Option<SpaceState> {
@@ -1030,6 +1040,21 @@ impl<I: Send + Sync> SpaceRecoveryRepo for FakeSpaces<I> {
             .recovery
             .insert((recovery.space, recovery.user), recovery);
         Ok(())
+    }
+
+    async fn put_recovery_box_at(
+        &self,
+        recovery: RecoveryBox,
+        key_version: Option<u32>,
+    ) -> Result<(), StoreError> {
+        let current = *self.key_version.lock().expect("the lock isn't poisoned");
+        if let (Some(current), Some(asked)) = (current, key_version)
+            && current != 0
+            && current != asked
+        {
+            return Err(StoreError::StaleKeyVersion { current });
+        }
+        self.put_recovery_box(recovery).await
     }
 
     async fn delete_recovery_box(&self, space: SpaceId, user: UserId) -> Result<bool, StoreError> {

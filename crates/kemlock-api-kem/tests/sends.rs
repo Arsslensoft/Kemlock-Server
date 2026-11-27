@@ -236,6 +236,56 @@ async fn the_owners_routes_need_a_signed_in_device() {
 }
 
 #[tokio::test]
+async fn a_send_sealed_for_another_key_version_is_a_409_with_the_current_one() {
+    let rig = Rig::signed_in().await;
+    // The store says the account is at key version 2.
+    rig.sends.set_account_key_version(2);
+    let sealed = |version: u32| {
+        let mut key = version.to_be_bytes().to_vec();
+        key.extend([2u8; 60]);
+        b64(&key)
+    };
+
+    // A new Send names its key version in the first four bytes of its sealed key.
+    let stale = rig
+        .call(
+            "POST",
+            "/kem/v1/sends",
+            Some(rig.note_body(json!({"sealedKey": sealed(1)}))),
+        )
+        .await;
+    assert_eq!(stale.status, StatusCode::CONFLICT, "{:?}", stale.json());
+    assert_eq!(stale.problem(), "key-version-stale");
+    assert_eq!(stale.json()["currentKeyVersion"], 2);
+    assert_eq!(rig.sends.count(), 0);
+    let made = rig
+        .make(rig.note_body(json!({"sealedKey": sealed(2)})))
+        .await;
+    let id = made["id"].as_str().expect("an id").to_owned();
+
+    // An edit says which version it was sealed for.
+    let edit = |key_version: Option<u32>| {
+        let mut body = json!({
+            "meta": b64(&[9; 40]),
+            "hideEmail": false,
+            "disabled": false,
+            "deletionAt": rig.deletion(),
+        });
+        if let Some(version) = key_version {
+            body["keyVersion"] = json!(version);
+        }
+        rig.call("PUT", &format!("/kem/v1/sends/{id}"), Some(body))
+    };
+    let stale = edit(Some(1)).await;
+    assert_eq!(stale.status, StatusCode::CONFLICT, "{:?}", stale.json());
+    assert_eq!(stale.problem(), "key-version-stale");
+    assert_eq!(stale.json()["currentKeyVersion"], 2);
+    assert_eq!(edit(Some(2)).await.status, StatusCode::OK);
+    // An old client sends none, and is accepted.
+    assert_eq!(edit(None).await.status, StatusCode::OK);
+}
+
+#[tokio::test]
 async fn a_note_is_made_listed_read_changed_and_deleted() {
     let rig = Rig::signed_in().await;
     let made = rig.make(rig.note_body(json!({"maxAccess": 5}))).await;

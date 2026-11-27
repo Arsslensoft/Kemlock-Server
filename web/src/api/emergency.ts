@@ -67,11 +67,12 @@ export function createEmergencyApi(http: Http) {
       http.request<EmergencyGrantDto>({ method: 'POST', path: grants, body }),
     revoke: (id: string) => http.send({ method: 'DELETE', path: `${grants}/${id}` }),
     accept: (id: string) => post(id, 'accept'),
-    confirm: (id: string, sealedKey: string) =>
+    /** `keyVersion`: the key version of the root key in the box; a box for another is a `409 key-version-stale`. Absent is accepted. */
+    confirm: (id: string, sealedKey: string, keyVersion?: number) =>
       http.request<EmergencyGrantDto>({
         method: 'POST',
         path: `${grants}/${id}/confirm`,
-        body: { sealedKey },
+        body: keyVersion === undefined ? { sealedKey } : { sealedKey, keyVersion },
       }),
     initiate: (id: string) => post(id, 'initiate'),
     approve: (id: string) => post(id, 'approve'),

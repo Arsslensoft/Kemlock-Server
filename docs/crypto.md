@@ -546,13 +546,38 @@ box, and its grantor confirms the account's new bundle again. The locks that mak
 install takes the `server_meta` lock that every item write takes, and the account's row lock, before
 it reads; every write of a wrap (a PRF wrap, a device copy, the kit, an emergency box, a recovery
 box, a Send, a device approval) takes the account's row lock too, so a wrap written meanwhile is
-seen, or waits. Nothing the server holds refers to `R` afterwards: **no wrap of `R` stays in this
-server's database**. That holds for this server only: a backup taken earlier still has the old
+seen, or waits. A writer that waited then reads the account's `key_version` again under that lock, and
+a wrap that is for another version is refused (`409 key-version-stale`, with `currentKeyVersion`; an
+account at version 0 accepts any), so a write made from keys read before the install can't leave a
+wrap of `R` behind. The version comes from what the write carries: a PRF wrap's and a kit's
+`keyVersion`, the `u32be` that begins a new Send's `sealedKey`, and the optional `keyVersion` of a
+Send's edit (`PUT /kem/v1/sends/{id}`), of a device copy (`PUT /kem/v1/devices/key-copy`), of an
+emergency confirmation (`POST .../emergency/grants/{id}/confirm`) and of a space recovery
+enrolment. **What this does not cover:** a request from a client that doesn't send `keyVersion`
+(one made before this field) is accepted without the check, so a Send edit's `meta`, a device copy,
+an emergency box or a recovery box made from the old keys could land after an install that replaced
+them (the next rotation covers it, as it covers any wrap, and a copy of an old version opens
+nothing); and a device approval, which carries no key version, is never checked. Nothing else the
+server holds refers to `R` afterwards: **no wrap of `R` stays in this server's database** except
+those. That holds for this server only: a backup taken earlier still has the old
 wraps and ciphertexts, a device that was offline keeps its own copy of what it opened (its trusted
 copy on the server is deleted with the device), and another server's copies are why a federated
 account is refused. After the commit, and best effort, the other devices are signed out and their rows and
 tokens deleted as `PUT /account/password` with `signOutOthers` does, and the calling device gets new
-tokens (`{keyVersion, tokens}`); the event `account.keys_rotated` is written (no key material).
+tokens (`{keyVersion, tokens}`); the event `account.keys_rotated` is written (no key material). The
+account's address is mailed a notice, and so is the grantor of each grant the install reset above
+(the grants in which the account is the contact): the mail says their emergency contact replaced
+their keys and that they must confirm the contact again in Emergency access, until which the
+contact has no access. Every mail is best effort, sent after the commit, and carries no key
+material.
+
+Two slugs look alike and are different rules. `key-version-stale` answers **409** on
+the wrap routes above (a PRF wrap, a kit, a Send, a device copy, an emergency box, a recovery box),
+and **422** on a signed item write whose signature is for a key version the account no longer has;
+both carry `currentKeyVersion` and mean "the account's keys changed after this device unlocked:
+unlock again". `stale-key-version` (409) is another rule: a write of an item under a collection
+key version that a `keys` record has replaced (the scenario of "A write under the old version leaves
+it held"), and its `currentKeyVersion` is the collection's, not the account's.
 
 Other devices' sessions end with the stamp: each signs in again and sees at
 `GET /kem/v1/account/keys` a `keyVersion` it did not hold, so it opens with the password, a passkey,

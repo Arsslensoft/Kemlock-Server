@@ -63,13 +63,13 @@ async fn kits(store: &SqlStore) {
 
     assert_eq!(
         store
-            .replace_recovery_kit(sam, &kit("CCCCCCCC", 3, 2))
+            .replace_recovery_kit(sam, &kit("CCCCCCCC", 3, 1))
             .await,
         Ok(true)
     );
     assert_eq!(
         store.recovery_kit(sam).await,
-        Ok(Some(kit("CCCCCCCC", 3, 2)))
+        Ok(Some(kit("CCCCCCCC", 3, 1)))
     );
     assert_eq!(store.recovery_kit(ada).await, Ok(None), "another account's");
 

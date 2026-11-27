@@ -17,6 +17,10 @@ pub enum SpacesError {
     NotFound,
     #[error("already exists")]
     Duplicate,
+    /// A wrap of the account's root key was for a key version the account no longer has (not a
+    /// collection's key version: that is `Rule(SpaceError::StaleKeyVersion)`).
+    #[error("the account's key version is {current}")]
+    StaleAccountKeys { current: u32 },
     /// A write over a revision the writer hadn't seen.
     #[error("item {item} changed: stored revision is {current:?}")]
     StaleItem {
@@ -37,6 +41,7 @@ impl From<StoreError> for SpacesError {
             StoreError::Conflict { item, current } => SpacesError::StaleItem { item, current },
             StoreError::Duplicate => SpacesError::Duplicate,
             StoreError::NotFound => SpacesError::NotFound,
+            StoreError::StaleKeyVersion { current } => SpacesError::StaleAccountKeys { current },
             StoreError::Backend(message) if message == super::ports::OWNER_REQUIRED => {
                 SpacesError::Rule(SpaceError::LastOwner)
             }
@@ -77,6 +82,7 @@ impl From<SpacesError> for AppError {
                 AppError::Invalid("a space needs at least one confirmed owner")
             }
             SpacesError::Duplicate => AppError::Duplicate,
+            SpacesError::StaleAccountKeys { current } => AppError::StaleKeyVersion { current },
             SpacesError::StaleItem { item, current } => AppError::Conflict { item, current },
             SpacesError::Item(e) => AppError::Item(e),
             SpacesError::Store(message) => AppError::Store(message),

@@ -5,25 +5,39 @@
 //! transaction.
 
 mod common;
+/// `space_fakes` names the fakes by their path at a test crate's root.
+mod fakes {
+    pub(crate) use super::common::fakes::*;
+}
+#[path = "../../kemlock-app/tests/chain_kit/mod.rs"]
+mod chain_kit;
+#[path = "../../kemlock-app/tests/space_fakes/mod.rs"]
+mod space_fakes;
 
 use axum::Router;
 use axum::http::StatusCode;
-use common::{App, Client, PASSWORD, Req, Session, b64, register_and_sign_in, unb64};
+use chain_kit::{Chain, Person as Keys, request as chain_request};
+use common::{
+    App, Client, PASSWORD, Req, Session, b64, register_and_sign_in, register_and_sign_in_with, unb64,
+};
 use kemlock_api_kem::testing::DpopSigner;
-use kemlock_api_kem::{RotationApiDoc, rotation_router};
+use kemlock_api_kem::{RotationApiDoc, rotation_router, space_chain_router, spaces_router};
 use kemlock_app::notices::{BoxFuture, Notice, Outbox};
 use kemlock_app::ports::{StoreError, UserRepo};
 use kemlock_app::rotation::{
-    Holdings, Install, PreviousKeys, RotationError, RotationStore, StagedItem, check_install,
+    Holdings, Install, Installed, PreviousKeys, ResetGrant, RotationError, RotationStore,
+    StagedItem, check_install,
 };
 use kemlock_domain::unlock::{EmergencyState, GrantId};
-use kemlock_domain::{ChangeId, ItemId, PasskeyId, Revision, UserId};
+use kemlock_domain::{ItemId, PasskeyId, Revision, UserId};
 use serde_json::{Value, json};
+use space_fakes::FakeSpaces;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use time::OffsetDateTime;
 use utoipa::OpenApi;
+use uuid::Uuid;
 
 use common::fakes::FakeStore;
 
@@ -42,12 +56,25 @@ struct FakeRotation {
     users: FakeStore,
     holdings: Arc<Mutex<Holdings>>,
     installs: Arc<Mutex<u32>>,
+    /// The grantors the install says it reset the grants of.
+    reset_grants: Arc<Mutex<Vec<ResetGrant>>>,
     snapshots: Arc<Mutex<u32>>,
+    /// The previous private keys an install keeps for an account in a space, as the store does.
+    kept: Arc<Mutex<Option<PreviousKeys>>>,
+}
+
+impl FakeRotation {
+    /// What the account holds, with whether the previous keys are kept filled in from the state.
+    fn held(&self) -> Holdings {
+        let mut held = self.holdings.lock().expect("lock").clone();
+        held.previous_keys = self.kept.lock().expect("lock").is_some();
+        held
+    }
 }
 
 impl RotationStore for FakeRotation {
     async fn holdings(&self, _user: UserId) -> Result<Holdings, StoreError> {
-        Ok(self.holdings.lock().expect("lock").clone())
+        Ok(self.held())
     }
 
     async fn stage(
@@ -68,27 +95,35 @@ impl RotationStore for FakeRotation {
         _since: OffsetDateTime,
     ) -> Result<(Holdings, Vec<(ItemId, Revision)>), StoreError> {
         *self.snapshots.lock().expect("lock") += 1;
-        Ok((self.holdings.lock().expect("lock").clone(), Vec::new()))
+        Ok((self.held(), Vec::new()))
     }
 
     async fn discard(&self, _user: UserId) -> Result<(), StoreError> {
         Ok(())
     }
 
-    async fn install(&self, install: Install) -> Result<Option<ChangeId>, RotationError> {
-        let holdings = self.holdings.lock().expect("lock").clone();
+    async fn install(&self, install: Install) -> Result<Installed, RotationError> {
+        let holdings = self.held();
         check_install(&install, &holdings, &[])?;
         UserRepo::update(&self.users, &install.after).await?;
+        // Kept only for an account in a space, whose rekey needs them.
+        *self.kept.lock().expect("lock") = (holdings.spaces > 0).then(|| PreviousKeys {
+            key_version: install.before.key_version,
+            sealed: install.request.sealed_previous_private_keys.clone(),
+        });
         *self.installs.lock().expect("lock") += 1;
-        Ok(None)
+        Ok(Installed {
+            change: None,
+            reset_grants: self.reset_grants.lock().expect("lock").clone(),
+        })
     }
 
     async fn previous_keys(&self, _user: UserId) -> Result<Option<PreviousKeys>, StoreError> {
-        Ok(None)
+        Ok(self.kept.lock().expect("lock").clone())
     }
 
     async fn clear_previous_keys(&self, _user: UserId) -> Result<bool, StoreError> {
-        Ok(false)
+        Ok(self.kept.lock().expect("lock").take().is_some())
     }
 }
 
@@ -111,18 +146,44 @@ struct Rig {
     mailbox: Mailbox,
 }
 
-fn rig() -> Rig {
-    let mailbox = Mailbox::default();
-    let app = App::mailing(true, Arc::new(mailbox.clone()));
-    let repo = FakeRotation {
+fn fake_rotation(app: &App) -> FakeRotation {
+    FakeRotation {
         users: app.store.clone(),
         holdings: Arc::new(Mutex::new(Holdings::default())),
         installs: Arc::new(Mutex::new(0)),
+        reset_grants: Arc::new(Mutex::new(Vec::new())),
         snapshots: Arc::new(Mutex::new(0)),
-    };
+        kept: Arc::new(Mutex::new(None)),
+    }
+}
+
+fn rig() -> Rig {
+    let mailbox = Mailbox::default();
+    let app = App::mailing(true, Arc::new(mailbox.clone()));
+    let repo = fake_rotation(&app);
     let router = app
         .router
         .clone()
+        .merge(rotation_router(app.api.clone(), repo.clone()));
+    Rig {
+        app,
+        router,
+        repo,
+        mailbox,
+    }
+}
+
+/// A rig that has the space routes too, over the in-memory space fakes, so an account in a space
+/// can rotate and then append its `rekey` to the space's chain.
+fn space_rig() -> Rig {
+    let mailbox = Mailbox::default();
+    let app = App::mailing(true, Arc::new(mailbox.clone()));
+    let repo = fake_rotation(&app);
+    let spaces = FakeSpaces::new(app.store.clone());
+    let router = app
+        .router_with(spaces.clone())
+        .merge(spaces_router(app.api.clone(), spaces.clone()))
+        .merge(space_chain_router(app.api.clone(), spaces))
         .merge(rotation_router(app.api.clone(), repo.clone()));
     Rig {
         app,
@@ -140,13 +201,43 @@ struct Person {
 
 impl Rig {
     async fn person(&self) -> Person {
+        self.person_at(EMAIL).await
+    }
+
+    /// A person whose registered bundle is `seed`'s real keys, so the space chain accepts the
+    /// records they sign. Returns the account and the keys it signs with.
+    async fn space_person(&self, email: &str, seed: u8) -> (Person, Keys) {
         let mut client = Client::new(
             self.router.clone(),
             self.app.clock.clone(),
             DpopSigner::es256(),
         );
         client.peer = Some(next_peer());
-        let session = register_and_sign_in(&client, EMAIL).await;
+        let session = register_and_sign_in_with(&client, email, |user| {
+            let keys = Keys::new(*user.as_bytes(), seed);
+            (keys.bytes(), keys.self_signature())
+        })
+        .await;
+        let id = UserId(session.user_id.parse().expect("a user id"));
+        let keys = Keys::new(*id.as_bytes(), seed);
+        (
+            Person {
+                client,
+                session,
+                id,
+            },
+            keys,
+        )
+    }
+
+    async fn person_at(&self, email: &str) -> Person {
+        let mut client = Client::new(
+            self.router.clone(),
+            self.app.clock.clone(),
+            DpopSigner::es256(),
+        );
+        client.peer = Some(next_peer());
+        let session = register_and_sign_in(&client, email).await;
         let id = UserId(session.user_id.parse().expect("a user id"));
         Person {
             client,
@@ -158,12 +249,24 @@ impl Rig {
 
 impl Person {
     async fn call(&self, method: &str, uri: &str, body: Option<Value>) -> common::Reply {
+        self.call_with(self.session.access_token.as_str(), method, uri, body)
+            .await
+    }
+
+    /// A request with `token`: the one an install answered with, after the old one ended.
+    async fn call_with(
+        &self,
+        token: &str,
+        method: &str,
+        uri: &str,
+        body: Option<Value>,
+    ) -> common::Reply {
         self.client
             .send(
                 method,
                 uri,
                 Req {
-                    access_token: Some(self.session.access_token.as_str()),
+                    access_token: Some(token),
                     body,
                     peer: Some(next_peer()),
                     ..Req::default()
@@ -199,13 +302,19 @@ impl Person {
 
     /// An install request for key version 2, with the password.
     async fn install_body(&self) -> Value {
-        let mut body = self.reauth_body().await;
         let (bundle, signature) = bundle_v2(self.id);
+        self.install_body_for(1, &bundle, &signature).await
+    }
+
+    /// An install request from key version `from` to the next, with the password, that brings
+    /// `bundle`.
+    async fn install_body_for(&self, from: u32, bundle: &[u8], signature: &[u8]) -> Value {
+        let mut body = self.reauth_body().await;
         body["rotationId"] = json!(b64(&[7u8; 16]));
-        body["fromVersion"] = json!(1);
-        body["toVersion"] = json!(2);
-        body["publicBundle"] = json!(b64(&bundle));
-        body["bundleSignature"] = json!(b64(&signature));
+        body["fromVersion"] = json!(from);
+        body["toVersion"] = json!(from + 1);
+        body["publicBundle"] = json!(b64(bundle));
+        body["bundleSignature"] = json!(b64(signature));
         body["sealedPrivateKeys"] = json!(b64(&[0x22u8; 189]));
         body["sealedPreviousPrivateKeys"] = json!(b64(&[0x23u8; 189]));
         body["wrappedRootKey"] = json!(b64(&[0x44u8; 92]));
@@ -402,6 +511,208 @@ async fn an_install_replaces_the_keys_and_ends_every_other_session() {
     // The token the device held ended with the old security stamp.
     let old = sam.call("GET", "/kem/v1/account/rotation", None).await;
     assert_eq!(old.status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn the_grantor_of_a_grant_the_install_reset_is_mailed_to_confirm_the_contact_again() {
+    let grantor_email = "grace@example.org";
+    let rig = rig();
+    let grantor = rig.person_at(grantor_email).await;
+    let sam = rig.person().await;
+    *rig.repo.holdings.lock().expect("lock") = Holdings {
+        as_contact: vec![(GrantId::random(), EmergencyState::Confirmed)],
+        ..Holdings::default()
+    };
+    // The store says, from inside its transaction, which grants it sent back to waiting, and the
+    // contact's address as the grant has it (not the one the account has now).
+    *rig.repo.reset_grants.lock().expect("lock") = vec![ResetGrant {
+        grantor: grantor.id,
+        contact: kemlock_domain::Email::parse("sam.old@example.org").expect("an address"),
+    }];
+    rig.mailbox.0.lock().expect("the lock").clear();
+
+    let reply = sam
+        .call(
+            "POST",
+            "/kem/v1/account/rotation",
+            Some(sam.install_body().await),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.body);
+
+    let mails = rig.mailbox.0.lock().expect("the lock");
+    let told: Vec<_> = mails
+        .iter()
+        .filter_map(|notice| match notice {
+            Notice::EmergencyContactRekeyed(n) => Some(n),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(told.len(), 1, "{mails:?}");
+    assert_eq!(told[0].to.as_str(), grantor_email);
+    assert_eq!(told[0].contact.as_str(), "sam.old@example.org");
+    // The contact is told of their own rotation, and not of the grantor's.
+    assert!(
+        mails
+            .iter()
+            .any(|notice| matches!(notice, Notice::KeysRotated(n) if n.to.as_str() == EMAIL)),
+        "{mails:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_install_that_resets_no_grant_mails_no_grantor() {
+    let rig = rig();
+    let sam = rig.person().await;
+    let reply = sam
+        .call(
+            "POST",
+            "/kem/v1/account/rotation",
+            Some(sam.install_body().await),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.body);
+    let mails = rig.mailbox.0.lock().expect("the lock");
+    assert!(
+        !mails
+            .iter()
+            .any(|notice| matches!(notice, Notice::EmergencyContactRekeyed(_))),
+        "{mails:?}"
+    );
+}
+
+/// The whole space half of a rotation: an account in a space rotates, the previous keys are kept
+/// until the space has moved, a second rotation is refused meanwhile, the member's `rekey` is
+/// accepted by the chain, and then the keys can go and the account can rotate again.
+#[tokio::test]
+async fn an_account_in_a_space_rekeys_the_chain_before_it_may_rotate_again() {
+    let rig = space_rig();
+    let (sam, old) = rig.space_person(EMAIL, 1).await;
+
+    // Sam owns a space with a chain, signed by the keys the account registered with.
+    let space = Uuid::new_v4();
+    let chain_uri = format!("/kem/v1/spaces/{space}/chain");
+    let mut chain = Chain::new(
+        *space.as_bytes(),
+        u64::try_from(rig.app.now()).expect("a time"),
+    );
+    let create = chain.create(&old, *Uuid::new_v4().as_bytes());
+    let reply = sam
+        .call("POST", &chain_uri, Some(chain_request(&[&create])))
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.body);
+    // What the rotation store holds for the account says it is in one space.
+    rig.repo.holdings.lock().expect("lock").spaces = 1;
+
+    // The first rotation moves the account to key version 2, and the client says it moves the
+    // space's keys itself.
+    let v2 = old.rotated(0x11, 2);
+    let mut body = sam
+        .install_body_for(1, &v2.bytes(), &v2.self_signature())
+        .await;
+    body["spacesHandled"] = json!(true);
+    let reply = sam
+        .call("POST", "/kem/v1/account/rotation", Some(body))
+        .await;
+    assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.body);
+    let rotated = reply.json();
+    assert_eq!(rotated["keyVersion"], 2);
+    // The old session ended with the stamp: the device goes on with the tokens it was given.
+    let token = rotated["tokens"]["accessToken"]
+        .as_str()
+        .expect("new tokens")
+        .to_owned();
+    assert_eq!(
+        sam.call("GET", "/kem/v1/account/rotation", None)
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        rig.app.store.user(sam.id).expect("user").public_bundle,
+        v2.bytes()
+    );
+
+    // The old private keys are kept for the space's rekey, and the plan shows them.
+    let plan = sam
+        .call_with(&token, "GET", "/kem/v1/account/rotation", None)
+        .await;
+    assert_eq!(plan.status, StatusCode::OK, "{:?}", plan.body);
+    let plan = plan.json();
+    assert_eq!(plan["spaces"], 1);
+    assert_eq!(plan["previousKeys"]["keyVersion"], 1);
+    assert_eq!(plan["previousKeys"]["sealed"], b64(&[0x23u8; 189]));
+
+    // A second rotation would replace the only copy of the key the space has on record: refused,
+    // and nothing is written.
+    let v3 = old.rotated(0x12, 3);
+    let mut body = sam
+        .install_body_for(2, &v3.bytes(), &v3.self_signature())
+        .await;
+    body["spacesHandled"] = json!(true);
+    let reply = sam
+        .call_with(&token, "POST", "/kem/v1/account/rotation", Some(body))
+        .await;
+    assert_eq!(reply.status, StatusCode::CONFLICT, "{:?}", reply.body);
+    assert_eq!(reply.problem(), "rotation-spaces-pending");
+    assert_eq!(rig.app.store.user(sam.id).expect("user").key_version, 2);
+    assert_eq!(*rig.repo.installs.lock().expect("lock"), 1);
+
+    // Sam's rekey: signed by the key the chain has on record, cosigned by the new one, bringing
+    // the bundle the account registered by the rotation, byte for byte.
+    let rekey = chain.rekey(&old, &v2);
+    let reply = sam
+        .call_with(&token, "POST", &chain_uri, Some(chain_request(&[&rekey])))
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.body);
+    let served = sam.call_with(&token, "GET", &chain_uri, None).await;
+    assert_eq!(served.status, StatusCode::OK, "{:?}", served.body);
+    let records = served.json();
+    assert_eq!(records.as_array().map(Vec::len), Some(2), "{records}");
+    assert_eq!(
+        records[1]["entry"],
+        kemlock_crypto::space_chain::b64::encode(&rekey.record.entry)
+    );
+    assert!(records[1]["cosignature"].is_string(), "{records}");
+
+    // The space has moved: the previous keys go, with the password again.
+    let done = sam
+        .call_with(
+            &token,
+            "DELETE",
+            "/kem/v1/account/rotation/previous-keys",
+            Some(sam.reauth_body().await),
+        )
+        .await;
+    assert_eq!(done.status, StatusCode::NO_CONTENT, "{:?}", done.body);
+    assert!(rig.repo.kept.lock().expect("lock").is_none());
+    let plan = sam
+        .call_with(&token, "GET", "/kem/v1/account/rotation", None)
+        .await
+        .json();
+    assert!(plan["previousKeys"].is_null(), "{plan}");
+
+    // Now the account can rotate again, and keeps its version 2 keys for the next rekey.
+    let mut body = sam
+        .install_body_for(2, &v3.bytes(), &v3.self_signature())
+        .await;
+    body["spacesHandled"] = json!(true);
+    let reply = sam
+        .call_with(&token, "POST", "/kem/v1/account/rotation", Some(body))
+        .await;
+    assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.body);
+    assert_eq!(reply.json()["keyVersion"], 3);
+    assert_eq!(rig.app.store.user(sam.id).expect("user").key_version, 3);
+    assert_eq!(*rig.repo.installs.lock().expect("lock"), 2);
+    assert_eq!(
+        rig.repo
+            .kept
+            .lock()
+            .expect("lock")
+            .as_ref()
+            .map(|kept| kept.key_version),
+        Some(2)
+    );
 }
 
 #[tokio::test]

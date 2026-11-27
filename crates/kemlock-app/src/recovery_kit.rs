@@ -86,9 +86,9 @@ where
             return Err(AppError::Invalid("the wrapped key has the wrong length"));
         }
         if new.key_version != account.key_version {
-            return Err(AppError::Invalid(
-                "the wrapped key is for another key version than the account's",
-            ));
+            return Err(AppError::StaleKeyVersion {
+                current: account.key_version,
+            });
         }
         Ok(RecoveryKit {
             kit_id: new.kit_id,

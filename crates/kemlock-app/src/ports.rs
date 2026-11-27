@@ -30,6 +30,12 @@ pub enum StoreError {
     Duplicate,
     #[error("not found")]
     NotFound,
+    /// A wrap of the root key was written for a key version that is no longer the account's: the
+    /// account replaced its keys, and the writer, which read them earlier, must read them again.
+    /// Said under the account's row lock, so a rotation's install is either before the check or
+    /// after the write.
+    #[error("the account's key version is {current}, not the one the wrap is for")]
+    StaleKeyVersion { current: u32 },
     /// The database or file storage failed; the message is for logs, never for clients.
     #[error("store failure: {0}")]
     Backend(String),

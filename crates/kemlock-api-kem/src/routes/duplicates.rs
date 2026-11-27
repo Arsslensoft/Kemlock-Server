@@ -76,6 +76,9 @@ impl From<DedupError> for Problem {
             DedupError::StaleItem { item, current } => {
                 Problem::from(AppError::Conflict { item, current })
             }
+            DedupError::StaleAccountKeys { current } => {
+                Problem::from(AppError::StaleKeyVersion { current })
+            }
             DedupError::Store(message) => Problem::from(AppError::Store(message)),
         }
     }

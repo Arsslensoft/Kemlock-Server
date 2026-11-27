@@ -122,6 +122,10 @@ pub struct UpdateSendRequest {
     /// Takes the password away. Not together with `password`.
     #[serde(default)]
     pub remove_password: bool,
+    /// The account's key version the client sealed `meta` and `payload` for. A change for a version
+    /// that is no longer the account's is refused with `409 key-version-stale`; absent (an old
+    /// client) is accepted without the check.
+    pub key_version: Option<u32>,
 }
 
 /// A file Send's bytes, as the owner sees them.
@@ -251,6 +255,12 @@ fn problem(config: &SendsConfig, error: SendsError) -> Problem {
             "already-exists",
             "That already exists",
         ),
+        SendsError::StaleKeyVersion { current } => Problem::new(
+            StatusCode::CONFLICT,
+            "key-version-stale",
+            "The account's keys changed since this device unlocked",
+        )
+        .with("currentKeyVersion", json!(current)),
         SendsError::AlreadyUploaded => Problem::new(
             StatusCode::CONFLICT,
             "already-uploaded",
@@ -743,7 +753,7 @@ where
         };
         let send = sends
             .update()
-            .execute(&authed.actor, parse_id(&id)?, input)
+            .execute_at(&authed.actor, parse_id(&id)?, input, request.key_version)
             .await
             .map_err(|e| sends.problem(e))?;
         Ok(Json(SendDto::of(&send)))
@@ -918,6 +928,7 @@ where
     request_body = CreateSendRequest,
     responses(
         (status = 201, description = "Made; a file Send is closed until its bytes arrive", body = SendDto),
+        (status = 409, description = "`key-version-stale`: the sealed key (create) or `keyVersion` (edit) is for another key version than the account's (`currentKeyVersion`)", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 403, description = "A policy of one of the owner's spaces forbids it", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 413, description = "The file is larger than the server allows (`maxSize`)", body = ProblemDoc, content_type = "application/problem+json"),
     )
@@ -952,6 +963,7 @@ fn doc_get() {}
     request_body = UpdateSendRequest,
     responses(
         (status = 200, description = "Changed", body = SendDto),
+        (status = 409, description = "`key-version-stale`: the sealed key (create) or `keyVersion` (edit) is for another key version than the account's (`currentKeyVersion`)", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 403, description = "A policy of one of the owner's spaces forbids it", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 404, description = "No such Send of this account", body = ProblemDoc, content_type = "application/problem+json"),
     )
