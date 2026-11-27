@@ -475,14 +475,14 @@ pub async fn restore(config: &Config, options: &RestoreOptions) -> Result<Restor
     }
     // The Bitwarden token key is in no archive now, and an old archive's copy is not installed. The
     // folder's own is removed, so the server writes a new one at its next start: a key that was in
-    // a backup is not trusted again. Bitwarden access tokens signed by the old key stop working
-    // (apps refresh them), and "remember this device" tokens are asked for again.
+    // a backup is not trusted again. Bitwarden refresh tokens are rows of the database, so apps
+    // refresh silently; "remember this device", invitation and verification tokens end.
     for name in [kemlock_backup::TOKEN_KEY_FILE, "rsa_key.pub.pem"] {
         let path = config.data_folder.join(name);
         match std::fs::remove_file(&path) {
             Ok(()) => notes.push(format!(
-                "{name} was removed: the server makes a new Bitwarden token key at its next start, \
-                 so Bitwarden apps sign in again when their access token runs out"
+                "{name} was removed: the server makes a new Bitwarden token key at its next start. \
+                 Apps refresh silently; remember-device, invitation and verification tokens end"
             )),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(format!("can't remove {}: {e}", path.display())),
