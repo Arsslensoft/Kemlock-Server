@@ -508,88 +508,106 @@ async fn a_vault_that_takes_signed_writes_only_installs_no_unsigned_item(store: 
         .expect("the install");
 }
 
-/// A wrap written while an install runs, on every backend (on PostgreSQL and MySQL the two really
-/// take row locks; on SQLite the one writer connection orders them). Whichever goes first, the
-/// outcome is one of two consistent states, never a hang, a lost write or a wrap of the old key:
-///
-/// - the writer committed first: the install reads the wrap under the account's lock, finds a
-///   wrap its request does not name, and is refused (`Incomplete`) with nothing written; the
-///   client reads the plan again, names the wrap, and the second install replaces it;
-/// - the install committed first: the writer waited for its commit, read the account's new key
-///   version under the lock, and was refused (`StaleKeyVersion`) with nothing written.
-///
-/// The rounds run on accounts of their own, so a database that holds earlier runs is fine.
-async fn a_wrap_written_while_the_install_runs_is_replaced_or_refused(store: &SqlStore) {
-    for round in 0..6 {
-        let sam = account(store).await;
-        let passkey = Passkey {
-            id: PasskeyId::random(),
-            user: sam.id,
-            credential_id: Uuid::new_v4().as_bytes().to_vec(),
-            name: format!("racing {round}"),
-            credential: vec![8; 32],
-            prf_wrap: Some(PrfWrap {
-                wrapped_key: vec![2; 92],
-                key_version: 1,
-            }),
-            created_at: T0,
-            last_used_at: None,
-        };
-        let (written, installed) = tokio::join!(
-            PasskeyRepo::insert_passkey(store, &passkey),
-            RotationStore::install(store, install_of(&sam, request())),
-        );
-
-        let account_after = UserRepo::by_id(store, sam.id)
-            .await
-            .expect("read")
-            .expect("account");
-        let held = PasskeyRepo::passkeys_of(store, sam.id)
-            .await
-            .expect("read");
-
-        match installed {
-            Err(RotationError::Incomplete(_)) => {
-                written.expect("the writer committed first");
-                assert_eq!(account_after.key_version, 1, "round {round}: nothing written");
-                assert_eq!(account_after.public_bundle, sam.public_bundle);
-                assert_eq!(account_after.security_stamp, sam.security_stamp);
-                assert_eq!(held.len(), 1, "round {round}");
-                let wrap = held[0].prf_wrap.clone().expect("a wrap");
-                assert_eq!((wrap.wrapped_key, wrap.key_version), (vec![2; 92], 1));
-                // Reading the plan again and naming the wrap installs, and replaces it.
-                let named = InstallRequest {
-                    passkeys: vec![(passkey.id, vec![3; 92])],
-                    ..request()
-                };
-                RotationStore::install(store, install_of(&sam, named))
-                    .await
-                    .expect("the install that names the wrap");
-                let held = PasskeyRepo::passkeys_of(store, sam.id)
-                    .await
-                    .expect("read");
-                let wrap = held[0].prf_wrap.clone().expect("a wrap");
-                assert_eq!(
-                    (wrap.wrapped_key, wrap.key_version),
-                    (vec![3; 92], 2),
-                    "round {round}: no wrap of the old key is left"
-                );
-            }
-            Ok(_) => {
-                assert_eq!(account_after.key_version, 2, "round {round}");
-                assert_ne!(account_after.security_stamp, sam.security_stamp);
-                // The writer waited for the install and met the new key version: refused, and
-                // no wrap of the old key is left.
-                assert_eq!(
-                    written,
-                    Err(StoreError::StaleKeyVersion { current: 2 }),
-                    "round {round}"
-                );
-                assert!(held.is_empty(), "round {round}: the refused passkey was not kept");
-            }
-            Err(other) => panic!("round {round}: the install failed another way: {other:?}"),
-        }
+fn racing_passkey(user: &User, label: &str) -> Passkey {
+    Passkey {
+        id: PasskeyId::random(),
+        user: user.id,
+        credential_id: Uuid::new_v4().as_bytes().to_vec(),
+        name: label.to_owned(),
+        credential: vec![8; 32],
+        prf_wrap: Some(PrfWrap {
+            wrapped_key: vec![2; 92],
+            key_version: 1,
+        }),
+        created_at: T0,
+        last_used_at: None,
     }
+}
+
+/// The install wins the race, deterministically: a transaction holds the account's row lock and
+/// has set the key version to 2 (what the install's first statements do), the writer starts and
+/// must block on the lock, and only after the commit does it run, meet version 2 and be refused.
+/// No wrap of the old version is left. On PostgreSQL and MySQL the writer waits on the row lock;
+/// on SQLite it waits for the one writer connection.
+async fn a_writer_that_waited_for_the_install_is_refused(store: &SqlStore) {
+    let sam = account(store).await;
+    let passkey = racing_passkey(&sam, "waits");
+    let hold = kemlock_store_sql::AccountHold::take(store, sam.id, 2)
+        .await
+        .expect("the lock and the new version");
+
+    let writer = {
+        let (store, passkey) = (store.clone(), passkey.clone());
+        tokio::spawn(async move { PasskeyRepo::insert_passkey(&store, &passkey).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(!writer.is_finished(), "the writer must wait for the lock");
+
+    hold.commit().await.expect("the commit");
+    assert_eq!(
+        writer.await.expect("the writer ran"),
+        Err(StoreError::StaleKeyVersion { current: 2 })
+    );
+    let held = PasskeyRepo::passkeys_of(store, sam.id)
+        .await
+        .expect("read");
+    assert!(held.is_empty(), "no wrap of the old version is left");
+    // A writer that read the new version is kept.
+    let current = Passkey {
+        prf_wrap: Some(PrfWrap {
+            wrapped_key: vec![2; 92],
+            key_version: 2,
+        }),
+        ..racing_passkey(&sam, "after")
+    };
+    PasskeyRepo::insert_passkey(store, &current)
+        .await
+        .expect("a wrap for the new version");
+}
+
+/// The writer wins the race, deterministically: its wrap is committed before the install reads,
+/// so the install sees a wrap its request does not name and is refused with nothing written, and
+/// the install that names the wrap replaces it.
+async fn an_install_after_a_writer_is_refused_until_it_names_the_wrap(store: &SqlStore) {
+    let sam = account(store).await;
+    let passkey = racing_passkey(&sam, "first");
+    PasskeyRepo::insert_passkey(store, &passkey)
+        .await
+        .expect("the writer commits first");
+
+    let refused = RotationStore::install(store, install_of(&sam, request())).await;
+    assert!(
+        matches!(refused, Err(RotationError::Incomplete(_))),
+        "{refused:?}"
+    );
+    let after = UserRepo::by_id(store, sam.id)
+        .await
+        .expect("read")
+        .expect("account");
+    assert_eq!(after.key_version, 1, "nothing written");
+    assert_eq!(after.security_stamp, sam.security_stamp);
+    let held = PasskeyRepo::passkeys_of(store, sam.id)
+        .await
+        .expect("read");
+    let wrap = held[0].prf_wrap.clone().expect("a wrap");
+    assert_eq!((wrap.wrapped_key, wrap.key_version), (vec![2; 92], 1));
+
+    let named = InstallRequest {
+        passkeys: vec![(passkey.id, vec![3; 92])],
+        ..request()
+    };
+    RotationStore::install(store, install_of(&sam, named))
+        .await
+        .expect("the install that names the wrap");
+    let held = PasskeyRepo::passkeys_of(store, sam.id)
+        .await
+        .expect("read");
+    let wrap = held[0].prf_wrap.clone().expect("a wrap");
+    assert_eq!(
+        (wrap.wrapped_key, wrap.key_version),
+        (vec![3; 92], 2),
+        "no wrap of the old key is left"
+    );
 }
 
 /// After an install, a wrap for the old key version is refused whichever way it is written, and
@@ -765,7 +783,8 @@ async fn all(store: &SqlStore) {
     wraps_written_through_the_repos_are_all_seen_and_replaced(store).await;
     an_approval_that_holds_the_old_root_key_does_not_survive_the_install(store).await;
     a_grant_that_names_the_account_as_contact_goes_back_to_waiting(store).await;
-    a_wrap_written_while_the_install_runs_is_replaced_or_refused(store).await;
+    a_writer_that_waited_for_the_install_is_refused(store).await;
+    an_install_after_a_writer_is_refused_until_it_names_the_wrap(store).await;
     a_wrap_for_the_old_key_version_is_refused_after_the_install(store).await;
 }
 
