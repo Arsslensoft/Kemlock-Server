@@ -49,6 +49,23 @@ describe('DeviceApprovalView', () => {
     expect(onCancel).toHaveBeenCalledOnce();
   });
 
+  it('says so when the request was held back among many', () => {
+    renderWithIntl(
+      <DeviceApprovalView
+        email="sam@example.co"
+        progress={{
+          step: 'waiting',
+          phrase: 'abacus lemon river stone paper',
+          expiresAt: '2026-11-25T10:05:00Z',
+          heldBack: true,
+        }}
+        onCancel={noop}
+        onRetry={noop}
+      />,
+    );
+    expect(screen.getByText(/getting a lot of approval requests/)).toBeInTheDocument();
+  });
+
   it("asks the person to compare the account's fingerprint before the vault counts as open", async () => {
     const onCompare = vi.fn();
     renderWithIntl(

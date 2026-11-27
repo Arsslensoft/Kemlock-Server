@@ -10,7 +10,7 @@ use kemlock_app::ports::StoreError;
 use kemlock_domain::UserId;
 use kemlock_domain::unlock::{ApprovalId, ApprovalState, AuthRequest};
 use sea_orm::ActiveValue::{NotSet, Set};
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder};
 use time::OffsetDateTime;
 
 impl ApprovalRepo for SqlStore {
@@ -20,6 +20,32 @@ impl ApprovalRepo for SqlStore {
             .await
             .store()?;
         Ok(())
+    }
+
+    /// Counts and inserts under the account's lock, in one transaction.
+    async fn insert_request_within(
+        &self,
+        request: &AuthRequest,
+        since: OffsetDateTime,
+        max_recent: usize,
+    ) -> Result<bool, StoreError> {
+        let txn = begin_locked(self, request.user).await?;
+        let recent = auth_requests::Entity::find()
+            .filter(auth_requests::Column::UserId.eq(request.user.0))
+            .filter(auth_requests::Column::CreatedAt.gt(utc(since)))
+            .count(&txn)
+            .await
+            .store()?;
+        if usize::try_from(recent).unwrap_or(usize::MAX) >= max_recent {
+            txn.rollback().await.store()?;
+            return Ok(false);
+        }
+        auth_requests::Entity::insert(auth_requests::active(request))
+            .exec(&txn)
+            .await
+            .store()?;
+        txn.commit().await.store()?;
+        Ok(true)
     }
 
     async fn request(&self, id: ApprovalId) -> Result<Option<AuthRequest>, StoreError> {

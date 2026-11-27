@@ -13,8 +13,13 @@ uuid_id!(
 /// A request lives 15 minutes (design, "Retention").
 pub const REQUEST_TTL: Duration = Duration::minutes(15);
 /// An account takes at most this many requests an hour from all addresses together (design,
-/// "Limits"); past it a request is held back, whoever sent it.
+/// "Limits"); past it a request is still stored and shown on the account's open devices, but the
+/// new device is told it was held back among many and the owner is mailed about it once.
 pub const HOURLY_REQUEST_LIMIT: usize = 30;
+/// The most requests an account stores in an hour, whoever sent them, the count and the insert
+/// made in one transaction. A request from an address the owner was answered from isn't held to
+/// it. Past it a request is answered like one for an email with no account and nothing is stored.
+pub const HARD_HOURLY_REQUEST_LIMIT: usize = 100;
 /// One address (a /24, or a /48 for IPv6) takes at most this many requests an hour for one account,
 /// so a few addresses can't use up the account's whole hour.
 pub const SOURCE_HOURLY_REQUEST_LIMIT: usize = 3;

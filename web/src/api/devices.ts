@@ -30,6 +30,11 @@ export interface ApprovalRequestResponse {
   /** The server's cross-check only; the new device works the phrase out from its own key. */
   phrase: string;
   expiresAt: string;
+  /**
+   * True when the account was getting so many requests that this one was held back among them:
+   * it still shows on the account's open devices, but the owner may be slow to find it.
+   */
+  heldBack?: boolean;
 }
 
 export type ApprovalStatus = 'pending' | 'approved' | 'denied' | 'expired' | 'used';

@@ -12,9 +12,9 @@ use crate::platform::{Hasher, Platform, random_uuid};
 use crate::ports::{Event, EventLog, UserRepo};
 use crate::session::DeviceInfo;
 use kemlock_domain::unlock::{
-    ApprovalError, ApprovalId, ApprovalState, AuthRequest, HOURLY_REQUEST_LIMIT,
-    KX1_PUBLIC_KEY_LEN, REQUEST_TTL, SOURCE_HOURLY_REQUEST_LIMIT, phrase_from_digest, phrase_input,
-    sealed_key_len_ok, truncate_ip,
+    ApprovalError, ApprovalId, ApprovalState, AuthRequest, HARD_HOURLY_REQUEST_LIMIT,
+    HOURLY_REQUEST_LIMIT, KX1_PUBLIC_KEY_LEN, REQUEST_TTL, SOURCE_HOURLY_REQUEST_LIMIT,
+    phrase_from_digest, phrase_input, sealed_key_len_ok, truncate_ip,
 };
 use kemlock_domain::{Device, DeviceKind, Email, UserId};
 use std::net::IpAddr;
@@ -61,6 +61,10 @@ pub struct Requested {
     /// The phrase to show beside the one the open device shows.
     pub phrase: String,
     pub expires_at: OffsetDateTime,
+    /// Whether the account was getting so many requests (30 an hour) that this one was held
+    /// back among them: it is stored and shows on the account's open devices like the rest, but
+    /// the owner may take a while to find it, so the new device says so.
+    pub held_back: bool,
 }
 
 /// A new device asks for approval.
@@ -102,6 +106,7 @@ impl<U: UserRepo, A: ApprovalRepo, N: DeviceNotices, E: Platform> RequestApprova
                 id: ApprovalId(random_uuid(&self.env)),
                 phrase,
                 expires_at,
+                held_back: false,
             });
         };
 
@@ -119,10 +124,11 @@ impl<U: UserRepo, A: ApprovalRepo, N: DeviceNotices, E: Platform> RequestApprova
                 id: ApprovalId(random_uuid(&self.env)),
                 phrase,
                 expires_at,
+                held_back: false,
             });
         }
-        // All addresses together take only so many too. An address one of whose requests was
-        // answered in the last hour is the owner's own: its request is not held back.
+        // All addresses together take only so many "normal" ones too. An address one of whose
+        // requests was answered in the last hour is the owner's own: its request is not held back.
         let known = recent.iter().any(|r| {
             r.ip == source && matches!(r.state, ApprovalState::Approved | ApprovalState::Consumed)
         });
@@ -138,23 +144,29 @@ impl<U: UserRepo, A: ApprovalRepo, N: DeviceNotices, E: Platform> RequestApprova
             public_key: input.public_key,
             jkt: input.jkt,
             ip: source,
-            // A request held back is kept so it counts and the owner is told once, but no open
-            // device is shown it and nobody can answer it.
-            state: if held_back {
-                ApprovalState::Denied
-            } else {
-                ApprovalState::Pending
-            },
+            // A request held back is stored like any other and shown on the account's own open
+            // devices: storing it as answered would hide the owner's own request behind a
+            // flood of look-alikes. Only the new device is told, and the owner is mailed once.
+            state: ApprovalState::Pending,
             sealed_key: None,
             answered_at: None,
             created_at: now,
             expires_at,
         };
-        self.approvals.insert_request(&request).await?;
+        // The count and the insert are one step, so racing requests can't pass the limit
+        // together. The owner's own address is not held to the hard limit.
+        let max_recent = if known {
+            usize::MAX
+        } else {
+            HARD_HOURLY_REQUEST_LIMIT
+        };
+        let stored = self
+            .approvals
+            .insert_request_within(&request, now - Duration::hours(1), max_recent)
+            .await?;
         if held_back {
-            // Answered like any other, so it shows nothing; the first one held back in an hour
-            // tells the owner approvals are being throttled, so a real request that was held
-            // back with the rest isn't a silence.
+            // The first one held back in an hour tells the owner approvals are being
+            // throttled, so a real request that was held back with the rest isn't a silence.
             if recent.len() == HOURLY_REQUEST_LIMIT {
                 self.notices
                     .new_device(NewDeviceNotice {
@@ -170,9 +182,15 @@ impl<U: UserRepo, A: ApprovalRepo, N: DeviceNotices, E: Platform> RequestApprova
                     .await;
             }
             return Ok(Requested {
-                id: ApprovalId(random_uuid(&self.env)),
+                // Past the hard limit nothing was stored: answered like any other.
+                id: if stored {
+                    request.id
+                } else {
+                    ApprovalId(random_uuid(&self.env))
+                },
                 phrase,
                 expires_at,
+                held_back: true,
             });
         }
         // Only the first few requests of an hour are mailed: the rest are still shown on the
@@ -192,6 +210,7 @@ impl<U: UserRepo, A: ApprovalRepo, N: DeviceNotices, E: Platform> RequestApprova
             id: request.id,
             phrase,
             expires_at,
+            held_back: false,
         })
     }
 }

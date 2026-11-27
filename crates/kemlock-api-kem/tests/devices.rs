@@ -263,46 +263,39 @@ async fn one_address_asks_three_times_an_hour_for_one_email_whether_or_not_it_ha
 }
 
 #[tokio::test]
-async fn an_account_takes_thirty_requests_an_hour_and_past_them_the_answer_is_the_same() {
+async fn an_account_takes_thirty_requests_an_hour_and_past_them_the_new_device_is_told() {
     let (app, open, session) = open_device().await;
     // Thirty requests from ten addresses (each in a network of its own), so no address is over
     // its own limit of three.
     for n in 0..30u8 {
         let asked = ask(&from(&app, 1 + n / 3), EMAIL).await;
         assert_eq!(asked.status, StatusCode::CREATED, "{n}: {:?}", asked.json());
+        assert!(asked.json().get("heldBack").is_none(), "{n}");
     }
-    // The next, from an address that has asked nothing, is answered like any other: it is
-    // not a refusal that tells a stranger the account exists, and it stores nothing.
-    let eleventh = ask(&from(&app, 99), EMAIL).await;
-    assert_eq!(
-        eleventh.status,
-        StatusCode::CREATED,
-        "{:?}",
-        eleventh.json()
-    );
+    // The next, from an address that has asked nothing, is not refused: it is stored and shown
+    // on the account's open devices like the rest, and its device is told it was held back
+    // among many. An email with no account is answered without that.
+    let held = ask(&from(&app, 99), EMAIL).await;
+    assert_eq!(held.status, StatusCode::CREATED, "{:?}", held.json());
+    assert_eq!(held.json()["heldBack"], json!(true));
     let stranger = ask(&from(&app, 99), "nobody@example.org").await;
     assert_eq!(stranger.status, StatusCode::CREATED);
-    let keys = |reply: &Reply| {
-        let mut keys: Vec<String> = reply
-            .json()
-            .as_object()
-            .expect("an object")
-            .keys()
-            .cloned()
-            .collect();
-        keys.sort();
-        keys
-    };
-    assert_eq!(keys(&eleventh), keys(&stranger));
+    assert!(stranger.json().get("heldBack").is_none());
 
     let listed = open
         .get_authed("/kem/v1/devices/approvals", &session.access_token)
         .await
         .json();
-    assert_eq!(listed["approvals"].as_array().expect("approvals").len(), 30);
+    let approvals = listed["approvals"].as_array().expect("approvals");
+    assert_eq!(approvals.len(), 31);
+    assert!(
+        approvals
+            .iter()
+            .any(|a| a["id"] == held.json()["requestId"]),
+        "the held back request is listed"
+    );
 }
 
-#[tokio::test]
 async fn requests_expire_after_fifteen_minutes() {
     let (app, open, _session) = open_device().await;
     let new_device = app.client();

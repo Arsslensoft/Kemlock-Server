@@ -26,6 +26,16 @@ pub trait ApprovalRepo: Send + Sync {
         request: &AuthRequest,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
 
+    /// Stores a new request only when the account has fewer than `max_recent` requests made after
+    /// `since`, the count and the insert in one transaction, so racing requests can't pass the
+    /// limit together. Says whether it was stored.
+    fn insert_request_within(
+        &self,
+        request: &AuthRequest,
+        since: OffsetDateTime,
+        max_recent: usize,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
     fn request(
         &self,
         id: ApprovalId,

@@ -73,6 +73,28 @@ impl ApprovalRepo for FakeStore {
         Ok(())
     }
 
+    async fn insert_request_within(
+        &self,
+        request: &AuthRequest,
+        since: OffsetDateTime,
+        max_recent: usize,
+    ) -> Result<bool, StoreError> {
+        let mut g = self.unlock.lock();
+        let recent = g
+            .requests
+            .values()
+            .filter(|r| r.user == request.user && r.created_at > since)
+            .count();
+        if recent >= max_recent {
+            return Ok(false);
+        }
+        if g.requests.contains_key(&request.id) {
+            return Err(StoreError::Duplicate);
+        }
+        g.requests.insert(request.id, request.clone());
+        Ok(true)
+    }
+
     async fn request(&self, id: ApprovalId) -> Result<Option<AuthRequest>, StoreError> {
         Ok(self.unlock.lock().requests.get(&id).cloned())
     }

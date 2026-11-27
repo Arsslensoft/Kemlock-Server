@@ -50,7 +50,7 @@ export interface DeviceApprovalDeps {
 export type ApprovalProgress =
   | { step: 'requesting' }
   /** The phrase to match against the approving device's, and when the request lapses. */
-  | { step: 'waiting'; phrase: string; expiresAt: string }
+  | { step: 'waiting'; phrase: string; expiresAt: string; heldBack?: boolean }
   | { step: 'signing-in' }
   /** The vault's keys are open; the person compares this fingerprint with the approving device's. */
   | { step: 'compare'; fingerprint: string };
@@ -127,7 +127,12 @@ export async function signInWithAnotherDevice(
     // another key would show up as words that do not match, and nothing is sealed to that key.
     const phrase = await approvalPhrase(made.publicKey);
     if (!samePhrase(phrase, requested.phrase)) throw new ApprovalRefused('phrase');
-    onProgress({ step: 'waiting', phrase, expiresAt: requested.expiresAt });
+    onProgress({
+      step: 'waiting',
+      phrase,
+      expiresAt: requested.expiresAt,
+      ...(requested.heldBack ? { heldBack: true } : {}),
+    });
 
     for (;;) {
       if (signal.aborted) return { status: 'cancelled' };

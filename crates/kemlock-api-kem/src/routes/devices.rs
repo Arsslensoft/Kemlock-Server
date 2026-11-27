@@ -103,6 +103,11 @@ pub(crate) struct ApprovalRequestResponse {
     /// Five words, shown beside the ones the approving device shows.
     pub(crate) phrase: String,
     pub(crate) expires_at: String,
+    /// `true` when the account was getting so many requests that this one was held back among
+    /// them: it is stored and shown on the account's open devices like the rest, but its owner
+    /// may be slow to find it. Left out otherwise.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) held_back: bool,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -375,6 +380,7 @@ impl<S: Store + DevicesStore, P: Crypto, K: TokenSigner + Clone + 'static> Api<S
                 request_id: requested.id.0,
                 phrase: requested.phrase,
                 expires_at: iso(requested.expires_at),
+                held_back: requested.held_back,
             }),
         ))
     }
