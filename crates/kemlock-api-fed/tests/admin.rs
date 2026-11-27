@@ -891,10 +891,7 @@ async fn a_federation_write_that_got_past_the_step_up_check_is_audited() {
     assert_eq!(
         seen,
         vec![
-            (
-                "federation.admin.peer_revoke",
-                Some(format!("peer:{peer}"))
-            ),
+            ("federation.admin.peer_revoke", Some(format!("peer:{peer}"))),
             ("federation.admin.offer_decline", None),
         ]
     );

@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 /// The most events kept from one peer for one vault: past it the oldest go, so a peer that sends
 /// events without end can't fill the disk. The cursor is the newest id, which stays.
-pub const MAX_PEER_EVENTS: u64 = 10_000;
+pub(crate) const MAX_PEER_EVENTS: u64 = 10_000;
 
 fn cut(text: &str, max: usize) -> String {
     text.chars().take(max).collect()

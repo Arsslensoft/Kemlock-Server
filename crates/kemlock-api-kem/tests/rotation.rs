@@ -18,7 +18,8 @@ use axum::Router;
 use axum::http::StatusCode;
 use chain_kit::{Chain, Person as Keys, request as chain_request};
 use common::{
-    App, Client, PASSWORD, Req, Session, b64, register_and_sign_in, register_and_sign_in_with, unb64,
+    App, Client, PASSWORD, Req, Session, b64, register_and_sign_in, register_and_sign_in_with,
+    unb64,
 };
 use kemlock_api_kem::testing::DpopSigner;
 use kemlock_api_kem::{RotationApiDoc, rotation_router, space_chain_router, spaces_router};

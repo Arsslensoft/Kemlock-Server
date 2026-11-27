@@ -1204,7 +1204,10 @@ async fn a_second_pass_drops_two_step_and_membership_rows_only_of_what_it_owns()
     changed.updated_at = NOW + time::Duration::hours(1);
     UserRepo::update(&store, &changed).await.expect("updated");
     let refused_pass = delete(store.clone(), false).await;
-    assert_eq!(refused(&refused_pass, "twofactor"), vec![factor.to_string()]);
+    assert_eq!(
+        refused(&refused_pass, "twofactor"),
+        vec![factor.to_string()]
+    );
     assert_eq!(
         refused(&refused_pass, "users_organizations"),
         vec![member.to_string()]
@@ -1273,12 +1276,24 @@ async fn an_imported_smtp_host_takes_the_stored_password_with_it_and_security_st
 
     // The same host (in another case) keeps the password; a different host clears it.
     let store = seed(memory().await).await;
-    pass(&store, &carry(&[("smtp_host", json!("MAIL.example.org"))]), false).await;
+    pass(
+        &store,
+        &carry(&[("smtp_host", json!("MAIL.example.org"))]),
+        false,
+    )
+    .await;
     assert_eq!(
-        value(store.clone(), "setting.smtp_password").await.as_deref(),
+        value(store.clone(), "setting.smtp_password")
+            .await
+            .as_deref(),
         Some("sealed-password")
     );
-    pass(&store, &carry(&[("smtp_host", json!("evil.example.net"))]), false).await;
+    pass(
+        &store,
+        &carry(&[("smtp_host", json!("evil.example.net"))]),
+        false,
+    )
+    .await;
     assert_eq!(value(store.clone(), "setting.smtp_password").await, None);
     assert_eq!(
         value(store.clone(), "setting.smtp_host").await.as_deref(),
@@ -1288,9 +1303,14 @@ async fn an_imported_smtp_host_takes_the_stored_password_with_it_and_security_st
     // With a password stored, a source can't turn the connection's encryption off.
     let store = seed(memory().await).await;
     let report = pass(&store, &carry(&[("smtp_security", json!("off"))]), false).await;
-    assert_eq!(refused(&report, "setting"), vec!["smtp_security".to_owned()]);
     assert_eq!(
-        value(store.clone(), "setting.smtp_security").await.as_deref(),
+        refused(&report, "setting"),
+        vec!["smtp_security".to_owned()]
+    );
+    assert_eq!(
+        value(store.clone(), "setting.smtp_security")
+            .await
+            .as_deref(),
         Some("starttls")
     );
     // Without a stored password it may.

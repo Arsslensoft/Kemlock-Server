@@ -130,9 +130,12 @@ async fn held_signups_are_purged_after_their_link_runs_out(store: &SqlStore) {
         .insert_held(&used, hash(), T0, T0 + Duration::hours(24))
         .await
         .expect("holds");
-    ItemStore::put(store, draft(ItemId::random(), Owner::User(used.id), None, 1))
-        .await
-        .expect("an item of the held account");
+    ItemStore::put(
+        store,
+        draft(ItemId::random(), Owner::User(used.id), None, 1),
+    )
+    .await
+    .expect("an item of the held account");
     store
         .insert_held(&stale, hash(), T0, T0 + Duration::hours(24))
         .await
@@ -146,7 +149,11 @@ async fn held_signups_are_purged_after_their_link_runs_out(store: &SqlStore) {
     let early = RetentionStore::purge_held_signups(store, T0 + Duration::days(2))
         .await
         .expect("purges");
-    assert_eq!(store.by_id(stale.id).await.map(|u| u.is_some()), Ok(true), "{early}");
+    assert_eq!(
+        store.by_id(stale.id).await.map(|u| u.is_some()),
+        Ok(true),
+        "{early}"
+    );
 
     let now = T0 + Duration::days(9);
     let purged = RetentionStore::purge_held_signups(store, now)

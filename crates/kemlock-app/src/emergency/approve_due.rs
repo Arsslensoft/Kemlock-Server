@@ -45,7 +45,12 @@ impl<U: UserRepo, R: EmergencyRepo, N: EmergencyNotices, E: Platform, V: EventLo
             }
             if !self
                 .grants
-                .save_grant_at(&grant, EmergencyState::RecoveryInitiated, Some(version), None)
+                .save_grant_at(
+                    &grant,
+                    EmergencyState::RecoveryInitiated,
+                    Some(version),
+                    None,
+                )
                 .await?
             {
                 // The grantor refused (and the contact perhaps asked again: a new wait), or another

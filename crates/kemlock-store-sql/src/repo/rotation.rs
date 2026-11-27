@@ -26,8 +26,8 @@ use kemlock_app::rotation::{
 use kemlock_domain::sends::SendId;
 use kemlock_domain::unlock::{EmergencyState, GrantId};
 use kemlock_domain::{
-    DeviceId, Email, ItemDraft, ItemFormat, ItemId, Owner, PasskeyId, RecoveryKit, Revision, SpaceId,
-    UserId, WriteSignature,
+    DeviceId, Email, ItemDraft, ItemFormat, ItemId, Owner, PasskeyId, RecoveryKit, Revision,
+    SpaceId, UserId, WriteSignature,
 };
 use sea_orm::ActiveValue::Set;
 use sea_orm::{
@@ -641,7 +641,9 @@ impl SqlStore {
                             grantor: UserId(grant.grantor_id),
                             contact,
                         }),
-                        Err(_) => tracing::warn!("a reset grant's contact address doesn't parse, no mail"),
+                        Err(_) => {
+                            tracing::warn!("a reset grant's contact address doesn't parse, no mail")
+                        }
                     }
                 }
             }

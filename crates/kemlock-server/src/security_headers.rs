@@ -34,7 +34,10 @@ impl SecurityHeaders {
     /// ignored, and said for a name that has no TLS it would lock people out.
     pub fn for_domain(domain: &str) -> SecurityHeaders {
         SecurityHeaders {
-            hsts: domain.trim_start().to_ascii_lowercase().starts_with("https://"),
+            hsts: domain
+                .trim_start()
+                .to_ascii_lowercase()
+                .starts_with("https://"),
         }
     }
 }

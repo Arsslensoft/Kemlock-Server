@@ -347,7 +347,10 @@ fn two_step_changed(notice: &TwoStepChangedNotice, brand: &Branding) -> Rendered
                  password.",
                 when(notice.at)
             ),
-            format!("A passkey was {done} {to_from} your {} account", brand.app_name),
+            format!(
+                "A passkey was {done} {to_from} your {} account",
+                brand.app_name
+            ),
         )
     } else {
         (
@@ -894,7 +897,6 @@ mod tests {
         assert!(r.text.contains("2026-11-26 09:05 UTC"));
     }
 
-
     #[test]
     fn a_turned_on_authenticator_app_and_a_new_passkey_are_named() {
         let render_for = |method, on| {
@@ -1117,7 +1119,11 @@ mod tests {
             rendered.subject,
             "Your emergency contact replaced their keys on Kemlock"
         );
-        assert!(rendered.text.contains("sam@example.org"), "{}", rendered.text);
+        assert!(
+            rendered.text.contains("sam@example.org"),
+            "{}",
+            rendered.text
+        );
         assert!(rendered.text.contains("2026-12-02 09:05 UTC"));
         assert!(rendered.text.contains("Emergency access"));
         assert!(rendered.text.contains("confirm them again"));

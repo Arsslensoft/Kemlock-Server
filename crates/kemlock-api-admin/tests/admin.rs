@@ -433,6 +433,7 @@ async fn step_up_codes_and_the_second_step_at_sign_in_keep_separate_counts() {
     assert!(matches!(sign_in, Ok(Reservation::Wait(_))), "{sign_in:?}");
 }
 
+#[tokio::test]
 async fn the_password_check_makes_a_step_up_token() {
     let rig = Rig::new();
     let root = rig.admin(ADMIN).await;
@@ -1622,7 +1623,6 @@ async fn verifying_new_accounts_can_only_be_turned_on_where_mail_can_be_sent() {
     assert_eq!(off.status, StatusCode::OK, "{:?}", off.json());
 }
 
-
 #[tokio::test]
 async fn verifying_signups_from_the_environment_shows_as_off_while_no_mail_can_be_sent() {
     let env = [("SIGNUPS_VERIFY", "true")];
@@ -1836,7 +1836,12 @@ async fn the_audit_trail_records_what_a_setting_was_and_became_but_never_a_secre
         )
         .await;
     assert_eq!(reset.status, StatusCode::OK);
-    let target = rig.admin.events().last().and_then(|e| e.target.clone()).expect("a target");
+    let target = rig
+        .admin
+        .events()
+        .last()
+        .and_then(|e| e.target.clone())
+        .expect("a target");
     assert_eq!(target, "trash_days: 45 -> 30");
 }
 
@@ -1960,7 +1965,12 @@ async fn sso_settings_are_saved_and_the_secret_is_never_returned() {
     let refused = root
         .write("PUT", "/admin/v1/sso", Some(moved), &token)
         .await;
-    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{:?}", refused.json());
+    assert_eq!(
+        refused.status,
+        StatusCode::BAD_REQUEST,
+        "{:?}",
+        refused.json()
+    );
     assert_eq!(
         rig.sso.settings().expect("stored").issuer,
         "https://idp.example.org/realms/kemlock"

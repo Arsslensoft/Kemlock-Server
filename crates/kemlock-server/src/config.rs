@@ -18,10 +18,10 @@
 //! `database_url`, `data_folder`, `address` (or `rocket_address`), `port` (or `rocket_port`),
 //! `signups_allowed`, `log_level`, `log_format`, `trusted_proxies`, `ip_header`, `browser_extension_ids`, `source_url` and `federation_probe_seconds`.
 
+use kemlock_api_kem::ratelimit::Proxy;
 use kemlock_app::admin::settings::DEFINITIONS;
 use serde::Deserialize;
 use std::collections::BTreeMap;
-use kemlock_api_kem::ratelimit::Proxy;
 use std::path::{Path, PathBuf};
 
 /// Vaultwarden settings that Kemlock Server has no use for, or doesn't support yet. Each one that

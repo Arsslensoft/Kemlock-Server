@@ -4,6 +4,7 @@ use crate::app::{App, BwStore};
 use crate::dates::{epoch_millis, format_date};
 use crate::env::{random_alphanumeric, random_bytes, random_uuid};
 use crate::error::{BwError, BwResult};
+use crate::hash_gate::Who;
 use crate::password::{hash_password, verify_password};
 use crate::tokens::RegisterVerifyClaims;
 use axum::http::StatusCode;
@@ -16,7 +17,6 @@ use kemlock_crypto::hash;
 use kemlock_domain::spaces::SpaceRole;
 use kemlock_domain::{AccountMode, Email, KdfParams, Role, User, UserId};
 use serde_json::{Value, json};
-use crate::hash_gate::Who;
 use std::net::IpAddr;
 use std::sync::Arc;
 

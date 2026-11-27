@@ -1,8 +1,4 @@
-//! Vaultwarden's login rate limiter, for the unauthenticated routes it guards: a token         let mut seen: Vec<(i64, IpAddr)> = buckets.iter().map(|(ip, b)| (b.last_used, *ip)).collect();
-        seen.sort_unstable();
-        for (_, ip) in seen.into_iter().take(MAX_ADDRESSES / 10) {
-            buckets.remove(&ip);
-        }ucket per
+//! Vaultwarden's login rate limiter, for the unauthenticated routes it guards: a token bucket per
 //! client address, `LOGIN_RATELIMIT_MAX_BURST` requests at once (10) and one more every
 //! `LOGIN_RATELIMIT_SECONDS` (60). A refusal is a 429; its message is the route's to choose.
 //!
@@ -74,10 +70,12 @@ impl IpLimit {
             return;
         }
         // Down to nine tenths, the oldest use first.
-        let mut seen: Vec<i64> = buckets.values().map(|b| b.last_used).collect();
+        let mut seen: Vec<(i64, IpAddr)> =
+            buckets.iter().map(|(ip, b)| (b.last_used, *ip)).collect();
         seen.sort_unstable();
-        let cut = seen[seen.len() / 10];
-        buckets.retain(|_, b| b.last_used > cut);
+        for (_, ip) in seen.into_iter().take(MAX_ADDRESSES / 10) {
+            buckets.remove(&ip);
+        }
     }
 
     /// Takes one request of `ip` at `now` (Unix seconds). `Err(seconds)` is how long until one is

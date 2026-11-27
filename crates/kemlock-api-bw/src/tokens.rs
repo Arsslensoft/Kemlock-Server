@@ -354,14 +354,29 @@ mod tests {
         assert!(!bound.is_bound(&ServerSeal::new(&[8; 32])));
         // A proof moved onto other claims doesn't fit them.
         for other in [
-            RememberClaims { sub: "another".to_owned(), ..bound.clone() },
-            RememberClaims { user_uuid: "someone".to_owned(), ..bound.clone() },
-            RememberClaims { two_step_version: 4, ..bound.clone() },
-            RememberClaims { exp: 9_999, ..bound.clone() },
+            RememberClaims {
+                sub: "another".to_owned(),
+                ..bound.clone()
+            },
+            RememberClaims {
+                user_uuid: "someone".to_owned(),
+                ..bound.clone()
+            },
+            RememberClaims {
+                two_step_version: 4,
+                ..bound.clone()
+            },
+            RememberClaims {
+                exp: 9_999,
+                ..bound.clone()
+            },
         ] {
             assert!(!other.is_bound(&seal));
         }
-        let junk = RememberClaims { proof: "not a proof".to_owned(), ..bound };
+        let junk = RememberClaims {
+            proof: "not a proof".to_owned(),
+            ..bound
+        };
         assert!(!junk.is_bound(&seal));
     }
 

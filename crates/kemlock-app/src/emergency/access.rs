@@ -351,7 +351,11 @@ impl<U: UserRepo, R: EmergencyRepo, N: EmergencyNotices, E: Platform, V: EventLo
         from: EmergencyState,
         key_version: Option<u32>,
     ) -> Result<(), AppError> {
-        if self.grants.save_grant_at(grant, from, None, key_version).await? {
+        if self
+            .grants
+            .save_grant_at(grant, from, None, key_version)
+            .await?
+        {
             Ok(())
         } else {
             Err(AppError::Invalid("the grant changed; look again and retry"))

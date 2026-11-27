@@ -42,10 +42,10 @@ mod events;
 mod fed_view;
 #[cfg(feature = "fuzzing")]
 pub mod fuzzing;
+mod hash_gate;
 mod identity;
 pub mod imported;
 mod invite_links;
-mod hash_gate;
 mod ip_limit;
 mod kdf_change;
 mod live;

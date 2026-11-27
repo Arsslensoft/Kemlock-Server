@@ -88,7 +88,9 @@ mod tests {
         );
         let sql = modify("sso_sessions", "session_id", 255, true).to_string(MysqlQueryBuilder);
         assert!(
-            sql.contains("`session_id` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL"),
+            sql.contains(
+                "`session_id` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL"
+            ),
             "{sql}"
         );
         assert!(!sql.contains("NOT NULL"), "{sql}");

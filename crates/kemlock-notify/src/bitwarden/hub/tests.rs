@@ -374,7 +374,9 @@ async fn a_keep_alive_ping_is_taken_and_not_echoed() {
     assert_eq!(sync_type(&next(&mut ada).await), 5);
 
     let mut json = rig.open("grace", JSON_HANDSHAKE).await;
-    json.send(Wire::text("{\"type\":6}\u{1e}")).await.expect("sent");
+    json.send(Wire::text("{\"type\":6}\u{1e}"))
+        .await
+        .expect("sent");
     rig.hub.nudge(Owner::User(rig.grace));
     assert!(matches!(next(&mut json).await, Wire::Text(_)));
 }
@@ -396,9 +398,7 @@ async fn any_other_frame_closes_the_socket() {
         .expect("sent");
     closes(&mut again).await;
     // A first frame that is no handshake.
-    let mut first = rig
-        .connect("/notifications/hub?access_token=ada")
-        .await;
+    let mut first = rig.connect("/notifications/hub?access_token=ada").await;
     first.send(Wire::text("hello")).await.expect("sent");
     closes(&mut first).await;
     eventually(|| rig.hub.connections() == 0).await;
@@ -410,7 +410,9 @@ async fn an_anonymous_socket_echoes_nothing() {
     let mut anon = rig
         .connect("/notifications/anonymous-hub?token=login-request")
         .await;
-    anon.send(Wire::text(MSGPACK_HANDSHAKE)).await.expect("sent");
+    anon.send(Wire::text(MSGPACK_HANDSHAKE))
+        .await
+        .expect("sent");
     let reply = next(&mut anon).await;
     assert!(matches!(&reply, Wire::Binary(b) if b.as_ref() == HANDSHAKE_RESPONSE));
     anon.send(Wire::binary(vec![0u8; 64])).await.expect("sent");
@@ -427,9 +429,7 @@ async fn a_message_past_a_few_kib_closes_the_socket_before_it_is_buffered() {
     closes(&mut ada).await;
     eventually(|| rig.hub.connections() == 0).await;
 
-    let mut anon = rig
-        .connect("/notifications/anonymous-hub?token=big")
-        .await;
+    let mut anon = rig.connect("/notifications/anonymous-hub?token=big").await;
     anon.send(Wire::text("x".repeat(MAX_CLIENT_MESSAGE + 1)))
         .await
         .expect("sent");

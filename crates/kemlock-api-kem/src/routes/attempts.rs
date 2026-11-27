@@ -89,9 +89,15 @@ where
     K: TokenSigner + Clone + 'static,
 {
     let limit = &api.limits.step_up;
-    match SecondStepGuard::reserve_step_up(&api.store, user, now, limit.limit(), limit.window_secs())
-        .await
-        .map_err(AppError::from)?
+    match SecondStepGuard::reserve_step_up(
+        &api.store,
+        user,
+        now,
+        limit.limit(),
+        limit.window_secs(),
+    )
+    .await
+    .map_err(AppError::from)?
     {
         Reservation::Granted => Ok(()),
         Reservation::Wait(wait) => Err(rate_limited(wait)),
@@ -131,7 +137,11 @@ pub(crate) struct PasswordAttempt {
 impl PasswordAttempt {
     /// Ends the attempt's turn: the next finish for the account may start a second from now.
     fn release(&self) {
-        let turn = self.turn.lock().unwrap_or_else(PoisonError::into_inner).take();
+        let turn = self
+            .turn
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
         drop(turn);
     }
 }

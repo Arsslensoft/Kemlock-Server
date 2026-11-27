@@ -177,7 +177,7 @@ pub fn pre_migration_path(database_file: &Path) -> std::path::PathBuf {
 /// How many pre-migration copies are always kept, newest first, whatever their age: the one just
 /// made and the ones of the upgrades before it, so a rollback of the last three upgrades is
 /// possible.
-pub const KEEP_PRE_MIGRATION_COPIES: usize = 3;
+pub(crate) const KEEP_PRE_MIGRATION_COPIES: usize = 3;
 /// How long a copy beyond those, or a database a rollback moved aside, is kept.
 const OLD_COPY_MAX_AGE: StdDuration = StdDuration::from_secs(30 * 24 * 60 * 60);
 
@@ -380,7 +380,10 @@ mod tests {
     #[test]
     fn a_missing_folder_prunes_nothing() {
         assert_eq!(
-            prune_old_copies(Path::new("no-such-folder-for-prune"), std::time::SystemTime::now()),
+            prune_old_copies(
+                Path::new("no-such-folder-for-prune"),
+                std::time::SystemTime::now()
+            ),
             0
         );
     }
@@ -402,7 +405,11 @@ mod tests {
             file.set_modified(now - std::time::Duration::from_secs(age_days * 86_400))
                 .expect("an age");
         }
-        std::fs::write(dir.path().join("kemlock-premigration-0.1.4.tar.zst.age"), b"x").expect("an archive");
+        std::fs::write(
+            dir.path().join("kemlock-premigration-0.1.4.tar.zst.age"),
+            b"x",
+        )
+        .expect("an archive");
         std::fs::write(dir.path().join("notes.txt"), b"x").expect("a file");
 
         assert_eq!(prune_old_copies(dir.path(), now), 2);

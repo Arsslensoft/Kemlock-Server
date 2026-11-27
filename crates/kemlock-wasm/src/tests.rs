@@ -818,7 +818,6 @@ fn the_root_key_is_sealed_to_an_emergency_contact_only_from_their_signed_bundle(
     );
 }
 
-
 #[wasm_bindgen_test]
 fn keys_opened_from_an_unsigned_box_are_read_only() {
     let (mut maker, _) = open_account([0x71; 16]);
@@ -894,7 +893,11 @@ fn keys_opened_from_an_unsigned_box_are_read_only() {
     // Keys opened from signed boxes never wait.
     let (mut other, other_bundle) = open_account([0x78; 16]);
     let signed = maker
-        .seal_space_key_to(&space, other_bundle.kx1_public.as_bytes(), &other_bundle.account_id)
+        .seal_space_key_to(
+            &space,
+            other_bundle.kx1_public.as_bytes(),
+            &other_bundle.account_id,
+        )
         .expect("seal");
     other.open_space(&space, 1, &signed.sealed).expect("open");
     other
@@ -3032,8 +3035,8 @@ fn assert_signed_rewrite(
     };
     assert_eq!(item["writer"], uuid_text(writer));
     assert_eq!(item["writerKeyVersion"], FIRST_KEY_VERSION);
-    let signature = b64::decode(item["writeSignature"].as_str().expect("a signature"))
-        .expect("base64url");
+    let signature =
+        b64::decode(item["writeSignature"].as_str().expect("a signature")).expect("base64url");
     assert_eq!(signature.len(), 3373);
     session
         .verify_own_item_write(&fields(collection), &signature)

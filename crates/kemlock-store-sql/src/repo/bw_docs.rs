@@ -1,15 +1,17 @@
 //! `BwOrgStore` on `bw_docs`.
 
+use super::policies::upsert_require_sso_in;
 use crate::error::{StoreResult, map_db};
 use crate::store::SqlStore;
 use crate::tables::bw_docs;
 use kemlock_app::bitwarden::BwOrgStore;
 use kemlock_app::ports::StoreError;
+use kemlock_domain::SpaceId;
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::OnConflict;
-use super::policies::upsert_require_sso_in;
-use kemlock_domain::SpaceId;
-use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, QueryOrder, TransactionTrait};
+use sea_orm::{
+    ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, QueryOrder, TransactionTrait,
+};
 use uuid::Uuid;
 
 impl BwOrgStore for SqlStore {

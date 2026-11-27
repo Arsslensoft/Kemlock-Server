@@ -50,7 +50,12 @@ impl<R: SpaceRepo + SpaceChainRepo, P: PolicyRepo, F: TwoFactorRepo> JoinGuard<R
             .spaces
             .spaces_binding_here(&memberships.iter().map(|m| m.space).collect::<Vec<_>>())
             .await?;
-        if !self.spaces.spaces_binding_here(&[space]).await?.contains(&space) {
+        if !self
+            .spaces
+            .spaces_binding_here(&[space])
+            .await?
+            .contains(&space)
+        {
             return Ok(());
         }
         let here = self.policies.space_policies(space).await?.policies;
@@ -134,7 +139,10 @@ async fn others_of<R: SpaceRepo>(
     Ok(others)
 }
 
-async fn has_two_step<F: TwoFactorRepo>(two_factor: &F, user: UserId) -> Result<bool, PoliciesError> {
+async fn has_two_step<F: TwoFactorRepo>(
+    two_factor: &F,
+    user: UserId,
+) -> Result<bool, PoliciesError> {
     Ok(two_factor
         .list(user)
         .await?
@@ -167,10 +175,7 @@ fn verdict(
 
 /// Whether the row puts its member in that space: accepted, or confirmed. On a space with a
 /// chain a confirmed row counts only when the chain holds the member as confirmed.
-async fn is_in<R: SpaceRepo>(
-    spaces: &R,
-    row: &Member,
-) -> Result<bool, PoliciesError> {
+async fn is_in<R: SpaceRepo>(spaces: &R, row: &Member) -> Result<bool, PoliciesError> {
     match row.state {
         MemberState::Accepted => Ok(true),
         MemberState::Confirmed => Ok(spaces

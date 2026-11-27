@@ -1120,7 +1120,10 @@ mod tests {
         create_private_dir(&made).expect("made");
         // The parent was made on the way, private too.
         for folder in [&made, &root.path().join("data")] {
-            let mode = std::fs::metadata(folder).expect("meta").permissions().mode();
+            let mode = std::fs::metadata(folder)
+                .expect("meta")
+                .permissions()
+                .mode();
             assert_eq!(mode & 0o777, 0o700, "{}", folder.display());
         }
         // A folder that is already there keeps the mode its owner gave it.
@@ -1128,7 +1131,10 @@ mod tests {
         std::fs::create_dir(&shared).expect("a folder");
         std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o755)).expect("755");
         create_private_dir(&shared).expect("fine");
-        let mode = std::fs::metadata(&shared).expect("meta").permissions().mode();
+        let mode = std::fs::metadata(&shared)
+            .expect("meta")
+            .permissions()
+            .mode();
         assert_eq!(mode & 0o777, 0o755);
     }
 }

@@ -53,7 +53,8 @@ pub(crate) async fn validate<S: BwStore>(
         (Some(hash), None) => {
             if app
                 .password_matches(&authed.account, hash, Some(authed.ip))
-                .await? {
+                .await?
+            {
                 Ok(())
             } else {
                 Err(BwError::msg("Invalid password"))

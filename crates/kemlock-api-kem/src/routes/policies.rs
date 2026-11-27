@@ -739,7 +739,11 @@ mod tests {
             format!("/kem/v1/spaces/{SPACE}/members/%zz/accept"),
             format!("/kem/v1/spaces/{SPACE}/members/%FF/accept"),
         ] {
-            assert_eq!(join_target(&unreadable), JoinRoute::Unreadable, "{unreadable}");
+            assert_eq!(
+                join_target(&unreadable),
+                JoinRoute::Unreadable,
+                "{unreadable}"
+            );
         }
     }
 

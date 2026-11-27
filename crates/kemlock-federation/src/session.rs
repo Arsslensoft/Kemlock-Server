@@ -175,7 +175,14 @@ impl<S: FedStore> Replica<S> {
         let keys = self.peer_keys().await?;
         let accepted = {
             let mut cache = cache.lock().await;
-            handshake::respond(&self.identity(), &keys, &mut cache, hello, now, self.padding)?
+            handshake::respond(
+                &self.identity(),
+                &keys,
+                &mut cache,
+                hello,
+                now,
+                self.padding,
+            )?
         };
         self.store.touch_peer(accepted.session.peer, now).await?;
         Ok((accepted.reply, accepted.session))

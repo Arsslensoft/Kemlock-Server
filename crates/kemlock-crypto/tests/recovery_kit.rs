@@ -186,7 +186,10 @@ fn a_pieces_debug_output_never_shows_its_share() {
     let (_, _, pieces) = make_kit(2, 3).expect("a kit");
     let piece = parse_piece(&pieces[0]).expect("a piece");
     let shown = format!("{piece:?}");
-    assert!(shown.contains("KitPiece") && shown.contains(&piece.kit_id), "{shown}");
+    assert!(
+        shown.contains("KitPiece") && shown.contains(&piece.kit_id),
+        "{shown}"
+    );
     // The share's bytes, in any of the ways a derived Debug would print them.
     let bytes: &[u8] = &*piece.y;
     let as_list = format!("{bytes:?}");

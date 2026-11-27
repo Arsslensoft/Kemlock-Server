@@ -98,9 +98,15 @@ async fn a_slow_peer_does_not_delay_the_visit_to_another_and_is_not_started_twic
 
     // The fast peer's run ended (and failed) while the slow one's is still going.
     tokio::time::sleep(Duration::from_millis(200)).await;
-    let fast = w.runner.status_of(w.fast).expect("the fast peer was visited");
+    let fast = w
+        .runner
+        .status_of(w.fast)
+        .expect("the fast peer was visited");
     assert_eq!(fast.consecutive_failures, 1);
-    let slow = w.runner.status_of(w.slow).expect("the slow peer was started");
+    let slow = w
+        .runner
+        .status_of(w.slow)
+        .expect("the slow peer was started");
     assert_eq!(slow.consecutive_failures, 0);
     assert!(slow.last_success.is_none());
 
@@ -128,7 +134,10 @@ async fn a_visit_that_runs_out_of_time_is_a_partial_success_with_a_note() {
         panic!("a partial run is a Done");
     };
     assert_eq!(statuses.len(), 1);
-    assert!(statuses[0].note.is_some(), "the vault says it wasn't reached");
+    assert!(
+        statuses[0].note.is_some(),
+        "the vault says it wasn't reached"
+    );
 
     let status = w.runner.status_of(w.slow).expect("a status");
     assert_eq!(status.consecutive_failures, 0);

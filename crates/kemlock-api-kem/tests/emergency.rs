@@ -135,7 +135,11 @@ async fn a_box_for_another_key_version_is_a_409_and_stores_nothing() {
     let s = scene().await;
     let id = s.invite("view", 7).await;
     let accepted = s
-        .kim("POST", &format!("/kem/v1/emergency/grants/{id}/accept"), None)
+        .kim(
+            "POST",
+            &format!("/kem/v1/emergency/grants/{id}/accept"),
+            None,
+        )
         .await;
     assert_eq!(accepted.status, StatusCode::OK, "{:?}", accepted.json());
     let stale = s

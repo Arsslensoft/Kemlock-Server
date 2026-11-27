@@ -193,10 +193,10 @@ impl<S: BwStore> App<S> {
     pub fn new(parts: AppParts<S>) -> Self {
         // Made from `server.key` (the secret only this server has), not from `rsa_key.pem`, which an
         // old copy of a Vaultwarden server may share.
-        let prelogin_key = parts
-            .seal
-            .subkey("bitwarden-prelogin")
-            .map_or_else(|_| hash::hmac_sha256(parts.keys.pem().as_bytes(), b"prelogin-kdf"), |key| *key);
+        let prelogin_key = parts.seal.subkey("bitwarden-prelogin").map_or_else(
+            |_| hash::hmac_sha256(parts.keys.pem().as_bytes(), b"prelogin-kdf"),
+            |key| *key,
+        );
         let login_limit = crate::ip_limit::IpLimit::new(
             parts.settings.login_ratelimit_max_burst,
             parts.settings.login_ratelimit_seconds,

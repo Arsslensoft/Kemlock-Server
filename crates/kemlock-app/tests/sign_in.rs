@@ -864,7 +864,10 @@ async fn every_second_step_finish_checks_the_policy_and_a_pending_erasure() {
     use kemlock_domain::SpaceId;
     let (world, user) = two_step_world().await;
     let challenge = challenge_for(&world).await;
-    assert_eq!(world.sign_in().check_second_step_allowed(&challenge).await, Ok(()));
+    assert_eq!(
+        world.sign_in().check_second_step_allowed(&challenge).await,
+        Ok(())
+    );
 
     // A space turns Require SSO on after the password step: the second step is refused for
     // whatever method answers it, not only for the authenticator app.
@@ -882,7 +885,10 @@ async fn every_second_step_finish_checks_the_policy_and_a_pending_erasure() {
         Err(AppError::SsoRequired { space })
     );
     world.store.set_memberships(user, Vec::new());
-    assert_eq!(world.sign_in().check_second_step_allowed(&challenge).await, Ok(()));
+    assert_eq!(
+        world.sign_in().check_second_step_allowed(&challenge).await,
+        Ok(())
+    );
 
     // A disabled account, and one waiting out its erasure, are refused too.
     world.store.set_account_disabled(user, true);

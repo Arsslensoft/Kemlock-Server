@@ -197,14 +197,12 @@ impl KeyStore for SqlStore {
     }
 
     async fn put_held_rotation(&self, held: &HeldRotation) -> Result<bool, StoreError> {
-        let already = peer_held_rotations::Entity::find_by_id((
-            held.server.0,
-            held.fingerprint.clone(),
-        ))
-        .one(self.writer())
-        .await
-        .store()?
-        .is_some();
+        let already =
+            peer_held_rotations::Entity::find_by_id((held.server.0, held.fingerprint.clone()))
+                .one(self.writer())
+                .await
+                .store()?
+                .is_some();
         if already {
             return Ok(true);
         }

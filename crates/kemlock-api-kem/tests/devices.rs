@@ -296,6 +296,7 @@ async fn an_account_takes_thirty_requests_an_hour_and_past_them_the_new_device_i
     );
 }
 
+#[tokio::test]
 async fn requests_expire_after_fifteen_minutes() {
     let (app, open, _session) = open_device().await;
     let new_device = app.client();
@@ -431,8 +432,15 @@ async fn a_copy_made_for_another_key_version_is_a_409_with_the_current_one() {
     let stale = put(99).await;
     assert_eq!(stale.status, StatusCode::CONFLICT, "{:?}", stale.json());
     assert_eq!(stale.problem(), "key-version-stale");
-    let current = stale.json()["currentKeyVersion"].as_u64().expect("the current version");
-    assert!(open.get_authed("/kem/v1/devices/key-copy", token).await.status == StatusCode::NOT_FOUND);
+    let current = stale.json()["currentKeyVersion"]
+        .as_u64()
+        .expect("the current version");
+    assert!(
+        open.get_authed("/kem/v1/devices/key-copy", token)
+            .await
+            .status
+            == StatusCode::NOT_FOUND
+    );
     let kept = put(u32::try_from(current).expect("a version")).await;
     assert_eq!(kept.status, StatusCode::OK, "{:?}", kept.json());
 }

@@ -313,14 +313,18 @@ impl<S: FedStore> Replica<S> {
             .as_ref()
             .ok_or(FedError::Refused("this server doesn't serve files"))?;
         if offset >= MAX_FETCH {
-            return Err(FedError::Refused("an offset past any file this server serves"));
+            return Err(FedError::Refused(
+                "an offset past any file this server serves",
+            ));
         }
         let cost = offset.saturating_add(u64::from(len.min(MAX_CHUNK)));
         if !self
             .work
             .allow_blob_read(&self.work_limits, peer, cost, now)
         {
-            return Err(FedError::Refused("too much of this server's storage was read for this peer: try later"));
+            return Err(FedError::Refused(
+                "too much of this server's storage was read for this peer: try later",
+            ));
         }
         let held = match self
             .store
@@ -700,7 +704,10 @@ mod tests {
         assert!(chunk(2 * 1024 * 1024).await.is_ok());
         // The window is used up: the next read, from far into the file, is refused, and so is an
         // offset no file reaches, however much is left.
-        assert!(matches!(chunk(2 * 1024 * 1024).await, Err(FedError::Refused(_))));
+        assert!(matches!(
+            chunk(2 * 1024 * 1024).await,
+            Err(FedError::Refused(_))
+        ));
         assert!(matches!(chunk(MAX_FETCH).await, Err(FedError::Refused(_))));
     }
 

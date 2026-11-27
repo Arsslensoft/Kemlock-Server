@@ -10,8 +10,8 @@ use kemlock_app::sso::ports::{
     TxtLookup, VerifiedDomainRepo,
 };
 use kemlock_app::sso::{
-    ClientConfig, GroupAssignment, IdentityClaims, LogoutClaims, SsoError, SsoIdentity,
-    SsoSession, SsoSettings, VerifiedDomain,
+    ClientConfig, GroupAssignment, IdentityClaims, LogoutClaims, SsoError, SsoIdentity, SsoSession,
+    SsoSettings, VerifiedDomain,
 };
 use kemlock_domain::UserId;
 use std::collections::{HashMap, HashSet};
@@ -169,7 +169,8 @@ impl SsoIdentityRepo for FakeSsoRepos {
             .filter(|s| subject.is_none_or(|v| s.subject == v))
             .filter(|s| {
                 session_id.is_none_or(|v| {
-                    s.session_id.as_deref() == Some(v) || (subject.is_some() && s.session_id.is_none())
+                    s.session_id.as_deref() == Some(v)
+                        || (subject.is_some() && s.session_id.is_none())
                 })
             })
             .cloned()

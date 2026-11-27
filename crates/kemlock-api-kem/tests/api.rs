@@ -673,7 +673,11 @@ async fn one_password_finish_at_a_time_per_account_a_second_apart_and_none_refus
     let started = std::time::Instant::now();
     let ok = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(50)).await;
     assert_eq!(ok.status, StatusCode::OK, "{:?}", ok.json());
-    assert!(started.elapsed() >= gap, "held back: {:?}", started.elapsed());
+    assert!(
+        started.elapsed() >= gap,
+        "held back: {:?}",
+        started.elapsed()
+    );
 
     // Two finishes at once for one account run one after the other, a gap apart.
     app.api.limits.account_cap.set_limit(100);
@@ -684,9 +688,14 @@ async fn one_password_finish_at_a_time_per_account_a_second_apart_and_none_refus
     );
     assert_eq!(first.status, StatusCode::OK, "{:?}", first.json());
     assert_eq!(second.status, StatusCode::OK, "{:?}", second.json());
-    assert!(both.elapsed() >= gap, "a gap between the two: {:?}", both.elapsed());
+    assert!(
+        both.elapsed() >= gap,
+        "a gap between the two: {:?}",
+        both.elapsed()
+    );
 }
 
+#[tokio::test]
 async fn made_up_login_states_spend_no_one_s_attempts() {
     let app = App::new(true);
     let client = app.client();

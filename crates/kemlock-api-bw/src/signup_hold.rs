@@ -120,6 +120,9 @@ mod tests {
         let now = 5_000 + i64::try_from(MAX_RECIPIENTS).expect("small");
         assert!(full.take("new@example.com", now));
         assert!(!full.take("new@example.com", now + 1));
-        assert!(full.take("p0@example.com", now + 2), "the oldest was dropped");
+        assert!(
+            full.take("p0@example.com", now + 2),
+            "the oldest was dropped"
+        );
     }
 }

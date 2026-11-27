@@ -1254,11 +1254,7 @@ async fn a_space_follows_its_home_in_roles_keys_and_policies_and_stale_writes_ar
 
 /// A space at `home` with `members` (the first an owner) and one collection, as the tests below
 /// build it.
-async fn make_space(
-    home: &Node,
-    members: &[&User],
-    require_sso: bool,
-) -> (SpaceId, CollectionId) {
+async fn make_space(home: &Node, members: &[&User], require_sso: bool) -> (SpaceId, CollectionId) {
     let space = SpaceId::random();
     let now = OffsetDateTime::now_utc();
     let collection = Collection {
@@ -1390,7 +1386,11 @@ async fn a_space_planted_with_require_sso_does_not_bind_an_account_that_lives_he
     let held = SpaceRepo::memberships(b.store(), victim.id)
         .await
         .expect("memberships");
-    assert_eq!(held.len(), 1, "the home's record about the member is applied");
+    assert_eq!(
+        held.len(),
+        1,
+        "the home's record about the member is applied"
+    );
     // ...and binds nothing: not Require SSO at sign-in, not the single-space rule.
     assert!(
         MembershipFacts::spaces_of(b.store(), victim.id)

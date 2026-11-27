@@ -66,7 +66,8 @@ impl BwPasswordCheck for Pbkdf2Check {
         let Some(rounds) = NonZeroU32::new(iterations) else {
             return false;
         };
-        let check = || pbkdf2::verify(pbkdf2::PBKDF2_HMAC_SHA256, rounds, salt, secret, stored).is_ok();
+        let check =
+            || pbkdf2::verify(pbkdf2::PBKDF2_HMAC_SHA256, rounds, salt, secret, stored).is_ok();
         // The caller holds a place in the gate ([`hash_permit`]); on a multi-threaded runtime the
         // worker hands its other tasks to another thread while it hashes.
         match tokio::runtime::Handle::try_current().map(|handle| handle.runtime_flavor()) {

@@ -20,7 +20,8 @@ use super::{
     seals::{link, seal_hash},
     state::{CollectionInfo, Head, Member, State, Status},
     testkit::{
-        ADMIN, ANA, Account, Kit, LEE, NEWBIE, OWNER, OWNER2, finance, general, space_id, uid, world,
+        ADMIN, ANA, Account, Kit, LEE, NEWBIE, OWNER, OWNER2, finance, general, space_id, uid,
+        world,
     },
     verify::verify_chain_in,
 };
@@ -889,10 +890,34 @@ fn the_chains_byte_limit_and_its_end_are_rules_of_the_state() {
         .expect("an Owner's removal in the byte tail");
 
     // A `keys` record in the reserve: for a key already marked, not for one that isn't.
-    assert!(end_of_chain_allows(Limits::OPEN_RECORDS, 1, Role::Admin, Kind::Keys, true));
-    assert!(!end_of_chain_allows(Limits::OPEN_RECORDS, 1, Role::Admin, Kind::Keys, false));
-    assert!(!end_of_chain_allows(Limits::OPEN_RECORDS, 1, Role::Custom, Kind::Keys, false));
-    assert!(!end_of_chain_allows(Limits::OWNER_ONLY_FROM, 1, Role::Admin, Kind::Keys, true));
+    assert!(end_of_chain_allows(
+        Limits::OPEN_RECORDS,
+        1,
+        Role::Admin,
+        Kind::Keys,
+        true
+    ));
+    assert!(!end_of_chain_allows(
+        Limits::OPEN_RECORDS,
+        1,
+        Role::Admin,
+        Kind::Keys,
+        false
+    ));
+    assert!(!end_of_chain_allows(
+        Limits::OPEN_RECORDS,
+        1,
+        Role::Custom,
+        Kind::Keys,
+        false
+    ));
+    assert!(!end_of_chain_allows(
+        Limits::OWNER_ONLY_FROM,
+        1,
+        Role::Admin,
+        Kind::Keys,
+        true
+    ));
     let mut kit = world::<Gen>();
     let marking = kit.remove_body(&uid(ANA));
     kit.ok::<Gen>(&owner, marking);
@@ -920,10 +945,6 @@ fn a_fence_signed_with_an_owners_old_key_is_not_vouched_for() {
     assert_ne!(after.owners()[&owner2], before[&owner2]);
     // An Owner who is only invited or accepted is not in it.
     let mut invited = after.clone();
-    invited
-        .members
-        .get_mut(&owner2)
-        .expect("a member")
-        .status = Status::Invited;
+    invited.members.get_mut(&owner2).expect("a member").status = Status::Invited;
     assert!(!invited.owners().contains_key(&owner2));
 }

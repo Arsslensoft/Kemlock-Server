@@ -804,9 +804,7 @@ async fn a_space_write_is_signed_over_its_collection_and_a_replay_into_another_i
     assert_eq!(items[0]["writeSignature"], in_c1["writeSignature"]);
 
     // Moving the item to C2 under a signature that binds C1 is refused; one that binds C2 is not.
-    let update = |bound: Uuid| {
-        space_signed(&ana, space, bound, space_item(space, Some(c2), id, 2))
-    };
+    let update = |bound: Uuid| space_signed(&ana, space, bound, space_item(space, Some(c2), id, 2));
     let bound_to_c1 = ana
         .write(
             "PUT",

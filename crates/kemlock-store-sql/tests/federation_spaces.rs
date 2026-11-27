@@ -542,9 +542,15 @@ async fn a_member_taken_out_signs_only_where_they_could_edit_and_only_before_the
 
     // Before they left, where they held edit.
     assert_eq!(may(gone, editable, left - 1_000).await, Some(true));
-    assert_eq!(may(gone, editable, left + WRITE_SKEW_SECS).await, Some(true));
+    assert_eq!(
+        may(gone, editable, left + WRITE_SKEW_SECS).await,
+        Some(true)
+    );
     // After they left, not.
-    assert_eq!(may(gone, editable, left + WRITE_SKEW_SECS + 1).await, Some(false));
+    assert_eq!(
+        may(gone, editable, left + WRITE_SKEW_SECS + 1).await,
+        Some(false)
+    );
     // Never where they could only read, or had no grant.
     assert_eq!(may(gone, read_only, left - 1_000).await, Some(false));
     assert_eq!(may(gone, unshared, left - 1_000).await, Some(false));
@@ -569,7 +575,12 @@ async fn a_collection_is_this_spaces_another_spaces_or_not_known_yet() {
             created_at: AT,
             updated_at: AT,
         }),
-        members: vec![member(space, owner, SpaceRole::Owner, MemberState::Confirmed)],
+        members: vec![member(
+            space,
+            owner,
+            SpaceRole::Owner,
+            MemberState::Confirmed,
+        )],
         collections: vec![Collection {
             id: collection,
             space,

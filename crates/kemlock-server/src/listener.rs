@@ -22,10 +22,10 @@
 //! connection when it upgrades, still counts: the permit lives in the socket.
 
 use crate::config::Config;
-use kemlock_api_kem::ratelimit::Proxy;
 use axum::Router;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto::Builder as ConnectionBuilder;
+use kemlock_api_kem::ratelimit::Proxy;
 use std::collections::HashMap;
 use std::future::Future;
 use std::io::{self, IoSlice};
@@ -823,8 +823,14 @@ mod tests {
         let x = tracker.admit(ip("2001:db8:1:2::1")).expect("one");
         let y = tracker.admit(ip("2001:db8:1:2:ffff::9")).expect("two");
         assert!(tracker.admit(ip("2001:db8:1:2::3")).is_none());
-        assert!(tracker.admit(ip("2001:db8:1:3::1")).is_none(), "another /64 of the /56");
-        assert!(tracker.admit(ip("2001:db8:1:100::1")).is_some(), "the next /56");
+        assert!(
+            tracker.admit(ip("2001:db8:1:3::1")).is_none(),
+            "another /64 of the /56"
+        );
+        assert!(
+            tracker.admit(ip("2001:db8:1:100::1")).is_some(),
+            "the next /56"
+        );
         // An IPv4 address mapped into IPv6 is that IPv4 address.
         let _z = tracker.admit(ip("192.0.2.9")).expect("one");
         let _w = tracker.admit(ip("::ffff:192.0.2.9")).expect("two");
@@ -838,7 +844,10 @@ mod tests {
                     Max cpu time              unlimited            unlimited            seconds   \n\
                     Max open files            1024                 524288               files     \n";
         assert_eq!(parse_open_file_limit(text), Some(1024));
-        assert_eq!(parse_open_file_limit("Max open files unlimited unlimited files"), None);
+        assert_eq!(
+            parse_open_file_limit("Max open files unlimited unlimited files"),
+            None
+        );
         assert_eq!(parse_open_file_limit("nothing here"), None);
         // Three quarters of the limit at most; no cap and an unknown limit stay as they are.
         assert_eq!(within_file_limit(4096, Some(1024)), 768);

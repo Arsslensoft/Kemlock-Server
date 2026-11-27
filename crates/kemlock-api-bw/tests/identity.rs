@@ -1643,8 +1643,13 @@ async fn prelogin_is_limited_per_address() {
     let ask = |path: &'static str| {
         let h = &h;
         async move {
-            h.json("POST", path, None, Some(json!({"email": "ada@example.com"})))
-                .await
+            h.json(
+                "POST",
+                path,
+                None,
+                Some(json!({"email": "ada@example.com"})),
+            )
+            .await
         }
     };
     for _ in 0..3 {
@@ -1780,7 +1785,11 @@ async fn an_account_stops_taking_second_step_codes_after_five_tries_then_waits_l
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     h.env.advance(Duration::seconds(1));
     let (status, _) = try_code(code(&h)).await;
-    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "two seconds are owed now");
+    assert_eq!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "two seconds are owed now"
+    );
     h.env.advance(Duration::seconds(2));
 
     // The right code, once the wait is over, works and clears the count.
@@ -1926,7 +1935,9 @@ async fn a_password_sign_in_leaves_the_devices_dpop_key_as_it_is() {
     // And a write that races a sign-out (a stale copy with the key) can't put it back.
     let mut cleared = kept.clone();
     cleared.dpop_jkt = None;
-    DeviceRepo::upsert(&h.store, &cleared).await.expect("cleared");
+    DeviceRepo::upsert(&h.store, &cleared)
+        .await
+        .expect("cleared");
     DeviceRepo::upsert_description(&h.store, &kept)
         .await
         .expect("described");

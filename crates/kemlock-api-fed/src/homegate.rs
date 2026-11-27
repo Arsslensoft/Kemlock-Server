@@ -45,7 +45,14 @@ const HOME_ONLY: [&str; 8] = [
 
 /// The parts of `/api/organizations/{id}/…` (the Bitwarden API's name for a space) only the home
 /// may write: members, collections, groups, policies, the organization's keys and leaving it.
-const BITWARDEN_HOME_ONLY: [&str; 6] = ["users", "collections", "groups", "policies", "keys", "leave"];
+const BITWARDEN_HOME_ONLY: [&str; 6] = [
+    "users",
+    "collections",
+    "groups",
+    "policies",
+    "keys",
+    "leave",
+];
 
 /// What the gate needs: the engine, and what to call when the home changed something so the
 /// replicas are visited soon (the server passes the replication job's `mark_dirty`).

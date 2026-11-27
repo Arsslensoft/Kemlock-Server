@@ -705,13 +705,20 @@ async fn the_store_checks_whose_item_a_hold_and_a_collection_link_are_about() {
         .await
         .expect("an item of the space");
     put_space_item(&store)
-        .execute(&actor(zed.id), other_everyone, write(other, theirs, None, 1, 1))
+        .execute(
+            &actor(zed.id),
+            other_everyone,
+            write(other, theirs, None, 1, 1),
+        )
         .await
         .expect("an item of the other space");
 
     // A hold names only the space's own items: another space's item, and one that is nobody's,
     // are refused whatever the caller checked.
-    store.hold_items(space, &[mine]).await.expect("its own item");
+    store
+        .hold_items(space, &[mine])
+        .await
+        .expect("its own item");
     for foreign in [theirs, ItemId::random()] {
         assert_eq!(
             store.hold_items(space, &[mine, foreign]).await,
@@ -723,7 +730,11 @@ async fn the_store_checks_whose_item_a_hold_and_a_collection_link_are_about() {
 
     // An item of the space can't be written into a collection of another space.
     let moved = put_space_item(&store)
-        .execute(&actor(sam.id), other_everyone, write(space, mine, Some(1), 2, 1))
+        .execute(
+            &actor(sam.id),
+            other_everyone,
+            write(space, mine, Some(1), 2, 1),
+        )
         .await;
     assert!(moved.is_err(), "{moved:?}");
     assert_eq!(
@@ -754,7 +765,12 @@ async fn an_account_that_owns_a_space_alone_is_not_erased_by_the_store() {
         AccountEraser::erase_user(&store, &account).await,
         Err(StoreError::Backend(OWNER_REQUIRED.to_owned()))
     );
-    assert!(UserRepo::by_id(&store, sam.id).await.expect("reads").is_some());
+    assert!(
+        UserRepo::by_id(&store, sam.id)
+            .await
+            .expect("reads")
+            .is_some()
+    );
     assert_eq!(
         AccountEraser::blocking_spaces(&store, sam.id).await,
         Ok(vec![space])

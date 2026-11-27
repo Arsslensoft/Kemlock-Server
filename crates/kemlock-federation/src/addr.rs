@@ -427,7 +427,14 @@ mod tests {
             assert!(is_never_dialled(ip(text)), "{text}");
         }
         // A home lab is still the admin's to allow.
-        for text in ["10.0.0.5", "192.168.1.10", "127.0.0.1", "::1", "fd00::1", "8.8.8.8"] {
+        for text in [
+            "10.0.0.5",
+            "192.168.1.10",
+            "127.0.0.1",
+            "::1",
+            "fd00::1",
+            "8.8.8.8",
+        ] {
             assert!(!is_never_dialled(ip(text)), "{text}");
         }
     }

@@ -55,9 +55,8 @@ use kemlock_federation::home::Policy;
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{
-    ColumnTrait, ConnectionTrait, Condition, DatabaseTransaction, EntityTrait, QueryFilter, QueryOrder,
-    QuerySelect,
-    TransactionTrait,
+    ColumnTrait, Condition, ConnectionTrait, DatabaseTransaction, EntityTrait, QueryFilter,
+    QueryOrder, QuerySelect, TransactionTrait,
 };
 use std::collections::HashMap;
 use std::net::IpAddr;

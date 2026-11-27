@@ -320,7 +320,9 @@ impl Authed {
             "reauth-required",
             "Sign in again to do this",
         )
-        .detail("this change needs a sign-in from the last 15 minutes: sign in again, then repeat it"))
+        .detail(
+            "this change needs a sign-in from the last 15 minutes: sign in again, then repeat it",
+        ))
     }
 }
 

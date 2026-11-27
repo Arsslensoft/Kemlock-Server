@@ -389,40 +389,185 @@ fn chain_case(case: &Case, valid: &Case) -> Value {
 fn end_of_chain_cases() -> Vec<Value> {
     use crate::space_chain::Limits;
     let mut out = Vec::new();
-    let mut case = |name: &str, seq: u64, bytes: u64, role: &str, kind: &str, marked: bool, taken: bool| {
-        out.push(json!({
-            "type": "end-of-chain",
-            "name": name,
-            "seq": seq,
-            "bytes": bytes,
-            "role": role,
-            "kind": kind,
-            "keys_marked": marked,
-            "expect": if taken { "taken" } else { "refused" },
-        }));
-    };
+    let mut case =
+        |name: &str, seq: u64, bytes: u64, role: &str, kind: &str, marked: bool, taken: bool| {
+            out.push(json!({
+                "type": "end-of-chain",
+                "name": name,
+                "seq": seq,
+                "bytes": bytes,
+                "role": role,
+                "kind": kind,
+                "keys_marked": marked,
+                "expect": if taken { "taken" } else { "refused" },
+            }));
+        };
     let (open, owner_only) = (Limits::OPEN_RECORDS, Limits::OWNER_ONLY_FROM);
     let (open_bytes, owner_bytes) = (Limits::OPEN_BYTES, Limits::OWNER_ONLY_BYTES);
     // By record count.
-    case("records-before-the-reserve", open - 1, 1_000, "admin", "policies", false, true);
-    case("records-in-the-reserve-a-policy", open, 1_000, "admin", "policies", false, false);
-    case("records-in-the-reserve-a-removal", open, 1_000, "admin", "remove", false, true);
-    case("records-in-the-reserve-marked-keys", open, 1_000, "admin", "keys", true, true);
-    case("records-in-the-reserve-unmarked-keys", open, 1_000, "admin", "keys", false, false);
-    case("records-in-the-reserve-unmarked-keys-of-a-manager", open, 1_000, "custom", "keys", false, false);
-    case("records-last-of-the-reserve-a-removal", owner_only - 1, 1_000, "member", "remove", false, true);
-    case("records-owner-only-a-removal", owner_only, 1_000, "member", "remove", false, false);
-    case("records-owner-only-marked-keys", owner_only, 1_000, "admin", "keys", true, false);
-    case("records-owner-only-an-owner", Limits::CHAIN_RECORDS - 1, 1_000, "owner", "policies", false, true);
+    case(
+        "records-before-the-reserve",
+        open - 1,
+        1_000,
+        "admin",
+        "policies",
+        false,
+        true,
+    );
+    case(
+        "records-in-the-reserve-a-policy",
+        open,
+        1_000,
+        "admin",
+        "policies",
+        false,
+        false,
+    );
+    case(
+        "records-in-the-reserve-a-removal",
+        open,
+        1_000,
+        "admin",
+        "remove",
+        false,
+        true,
+    );
+    case(
+        "records-in-the-reserve-marked-keys",
+        open,
+        1_000,
+        "admin",
+        "keys",
+        true,
+        true,
+    );
+    case(
+        "records-in-the-reserve-unmarked-keys",
+        open,
+        1_000,
+        "admin",
+        "keys",
+        false,
+        false,
+    );
+    case(
+        "records-in-the-reserve-unmarked-keys-of-a-manager",
+        open,
+        1_000,
+        "custom",
+        "keys",
+        false,
+        false,
+    );
+    case(
+        "records-last-of-the-reserve-a-removal",
+        owner_only - 1,
+        1_000,
+        "member",
+        "remove",
+        false,
+        true,
+    );
+    case(
+        "records-owner-only-a-removal",
+        owner_only,
+        1_000,
+        "member",
+        "remove",
+        false,
+        false,
+    );
+    case(
+        "records-owner-only-marked-keys",
+        owner_only,
+        1_000,
+        "admin",
+        "keys",
+        true,
+        false,
+    );
+    case(
+        "records-owner-only-an-owner",
+        Limits::CHAIN_RECORDS - 1,
+        1_000,
+        "owner",
+        "policies",
+        false,
+        true,
+    );
     // By record bytes.
-    case("bytes-before-the-reserve", 100, open_bytes, "admin", "policies", false, true);
-    case("bytes-in-the-reserve-a-policy", 100, open_bytes + 1, "admin", "policies", false, false);
-    case("bytes-in-the-reserve-a-removal", 100, open_bytes + 1, "admin", "remove", false, true);
-    case("bytes-in-the-reserve-marked-keys", 100, open_bytes + 1, "admin", "keys", true, true);
-    case("bytes-in-the-reserve-unmarked-keys", 100, open_bytes + 1, "admin", "keys", false, false);
-    case("bytes-last-of-the-reserve-a-removal", 100, owner_bytes, "admin", "remove", false, true);
-    case("bytes-owner-only-a-removal", 100, owner_bytes + 1, "admin", "remove", false, false);
-    case("bytes-owner-only-an-owner", 100, Limits::CHAIN_BYTES_U64, "owner", "remove", false, true);
+    case(
+        "bytes-before-the-reserve",
+        100,
+        open_bytes,
+        "admin",
+        "policies",
+        false,
+        true,
+    );
+    case(
+        "bytes-in-the-reserve-a-policy",
+        100,
+        open_bytes + 1,
+        "admin",
+        "policies",
+        false,
+        false,
+    );
+    case(
+        "bytes-in-the-reserve-a-removal",
+        100,
+        open_bytes + 1,
+        "admin",
+        "remove",
+        false,
+        true,
+    );
+    case(
+        "bytes-in-the-reserve-marked-keys",
+        100,
+        open_bytes + 1,
+        "admin",
+        "keys",
+        true,
+        true,
+    );
+    case(
+        "bytes-in-the-reserve-unmarked-keys",
+        100,
+        open_bytes + 1,
+        "admin",
+        "keys",
+        false,
+        false,
+    );
+    case(
+        "bytes-last-of-the-reserve-a-removal",
+        100,
+        owner_bytes,
+        "admin",
+        "remove",
+        false,
+        true,
+    );
+    case(
+        "bytes-owner-only-a-removal",
+        100,
+        owner_bytes + 1,
+        "admin",
+        "remove",
+        false,
+        false,
+    );
+    case(
+        "bytes-owner-only-an-owner",
+        100,
+        Limits::CHAIN_BYTES_U64,
+        "owner",
+        "remove",
+        false,
+        true,
+    );
     out
 }
 
@@ -779,7 +924,14 @@ mod check {
                 other => panic!("unknown space-chain case type {other}"),
             }
         }
-        for needed in ["link", "encoding", "signing", "seals", "end-of-chain", "chain"] {
+        for needed in [
+            "link",
+            "encoding",
+            "signing",
+            "seals",
+            "end-of-chain",
+            "chain",
+        ] {
             assert!(kinds.contains(needed), "no {needed} case");
         }
         // The valid chain has every kind of record.

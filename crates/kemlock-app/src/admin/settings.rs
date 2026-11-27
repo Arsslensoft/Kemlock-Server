@@ -1080,7 +1080,10 @@ mod tests {
             ] {
                 assert!(validate(d, private).is_err(), "{key}: {private}");
             }
-            assert!(validate(d, "https://203.0.113.9").is_err(), "documentation range");
+            assert!(
+                validate(d, "https://203.0.113.9").is_err(),
+                "documentation range"
+            );
             assert!(validate(d, "https://93.184.216.34/relay").is_ok(), "{key}");
             assert!(validate(d, "http://push.example.org").is_err(), "{key}");
         }

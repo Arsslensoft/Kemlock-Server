@@ -22,8 +22,8 @@
 //! These routes need a store that keeps chains ([`SpaceChainRepo`]), so they have a router of
 //! their own, merged beside the spaces router.
 
-use crate::dto::decode;
 use super::large_bodies::{LargeBodies, LargeBody};
+use crate::dto::decode;
 use crate::problem::Problem;
 use crate::routes::spaces::{Caller, Env, mail_invitations, nonce_header};
 use crate::state::{Api, Crypto, Store};
@@ -191,7 +191,11 @@ where
             if !large_ok || !may_send_large(env, actor, space).await {
                 return Err(Problem::payload_too_large());
             }
-            *large = Some(places.take(*actor.user.as_bytes(), *space.as_bytes()).await?);
+            *large = Some(
+                places
+                    .take(*actor.user.as_bytes(), *space.as_bytes())
+                    .await?,
+            );
         }
         if total > MAX_REPLACEMENT_BODY_BYTES {
             return Err(Problem::payload_too_large());
@@ -657,7 +661,8 @@ where
     }
     // The writes go to the blocking task and come back, so none is copied.
     let writes = std::mem::take(&mut request.writes);
-    request.writes = super::write_sig::verify_writes_blocking(&env.api.store, actor, writes).await?;
+    request.writes =
+        super::write_sig::verify_writes_blocking(&env.api.store, actor, writes).await?;
     Ok(())
 }
 

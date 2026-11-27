@@ -175,15 +175,12 @@ impl HashGate {
             self.claim_account(key, deadline).await?;
             claims.who.account = Some(key);
         }
-        let permit = match tokio::time::timeout_at(
-            deadline,
-            Arc::clone(&self.0.pool).acquire_owned(),
-        )
-        .await
-        {
-            Ok(Ok(permit)) => permit,
-            _ => return Err(too_many()),
-        };
+        let permit =
+            match tokio::time::timeout_at(deadline, Arc::clone(&self.0.pool).acquire_owned()).await
+            {
+                Ok(Ok(permit)) => permit,
+                _ => return Err(too_many()),
+            };
         claims._permit = Some(permit);
         claims.started = true;
         tokio::task::spawn_blocking(move || {
@@ -255,7 +252,9 @@ mod tests {
         wait_started(started).await;
         let refused = gate.run(who(2, Some(9)), || ()).await.expect_err("refused");
         assert!(is_429(&refused));
-        gate.run(who(3, Some(8)), || ()).await.expect("another prefix runs");
+        gate.run(who(3, Some(8)), || ())
+            .await
+            .expect("another prefix runs");
         release.send(()).expect("released");
         task.await.expect("joined").expect("the first finished");
         gate.run(who(2, Some(9)), || ()).await.expect("runs again");
@@ -266,7 +265,9 @@ mod tests {
         let gate = HashGate::new(4, Duration::from_millis(900), Duration::from_millis(150));
         let began = Instant::now();
         gate.run(who(1, None), || ()).await.expect("runs");
-        gate.run(who(1, None), || ()).await.expect("runs after the interval");
+        gate.run(who(1, None), || ())
+            .await
+            .expect("runs after the interval");
         assert!(began.elapsed() >= Duration::from_millis(150));
         let other = Instant::now();
         gate.run(who(2, None), || ()).await.expect("runs");
@@ -318,7 +319,11 @@ mod tests {
         // The request goes away (a reset connection): the hash keeps its permit.
         request.abort();
         let _ = request.await;
-        assert_eq!(gate.available(), 0, "the running hash still holds the permit");
+        assert_eq!(
+            gate.available(),
+            0,
+            "the running hash still holds the permit"
+        );
         let refused = gate.run(who(2, None), || ()).await.expect_err("full");
         assert!(is_429(&refused));
         release.send(()).expect("released");

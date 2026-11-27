@@ -54,7 +54,10 @@ impl<S> HealthState<S> {
     /// else a new one (a file written and kept, `.health`, overwritten in place).
     async fn data_folder_check(&self) -> Result<(), String> {
         {
-            let cached = self.folder_check.lock().unwrap_or_else(PoisonError::into_inner);
+            let cached = self
+                .folder_check
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             if let Some((at, result)) = cached.as_ref()
                 && at.elapsed() < DATA_FOLDER_CHECK_TTL
             {
@@ -62,8 +65,10 @@ impl<S> HealthState<S> {
             }
         }
         let result = check_data_folder(&self.data_folder).await;
-        *self.folder_check.lock().unwrap_or_else(PoisonError::into_inner) =
-            Some((Instant::now(), result.clone()));
+        *self
+            .folder_check
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some((Instant::now(), result.clone()));
         result
     }
 }
@@ -191,10 +196,10 @@ mod tests {
         assert!(!json.to_string().contains("hunter2"));
     }
 
-
     #[tokio::test]
     async fn the_data_folder_is_written_once_in_the_cache_time_not_once_a_request() {
-        let folder = std::env::temp_dir().join(format!("kemlock-health-cache-{}", std::process::id()));
+        let folder =
+            std::env::temp_dir().join(format!("kemlock-health-cache-{}", std::process::id()));
         std::fs::create_dir_all(&folder).expect("a folder");
         let mut cached = state(Ok(()));
         cached.data_folder = folder.clone();

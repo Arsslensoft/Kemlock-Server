@@ -1196,7 +1196,13 @@ impl State {
 /// may sign only a `remove`, or a `keys` that replaces keys already marked (an Owner's `remove`
 /// marked them; one member rotating their own collection must not use up the room). From the last
 /// 128 records, or the last 512 KiB, only an Owner signs.
-pub fn end_of_chain_allows(seq: u64, bytes: u64, role: Role, kind: Kind, keys_marked: bool) -> bool {
+pub fn end_of_chain_allows(
+    seq: u64,
+    bytes: u64,
+    role: Role,
+    kind: Kind,
+    keys_marked: bool,
+) -> bool {
     if role == Role::Owner {
         return true;
     }
@@ -1245,7 +1251,11 @@ impl Anchor {
         if self.promotions.contains(&(*home, *promotion)) {
             return true;
         }
-        let Some(kept) = self.owners.as_ref().and_then(|owners| owners.get(&fence.by)) else {
+        let Some(kept) = self
+            .owners
+            .as_ref()
+            .and_then(|owners| owners.get(&fence.by))
+        else {
             return false;
         };
         before

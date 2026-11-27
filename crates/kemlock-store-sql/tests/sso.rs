@@ -240,7 +240,10 @@ async fn sessions(store: &SqlStore) {
         list.into_iter().map(|s| s.device).collect::<Vec<_>>()
     };
     // A subject names every device it signed in; with a session id, only that session's.
-    assert_eq!(find(Some("sub-a"), None).await, sorted(vec![&phone, &laptop]));
+    assert_eq!(
+        find(Some("sub-a"), None).await,
+        sorted(vec![&phone, &laptop])
+    );
     assert_eq!(find(Some("sub-a"), Some("sid-1")).await, vec![phone.device]);
     assert_eq!(find(None, Some("sid-2")).await, vec![laptop.device]);
     assert_eq!(find(Some("sub-a"), Some("sid-9")).await, Vec::new());

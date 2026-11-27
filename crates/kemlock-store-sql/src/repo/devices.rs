@@ -98,7 +98,10 @@ impl DeviceRepo for SqlStore {
                 devices::Column::Kind,
                 Expr::value(devices::kind_str(device.kind).to_owned()),
             )
-            .col_expr(devices::Column::LastSeenAt, Expr::value(utc(device.last_seen_at)))
+            .col_expr(
+                devices::Column::LastSeenAt,
+                Expr::value(utc(device.last_seen_at)),
+            )
             .filter(devices::Column::Id.eq(device.id.0))
             .filter(devices::Column::UserId.eq(device.user.0))
             .exec(self.writer())

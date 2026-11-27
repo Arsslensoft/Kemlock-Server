@@ -152,7 +152,10 @@ mod tests {
         let a = seal.subkey("prelogin").expect("a key");
         assert_eq!(*a, *seal.subkey("prelogin").expect("a key"));
         assert_ne!(*a, *seal.subkey("other").expect("a key"));
-        assert_ne!(*a, *ServerSeal::new(&[2; 32]).subkey("prelogin").expect("a key"));
+        assert_ne!(
+            *a,
+            *ServerSeal::new(&[2; 32]).subkey("prelogin").expect("a key")
+        );
     }
 
     #[test]

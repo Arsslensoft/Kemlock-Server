@@ -1358,8 +1358,7 @@ async fn a_key_replacement_that_lands_makes_the_account_no_wait() {
     let ana = rig.person("ana@example.org", 3).await;
     let lee = rig.person("lee@example.org", 4).await;
     // Seven items of 1 MB make the request more than 8 MiB.
-    let (space, general, mut chain, ids) =
-        a_marked_collection_key(&rig, &sam, &ana, &lee, 7).await;
+    let (space, general, mut chain, ids) = a_marked_collection_key(&rig, &sam, &ana, &lee, 7).await;
     let keys = chain.rotate_collection(
         &sam.person,
         *general.as_bytes(),
@@ -1605,7 +1604,12 @@ async fn an_account_past_its_record_quota_is_told_to_wait() {
         by_member_day: 4_096,
     });
     let reply = sam.post(&uri(space), request(&[&invite])).await;
-    assert_eq!(reply.status, StatusCode::TOO_MANY_REQUESTS, "{:?}", reply.json());
+    assert_eq!(
+        reply.status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "{:?}",
+        reply.json()
+    );
     assert!(problem_type(&reply).ends_with("space-chain-quota"));
     assert_eq!(
         sam.get(&uri(space)).await.json().as_array().map(Vec::len),
@@ -1643,7 +1647,7 @@ async fn a_role_record_that_demotes_an_admin_meets_the_join_policies() {
     // The space asks for two-step login, which Ana has not set up. A record that makes her a member
     // is refused, with the problem type of the join guard on the routes; nothing is stored.
     rig.spaces.set_policies(
-        space,
+        SpaceId(space),
         SpacePolicies {
             two_step: true,
             ..SpacePolicies::default()

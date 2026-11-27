@@ -671,12 +671,11 @@ async fn a_viewer_cannot_take_back_an_answer_and_sees_only_their_own_waiting_ite
 
     // An item with no tags waits for them. Kim holds the collection and counts it; Lee holds
     // none and is told of none.
-    let everyone = sc
-        .s
-        .w
-        .spaces
-        .item_collection(sc.items[0].id)
-        .expect("the item's collection");
+    let everyone =
+        sc.s.w
+            .spaces
+            .item_collection(sc.items[0].id)
+            .expect("the item's collection");
     sc.s.w
         .put_space_item()
         .execute(
@@ -686,8 +685,16 @@ async fn a_viewer_cannot_take_back_an_answer_and_sees_only_their_own_waiting_ite
         )
         .await
         .expect("an untagged space item");
-    let kim = sc.s.list().execute(&actor(sc.kim), owner).await.expect("kim");
-    let lee = sc.s.list().execute(&actor(sc.lee), owner).await.expect("lee");
+    let kim =
+        sc.s.list()
+            .execute(&actor(sc.kim), owner)
+            .await
+            .expect("kim");
+    let lee =
+        sc.s.list()
+            .execute(&actor(sc.lee), owner)
+            .await
+            .expect("lee");
     assert_eq!(kim.waiting, 1);
     assert_eq!(lee.waiting, 0);
 }

@@ -131,7 +131,9 @@ fn parse_args_with(
             .filter(|value| !value.is_empty())
             .ok_or_else(|| format!("--from-env {name}: that environment variable isn't set"))?,
         (None, None) => {
-            return Err("import-vaultwarden needs --from <folder|url> or --from-env <NAME>".to_owned());
+            return Err(
+                "import-vaultwarden needs --from <folder|url> or --from-env <NAME>".to_owned(),
+            );
         }
     };
     Ok(ImportArgs {
@@ -234,7 +236,9 @@ async fn audit_settings<S: SinkSource>(
     let refused = report.refused.get("setting").cloned().unwrap_or_default();
     for (name, value) in &settings.values {
         if !refused.contains(name) {
-            sinks.audit(source, &format!("setting {name} = {value}")).await;
+            sinks
+                .audit(source, &format!("setting {name} = {value}"))
+                .await;
         }
     }
 }
@@ -558,14 +562,21 @@ mod tests {
         assert!(refused.contains("--from-env"), "{refused}");
         assert!(!refused.contains("secret"), "{refused}");
         // No password, a folder and a bare user are fine.
-        for fine in ["/data", "mysql://u@db/vw", "postgres://db/vw", "C:\vw\data"] {
+        for fine in [
+            "/data",
+            "mysql://u@db/vw",
+            "postgres://db/vw",
+            r"C:\vw\data",
+        ] {
             assert!(
                 parse_args_with(&args(&["--from", fine]), &env).is_ok(),
                 "{fine}"
             );
         }
         // Not both, and the variable must be set.
-        assert!(parse_args_with(&args(&["--from", "/data", "--from-env", "VW_URL"]), &env).is_err());
+        assert!(
+            parse_args_with(&args(&["--from", "/data", "--from-env", "VW_URL"]), &env).is_err()
+        );
         assert!(parse_args_with(&args(&["--from-env", "NOPE"]), &env).is_err());
         assert!(parse_args_with(&args(&["--from-env"]), &env).is_err());
         // A query string's `@` is not userinfo.

@@ -524,7 +524,9 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
                         tracing::debug!(peer = %id, vaults = vaults.len(), "replicated with a peer");
                     }
                     Ok(_) => {}
-                    Err(e) => tracing::info!(peer = %id, error = %e, "replication with a peer failed"),
+                    Err(e) => {
+                        tracing::info!(peer = %id, error = %e, "replication with a peer failed")
+                    }
                 }
             });
         }
@@ -764,7 +766,8 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
                 complete = false;
                 break;
             }
-            self.reconcile_vault(channel, peer, run, returned, now).await;
+            self.reconcile_vault(channel, peer, run, returned, now)
+                .await;
         }
         // What the comparison found that the peer lacks, and what the pull brought in.
         for run in runs.iter_mut().filter(|r| r.active) {
@@ -824,7 +827,13 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
         run.active = false;
     }
 
-    async fn control_vault(&self, channel: &mut C::Chan, peer: &Peer, run: &mut VaultRun, now: u64) {
+    async fn control_vault(
+        &self,
+        channel: &mut C::Chan,
+        peer: &Peer,
+        run: &mut VaultRun,
+        now: u64,
+    ) {
         if let Err(e) = self.control_vault_inner(channel, peer, run, now).await {
             self.vault_failed(peer, run, &e);
         }
@@ -887,7 +896,13 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
     /// Tells the peer what this server holds, when it hasn't been told: before the work (`after`
     /// false) so a peer that is behind starts pulling at once, and after it (`after` true), when the
     /// pull and the comparison changed what is held or found something the peer lacks.
-    async fn nudge_vault(&self, channel: &mut C::Chan, peer: &Peer, run: &mut VaultRun, after: bool) {
+    async fn nudge_vault(
+        &self,
+        channel: &mut C::Chan,
+        peer: &Peer,
+        run: &mut VaultRun,
+        after: bool,
+    ) {
         let owner = run.vault.owner;
         let result: Result<()> = async {
             let latest = self.replica.store().latest(owner).await?;
@@ -988,7 +1003,10 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
         let owner = run.vault.owner;
         let mut finished = true;
         if replica.files.is_some() {
-            match replica.sync_blobs_until(channel, peer.id, owner, until).await {
+            match replica
+                .sync_blobs_until(channel, peer.id, owner, until)
+                .await
+            {
                 Ok(files) => {
                     run.status.files_fetched = files.fetched;
                     run.status.files_deferred = files.deferred;

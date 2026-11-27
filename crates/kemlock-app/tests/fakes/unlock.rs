@@ -196,7 +196,11 @@ impl KeyCopyRepo for FakeStore {
         copy: &DeviceKeyCopy,
         key_version: Option<u32>,
     ) -> Result<(), StoreError> {
-        let owner = self.lock().devices.get(&copy.device).map(|device| device.user);
+        let owner = self
+            .lock()
+            .devices
+            .get(&copy.device)
+            .map(|device| device.user);
         if let Some(owner) = owner {
             self.check_key_version(owner, key_version)?;
         }
@@ -279,7 +283,8 @@ impl EmergencyRepo for FakeStore {
         let mut g = self.unlock.lock();
         match g.grants.get_mut(&grant.id) {
             Some(stored)
-                if stored.state == from && version.is_none_or(|version| stored.updated_at == version) =>
+                if stored.state == from
+                    && version.is_none_or(|version| stored.updated_at == version) =>
             {
                 *stored = grant.clone();
                 Ok(true)

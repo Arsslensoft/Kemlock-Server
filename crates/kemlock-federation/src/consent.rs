@@ -748,12 +748,16 @@ mod tests {
         let (home, me) = (ia.server, ib.server);
         let replica = Replica::new(MemoryStore::new(me), Arc::new(ib));
         replica.pin_peer(&ia.descriptor, NOW).await.expect("pin");
-        replica.store.set_owned(Owner::User(UserId::random()), false);
+        replica
+            .store
+            .set_owned(Owner::User(UserId::random()), false);
         for _ in 0..MAX_OFFERS_PER_PEER {
             let vault = Owner::User(UserId::random());
             replica.store.set_owned(vault, false);
             assert_eq!(
-                replica.receive_offer(home, vault, home, 1, &[me], NOW).await,
+                replica
+                    .receive_offer(home, vault, home, 1, &[me], NOW)
+                    .await,
                 Ok(OfferState::Pending)
             );
         }

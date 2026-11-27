@@ -181,7 +181,8 @@ impl<S: BwStore> MembershipFacts for OrgMembership<S> {
             }
             // On a space with a chain only the chain confirms: a row some other route wrote binds
             // nobody (a Bitwarden confirm has no signed `confirm` record).
-            if let Some(confirmed) = SpaceRepo::chain_confirmed_members(&self.0, member.space).await?
+            if let Some(confirmed) =
+                SpaceRepo::chain_confirmed_members(&self.0, member.space).await?
                 && !confirmed.contains(&user)
             {
                 continue;

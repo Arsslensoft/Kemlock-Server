@@ -996,7 +996,8 @@ async fn password_login<S: BwStore>(
     let (Some(user), Some(mut account)) = (user, account) else {
         // The work of a check is done all the same (an `authRequest` or not), so the time of the
         // answer does not say whether the address has an account.
-        app.password_decoy(&username, password, Some(caller.ip)).await?;
+        app.password_decoy(&username, password, Some(caller.ip))
+            .await?;
         return Err(BwError::msg(BAD_LOGIN));
     };
     check_password(app, &user, &account, password, caller.ip).await?;
@@ -1184,7 +1185,13 @@ async fn refresh_login<S: BwStore>(
     )?;
     let ttl = token.expires_at - token.created_at;
     let refresh = app
-        .new_refresh_token(user.id, device.id, Some(token.family), Some(token.hash), ttl)
+        .new_refresh_token(
+            user.id,
+            device.id,
+            Some(token.family),
+            Some(token.hash),
+            ttl,
+        )
         .await?;
     Ok(json!({
         "refresh_token": refresh,

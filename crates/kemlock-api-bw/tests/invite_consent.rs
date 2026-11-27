@@ -580,11 +580,7 @@ async fn verification_of(h: &Harness, email: &str) -> String {
     serde_json::from_slice::<String>(&bytes).expect("a verification token")
 }
 
-async fn register_with(
-    h: &Harness,
-    email: &str,
-    org_invite_token: &str,
-) -> (StatusCode, Value) {
+async fn register_with(h: &Harness, email: &str, org_invite_token: &str) -> (StatusCode, Value) {
     let verification = verification_of(h, email).await;
     h.json(
         "POST",
@@ -861,9 +857,15 @@ async fn a_bitwarden_confirm_on_a_chained_space_is_refused() {
 /// read by counting one more try).
 async fn password_tries(h: &Harness, user: UserId) -> u32 {
     use kemlock_app::bitwarden::BwTryRepo;
-    BwTryRepo::count_try(&h.store, user, "password", h.env.time().unix_timestamp(), 900)
-        .await
-        .expect("a count")
+    BwTryRepo::count_try(
+        &h.store,
+        user,
+        "password",
+        h.env.time().unix_timestamp(),
+        900,
+    )
+    .await
+    .expect("a count")
 }
 
 /// An account made through the Bitwarden API has no way into the web vault and the apps have no
@@ -886,7 +888,10 @@ async fn an_invitee_with_no_session_accepts_with_the_master_password() {
     // A wrong hash is a wrong password, the answer of a sign-in.
     let (status, body) = accept_hashed(&h, None, &org, bob_id, &token, "not-the-hash").await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    assert_eq!(body["message"], "Username or password is incorrect. Try again");
+    assert_eq!(
+        body["message"],
+        "Username or password is incorrect. Try again"
+    );
     assert_eq!(status_of(&h, &eve, &org, "bob@example.com").await, Some(0));
 
     // The right hash accepts, stores the key and issues nothing.
@@ -897,7 +902,12 @@ async fn an_invitee_with_no_session_accepts_with_the_master_password() {
         "no tokens or session in the answer: {body}"
     );
     assert_eq!(status_of(&h, &eve, &org, "bob@example.com").await, Some(1));
-    assert!(DeviceRepo::list(&h.store, bob_id).await.expect("devices").is_empty());
+    assert!(
+        DeviceRepo::list(&h.store, bob_id)
+            .await
+            .expect("devices")
+            .is_empty()
+    );
     let (status, body) = h
         .json(
             "GET",
@@ -948,7 +958,10 @@ async fn a_wrong_hash_at_accept_counts_with_the_password_grant_and_a_junk_token_
     let ghost = h.invite_token(&org, member, "ghost@example.com");
     let (status, body) = accept_hashed(&h, None, &org, member, &ghost, "wrong").await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    assert_eq!(body["message"], "Username or password is incorrect. Try again");
+    assert_eq!(
+        body["message"],
+        "Username or password is incorrect. Try again"
+    );
 }
 
 /// On a server that verifies sign-ups by mail, the token of an invitation to an organization that

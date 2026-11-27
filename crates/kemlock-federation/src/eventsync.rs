@@ -464,11 +464,10 @@ mod tests {
             }
         }
         let mut channel = Endless { calls: 0 };
-        let stored = t
-            .b
-            .pull_events(&mut channel, t.a.server_id(), t.vault)
-            .await
-            .expect("a bounded pull");
+        let stored =
+            t.b.pull_events(&mut channel, t.a.server_id(), t.vault)
+                .await
+                .expect("a bounded pull");
         assert_eq!(channel.calls, crate::message::MAX_PAGES_PER_VISIT);
         assert_eq!(stored, crate::message::MAX_PAGES_PER_VISIT);
     }

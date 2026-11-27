@@ -627,14 +627,22 @@ async fn forgetting_a_peer_erases_a_space_it_homes_with_the_account_copy_that_ow
         .await
         .expect("settings");
 
-    let forgotten = store.forget_peer(peer).await.expect("the peer is forgotten");
+    let forgotten = store
+        .forget_peer(peer)
+        .await
+        .expect("the peer is forgotten");
 
     assert_eq!(forgotten.vaults, 1);
     assert_eq!(forgotten.accounts, 1, "the copy went too");
     assert_eq!(SpaceRepo::load(&store, space).await, Ok(None));
     assert_eq!(UserRepo::by_id(&store, copy_id).await, Ok(None));
     // The local account is untouched.
-    assert!(UserRepo::by_id(&store, local.id).await.expect("read").is_some());
+    assert!(
+        UserRepo::by_id(&store, local.id)
+            .await
+            .expect("read")
+            .is_some()
+    );
 }
 
 #[tokio::test]

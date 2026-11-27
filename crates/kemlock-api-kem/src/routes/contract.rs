@@ -14,7 +14,6 @@
 
 use super::attempts;
 use super::contract_crypto::Pbkdf2Check;
-use kemlock_app::AppError;
 use super::guard;
 use crate::dto::{KdfDto, decode, rfc3339};
 use crate::extract::{Authed, Body, Proof};
@@ -26,6 +25,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use kemlock_app::AppError;
 use kemlock_app::account_keys::AccountKeys;
 use kemlock_app::api_use::{DeviceEntry, ListDevices};
 use kemlock_app::b64url;

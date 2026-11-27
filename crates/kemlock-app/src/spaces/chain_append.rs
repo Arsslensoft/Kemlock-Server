@@ -680,7 +680,10 @@ where
         let held: BTreeSet<ItemId> = request.held.iter().copied().collect();
         let me = id_of(actor);
         // Whether the space takes signed writes only, asked once for all the re-writes.
-        let signed_only = self.items.signed_writes_required(Owner::Space(space)).await?;
+        let signed_only = self
+            .items
+            .signed_writes_required(Owner::Space(space))
+            .await?;
         let mut written: BTreeSet<ItemId> = BTreeSet::new();
         let mut drafts = Vec::with_capacity(request.writes.len());
         for (collection, write) in &request.writes {
@@ -884,8 +887,7 @@ fn matches_pending<'a>(
 /// Whether `requested` more records would pass what one account may sign in an hour or a day. The
 /// hour is not asked of a space's Owners and Admins (`exempt_hourly`); the day is asked of all.
 fn over_quota(usage: &ChainUsage, requested: u64, exempt_hourly: bool) -> bool {
-    (!exempt_hourly
-        && usage.by_member_hour.saturating_add(requested) > MEMBER_RECORDS_PER_HOUR)
+    (!exempt_hourly && usage.by_member_hour.saturating_add(requested) > MEMBER_RECORDS_PER_HOUR)
         || usage.by_member_day.saturating_add(requested) > MEMBER_RECORDS_PER_DAY
 }
 

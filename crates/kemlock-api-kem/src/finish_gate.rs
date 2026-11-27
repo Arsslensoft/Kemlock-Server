@@ -86,9 +86,12 @@ impl PasswordGate {
         if slots.len() >= MAX_ENTRIES && !slots.contains_key(&key) {
             slots.retain(|_, (last, _)| Arc::strong_count(last) > 1);
         }
-        let (last, waiting) = slots
-            .entry(key)
-            .or_insert_with(|| (Arc::new(AsyncMutex::new(None)), Arc::new(AtomicUsize::new(0))));
+        let (last, waiting) = slots.entry(key).or_insert_with(|| {
+            (
+                Arc::new(AsyncMutex::new(None)),
+                Arc::new(AtomicUsize::new(0)),
+            )
+        });
         (Arc::clone(last), Arc::clone(waiting))
     }
 
@@ -124,7 +127,11 @@ mod tests {
         assert!(started.elapsed() < STEP, "no wait for the first");
         let second = Instant::now();
         let guard = gate.enter("acct:a").await.expect("a turn");
-        assert!(second.elapsed() >= STEP, "a second apart: {:?}", second.elapsed());
+        assert!(
+            second.elapsed() >= STEP,
+            "a second apart: {:?}",
+            second.elapsed()
+        );
         drop(guard);
         // Another account has its own turn.
         let other = Instant::now();
@@ -148,7 +155,10 @@ mod tests {
             // Let each task join the line before the next, so the order is the arrival order.
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        assert!(order.lock().expect("lock").is_empty(), "nothing runs beside the first");
+        assert!(
+            order.lock().expect("lock").is_empty(),
+            "nothing runs beside the first"
+        );
         drop(first);
         for task in tasks {
             task.await.expect("the task ran");
@@ -163,14 +173,22 @@ mod tests {
         let mut waiting = Vec::new();
         for _ in 0..2 {
             let gate = Arc::clone(&gate);
-            waiting.push(tokio::spawn(async move { gate.enter("acct:a").await.is_some() }));
+            waiting.push(tokio::spawn(
+                async move { gate.enter("acct:a").await.is_some() },
+            ));
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert!(gate.enter("acct:a").await.is_none(), "the line is full");
         drop(first);
         for task in waiting {
-            assert!(task.await.expect("the task ran"), "those in line still get their turn");
+            assert!(
+                task.await.expect("the task ran"),
+                "those in line still get their turn"
+            );
         }
-        assert!(gate.enter("acct:a").await.is_some(), "and the line is open again");
+        assert!(
+            gate.enter("acct:a").await.is_some(),
+            "and the line is open again"
+        );
     }
 }

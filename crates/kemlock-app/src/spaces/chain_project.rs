@@ -79,8 +79,8 @@ fn grantee_of(grantee: &sc::Grantee) -> Grantee {
 /// account recovery and duplicate matching switches have no setting here.
 pub fn policies_of(policies: &sc::Policies) -> SpacePolicies {
     let mp = &policies.master_password;
-    let master_password = (*mp != sc::MasterPasswordPolicy::default()).then(|| {
-        MasterPasswordPolicy {
+    let master_password =
+        (*mp != sc::MasterPasswordPolicy::default()).then(|| MasterPasswordPolicy {
             min_length: (mp.min_length > 0).then_some(u32::from(mp.min_length)),
             min_complexity: (mp.min_complexity > 0).then_some(mp.min_complexity),
             require_upper: mp.require_upper,
@@ -88,8 +88,7 @@ pub fn policies_of(policies: &sc::Policies) -> SpacePolicies {
             require_numbers: mp.require_numbers,
             require_special: mp.require_special,
             enforce_on_login: mp.enforce_on_login,
-        }
-    });
+        });
     let timeout = &policies.session_timeout;
     let (minutes, action) = if timeout.minutes == 0 {
         (None, None)

@@ -99,7 +99,9 @@ pub async fn judge<S: ReplicaStore + MemberStore>(
         }
     }
     if record.revision.0 > MAX_REVISION {
-        return Ok(Verdict::Refuse("a change with a revision no run of edits reaches"));
+        return Ok(Verdict::Refuse(
+            "a change with a revision no run of edits reaches",
+        ));
     }
     if record.revision.0 > MAX_REVISION_JUMP {
         let top = store
@@ -197,7 +199,11 @@ pub async fn judge<S: ReplicaStore + MemberStore>(
         }
         if let Some((seq, hlc)) = store.newest_change_of(record.change.origin).await?
             && record.change.seq > seq
-            && record.change.hlc.millis().saturating_add(RETIRED_KEY_SLACK_SECS * 1000)
+            && record
+                .change
+                .hlc
+                .millis()
+                .saturating_add(RETIRED_KEY_SLACK_SECS * 1000)
                 < hlc.millis()
         {
             return Ok(Verdict::Refuse(
@@ -502,10 +508,7 @@ mod tests {
         // Or not known here yet.
         store.set_has_collection(space, collection, None);
         for record in [&signed, &unsigned, &bitwarden] {
-            assert!(matches!(
-                judge(&store, record).await,
-                Ok(Verdict::Defer(_))
-            ));
+            assert!(matches!(judge(&store, record).await, Ok(Verdict::Defer(_))));
         }
     }
 

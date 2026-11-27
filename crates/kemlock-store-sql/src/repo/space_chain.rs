@@ -15,9 +15,9 @@ use crate::tables::settings;
 use crate::tables::space_chain::{held, names, pending, records, seals};
 use kemlock_app::ports::StoreError;
 use kemlock_app::spaces::{
-    AppendOutcome, ChainAppend, ChainHead, ChainUsage, ExternalChangeMode, ExternalSource, HomeGate,
-    PendingChange, PendingExternal, SpaceChainRepo, StoredRecord, StoredSeal, pending_from_changes,
-    replay_state,
+    AppendOutcome, ChainAppend, ChainHead, ChainUsage, ExternalChangeMode, ExternalSource,
+    HomeGate, PendingChange, PendingExternal, SpaceChainRepo, StoredRecord, StoredSeal,
+    pending_from_changes, replay_state,
 };
 use kemlock_crypto::space_chain::State;
 use kemlock_crypto::space_chain::{self as sc, KeyRef};

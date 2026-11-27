@@ -110,7 +110,11 @@ pub(crate) async fn verify_writes_blocking<U: UserRepo>(
         checked.map(|()| writes)
     })
     .await
-    .map_err(|_| Problem::from(AppError::Store("a signature check didn't finish".to_owned())))?
+    .map_err(|_| {
+        Problem::from(AppError::Store(
+            "a signature check didn't finish".to_owned(),
+        ))
+    })?
 }
 
 /// The account `actor`, when some write carries a signature to check.

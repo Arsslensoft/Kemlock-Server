@@ -241,7 +241,6 @@ mod tests {
         assert_eq!(until_expiry(i64::MIN, i64::MAX), Duration::ZERO);
     }
 
-
     #[test]
     fn a_client_may_send_pings_and_pongs_and_nothing_else() {
         assert!(is_control(&Message::Ping(Vec::<u8>::new().into())));
@@ -256,13 +255,19 @@ mod tests {
         let space = Owner::Space(kemlock_domain::SpaceId::random());
         let mut owners = vec![user, space];
         assert!(wants(&owners, space) && wants(&owners, user));
-        assert!(wants(&owners, EVERYONE), "a nudge for everyone reaches every socket");
+        assert!(
+            wants(&owners, EVERYONE),
+            "a nudge for everyone reaches every socket"
+        );
 
         // The member is taken out of the space: what the account syncs now is its vault alone.
         let mut now = move || async move { Some(vec![user]) };
         refresh_owners(&mut owners, &mut now).await;
         assert!(wants(&owners, user));
-        assert!(!wants(&owners, space), "the space no longer reaches the socket");
+        assert!(
+            !wants(&owners, space),
+            "the space no longer reaches the socket"
+        );
 
         // A read that fails changes nothing.
         let mut failing = || async { None };

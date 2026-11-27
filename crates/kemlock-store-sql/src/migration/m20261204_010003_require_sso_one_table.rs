@@ -48,7 +48,8 @@ fn custom(error: impl std::fmt::Debug) -> DbErr {
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         // Both tables exist on every database that reaches here; a missing one has nothing to move.
-        if !manager.has_table("bw_docs").await? || !manager.has_table("space_policy_settings").await?
+        if !manager.has_table("bw_docs").await?
+            || !manager.has_table("space_policy_settings").await?
         {
             return Ok(());
         }

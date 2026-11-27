@@ -615,8 +615,7 @@ impl<S: FedStore> Replica<S> {
             let Ok(signed) = Signed::decode(&held.envelope) else {
                 continue;
             };
-            let Ok(KeyRecord::Rotation { new_descriptor, .. }) =
-                KeyRecord::from_body(&signed.body)
+            let Ok(KeyRecord::Rotation { new_descriptor, .. }) = KeyRecord::from_body(&signed.body)
             else {
                 continue;
             };
@@ -937,7 +936,6 @@ mod tests {
             .expect("peer")
     }
 
-
     #[tokio::test]
     async fn a_rotation_is_held_for_the_admin_and_pins_nothing_until_confirmed() {
         let p = pair_that_holds().await;
@@ -961,7 +959,10 @@ mod tests {
         let waiting = p.b.held_rotations().await.expect("list");
         assert_eq!(waiting.len(), 1);
         assert_eq!(waiting[0].server, p.old.server);
-        assert_eq!(waiting[0].fingerprint, fingerprint_of(new.public.as_bytes()));
+        assert_eq!(
+            waiting[0].fingerprint,
+            fingerprint_of(new.public.as_bytes())
+        );
 
         // Confirmed, it takes effect like any rotation, and the old key is remembered.
         assert_eq!(
@@ -973,7 +974,10 @@ mod tests {
             new.public.as_bytes().to_vec()
         );
         assert!(p.b.held_rotations().await.expect("list").is_empty());
-        assert_eq!(p.b.store.past_keys(p.old.server).await.expect("past").len(), 1);
+        assert_eq!(
+            p.b.store.past_keys(p.old.server).await.expect("past").len(),
+            1
+        );
         assert_eq!(p.b.store.key_records().await.expect("records").len(), 1);
     }
 
@@ -1021,9 +1025,15 @@ mod tests {
         p.b.accept_key_record(&rotation.encode(), NOW)
             .await
             .expect("held");
-        p.b.refuse_held_rotations(p.old.server).await.expect("refused");
+        p.b.refuse_held_rotations(p.old.server)
+            .await
+            .expect("refused");
         assert!(p.b.held_rotations().await.expect("list").is_empty());
-        assert!(p.b.accept_held_rotation(p.old.server, None, NOW).await.is_err());
+        assert!(
+            p.b.accept_held_rotation(p.old.server, None, NOW)
+                .await
+                .is_err()
+        );
         assert_eq!(
             peer_of(&p).await.identity_key,
             p.old.public.as_bytes().to_vec()
@@ -1050,7 +1060,11 @@ mod tests {
         }
         let one_more = next(&p.old, 99);
         let (_, rotation) = rotation_record(&p.old, &one_more, NOW).expect("a record");
-        assert!(p.b.accept_key_record(&rotation.encode(), NOW).await.is_err());
+        assert!(
+            p.b.accept_key_record(&rotation.encode(), NOW)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

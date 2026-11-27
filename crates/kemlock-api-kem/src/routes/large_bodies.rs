@@ -70,8 +70,6 @@ struct State {
 
 struct Waiter {
     id: u64,
-    account: [u8; 16],
-    space: [u8; 16],
 }
 
 impl State {
@@ -84,7 +82,9 @@ impl State {
     fn admit(&mut self, account: [u8; 16], space: [u8; 16], now: i64) -> Result<(), Problem> {
         self.cooling.retain(|_, until| *until > now);
         if let Some(until) = self.cooling.get(&account) {
-            return Err(rate_limited(u64::try_from(*until - now).unwrap_or(1).max(1)));
+            return Err(rate_limited(
+                u64::try_from(*until - now).unwrap_or(1).max(1),
+            ));
         }
         let window = self.taken.entry(account).or_default();
         while window
@@ -95,7 +95,9 @@ impl State {
         }
         if window.len() >= self.budget {
             let free_at = window.front().map_or(now, |at| at + BUDGET_WINDOW_SECS);
-            return Err(rate_limited(u64::try_from(free_at - now).unwrap_or(1).max(1)));
+            return Err(rate_limited(
+                u64::try_from(free_at - now).unwrap_or(1).max(1),
+            ));
         }
         if self.accounts.contains(&account) || self.spaces.contains(&space) {
             return Err(rate_limited(5));
@@ -200,7 +202,7 @@ impl LargeBodies {
             }
             let id = state.next_id;
             state.next_id += 1;
-            state.queue.push_back(Waiter { id, account, space });
+            state.queue.push_back(Waiter { id });
             (id, state.wait)
         };
         // Leaving the queue for any reason (a place, a timeout, the client going away) lets go of
@@ -323,7 +325,8 @@ mod tests {
     fn timed(max: usize, cooldown: i64) -> (LargeBodies, Arc<AtomicI64>) {
         let now = Arc::new(AtomicI64::new(0));
         let clock = now.clone();
-        let places = LargeBodies::new(max, cooldown).with_clock(move || clock.load(Ordering::SeqCst));
+        let places =
+            LargeBodies::new(max, cooldown).with_clock(move || clock.load(Ordering::SeqCst));
         (places, now)
     }
 
@@ -346,11 +349,19 @@ mod tests {
         let places = LargeBodies::new(3, 0).with_budget(100);
         let first = places.take(A, S1).await.expect("a place");
         assert_eq!(
-            places.take(A, S2).await.expect_err("the account has one").status,
+            places
+                .take(A, S2)
+                .await
+                .expect_err("the account has one")
+                .status,
             StatusCode::TOO_MANY_REQUESTS
         );
         assert_eq!(
-            places.take(B, S1).await.expect_err("the space has one").status,
+            places
+                .take(B, S1)
+                .await
+                .expect_err("the space has one")
+                .status,
             StatusCode::TOO_MANY_REQUESTS
         );
         let other = places.take(B, S2).await.expect("another place");

@@ -124,7 +124,7 @@ async fn sync_require_sso(ctx: &Ctx, org: Uuid) -> Res<()> {
         .and_then(|text| serde_json::from_str::<Value>(&text).ok())
         .and_then(|doc| doc.get("enabled").and_then(Value::as_bool))
         .unwrap_or(false);
-    upsert_require_sso_in(&ctx.txn, SpaceId(org), enabled).await
+    Ok(upsert_require_sso_in(&ctx.txn, SpaceId(org), enabled).await?)
 }
 
 async fn drop_doc(ctx: &Ctx, scope: Uuid, kind: &str, key: &str) -> Res<()> {

@@ -667,7 +667,9 @@ impl<S: FedStore> Replica<S> {
         if self.work.allow_scan(&self.work_limits, peer, vault, now) {
             Ok(())
         } else {
-            Err(FedError::Refused("too many comparisons of this vault: try later"))
+            Err(FedError::Refused(
+                "too many comparisons of this vault: try later",
+            ))
         }
     }
 
@@ -1462,7 +1464,11 @@ mod tests {
                 .await
                 .expect("pull");
         assert_eq!(
-            (report.counts.applied, report.counts.refused, report.counts.retry),
+            (
+                report.counts.applied,
+                report.counts.refused,
+                report.counts.retry
+            ),
             (0, 1, 0)
         );
         assert_eq!(t.b.store.len(), 0);
@@ -1485,8 +1491,8 @@ mod tests {
             .expect("put");
         // A signed that change with its old key. B learns that A rotated a while ago.
         let old = t.a.identity().public.as_bytes().to_vec();
-        let new = crate::crypto::sign_public(&sig1::SigningKey::from_bytes(&[9; 64]))
-            .expect("a key");
+        let new =
+            crate::crypto::sign_public(&sig1::SigningKey::from_bytes(&[9; 64])).expect("a key");
         t.b.store
             .set_peer_identity(a, new.as_bytes())
             .await
@@ -1499,10 +1505,7 @@ mod tests {
             remote: &t.a,
             caller: t.b.server_id(),
         };
-        let report =
-            t.b.pull(&mut channel, a, t.vault)
-                .await
-                .expect("pull");
+        let report = t.b.pull(&mut channel, a, t.vault).await.expect("pull");
         assert_eq!((report.counts.applied, report.counts.refused), (1, 0));
 
         // The old key does not sign what is dated after it was replaced.
@@ -1515,10 +1518,7 @@ mod tests {
                 (now - 5_000) * 1000,
             ))
             .expect("put");
-        let report =
-            t.b.pull(&mut channel, a, t.vault)
-                .await
-                .expect("pull");
+        let report = t.b.pull(&mut channel, a, t.vault).await.expect("pull");
         assert_eq!((report.counts.applied, report.counts.refused), (0, 1));
         assert_eq!(t.b.store.len(), 1);
     }

@@ -106,9 +106,19 @@ pub(crate) async fn begin_locked_at(
 #[doc(hidden)]
 pub struct AccountHold(DatabaseTransaction);
 
+impl std::fmt::Debug for AccountHold {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AccountHold")
+    }
+}
+
 impl AccountHold {
     /// Takes the account's lock and sets its key version, uncommitted.
-    pub async fn take(store: &SqlStore, user: UserId, key_version: u32) -> Result<Self, StoreError> {
+    pub async fn take(
+        store: &SqlStore,
+        user: UserId,
+        key_version: u32,
+    ) -> Result<Self, StoreError> {
         let txn = begin_locked(store, user).await?;
         users::Entity::update_many()
             .col_expr(

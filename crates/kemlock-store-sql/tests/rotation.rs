@@ -554,9 +554,7 @@ async fn a_writer_that_waited_for_the_install_is_refused(store: &SqlStore) {
         writer.await.expect("the writer ran"),
         Err(StoreError::StaleKeyVersion { current: 2 })
     );
-    let held = PasskeyRepo::passkeys_of(store, sam.id)
-        .await
-        .expect("read");
+    let held = PasskeyRepo::passkeys_of(store, sam.id).await.expect("read");
     assert!(held.is_empty(), "no wrap of the old version is left");
     // A writer that read the new version is kept.
     let current = Passkey {
@@ -592,9 +590,7 @@ async fn an_install_after_a_writer_is_refused_until_it_names_the_wrap(store: &Sq
         .expect("account");
     assert_eq!(after.key_version, 1, "nothing written");
     assert_eq!(after.security_stamp, sam.security_stamp);
-    let held = PasskeyRepo::passkeys_of(store, sam.id)
-        .await
-        .expect("read");
+    let held = PasskeyRepo::passkeys_of(store, sam.id).await.expect("read");
     let wrap = held[0].prf_wrap.clone().expect("a wrap");
     assert_eq!((wrap.wrapped_key, wrap.key_version), (vec![2; 92], 1));
 
@@ -605,9 +601,7 @@ async fn an_install_after_a_writer_is_refused_until_it_names_the_wrap(store: &Sq
     RotationStore::install(store, install_of(&sam, named))
         .await
         .expect("the install that names the wrap");
-    let held = PasskeyRepo::passkeys_of(store, sam.id)
-        .await
-        .expect("read");
+    let held = PasskeyRepo::passkeys_of(store, sam.id).await.expect("read");
     let wrap = held[0].prf_wrap.clone().expect("a wrap");
     assert_eq!(
         (wrap.wrapped_key, wrap.key_version),
@@ -715,16 +709,21 @@ async fn a_wrap_for_the_old_key_version_is_refused_after_the_install(store: &Sql
         .confirm(vec![3; SEALED_BOX_OVERHEAD + 64], T0)
         .expect("confirmed");
     assert_eq!(
-        EmergencyRepo::save_grant_at(store, &confirmed, EmergencyState::Accepted, None, Some(1)).await,
+        EmergencyRepo::save_grant_at(store, &confirmed, EmergencyState::Accepted, None, Some(1))
+            .await,
         Err(stale.clone())
     );
     let kept = EmergencyRepo::grant(store, grant.id)
         .await
         .expect("read")
         .expect("the grant");
-    assert_eq!((kept.state, kept.sealed_key), (EmergencyState::Accepted, None));
     assert_eq!(
-        EmergencyRepo::save_grant_at(store, &confirmed, EmergencyState::Accepted, None, Some(2)).await,
+        (kept.state, kept.sealed_key),
+        (EmergencyState::Accepted, None)
+    );
+    assert_eq!(
+        EmergencyRepo::save_grant_at(store, &confirmed, EmergencyState::Accepted, None, Some(2))
+            .await,
         Ok(true)
     );
     let space = SpaceId::random();
@@ -814,7 +813,10 @@ async fn an_install_keeps_both_bundles_and_when_the_old_one_was_retired(store: &
         None
     );
     assert_eq!(
-        UserRepo::bundles_of(store, sam.id).await.expect("read").len(),
+        UserRepo::bundles_of(store, sam.id)
+            .await
+            .expect("read")
+            .len(),
         2
     );
 }

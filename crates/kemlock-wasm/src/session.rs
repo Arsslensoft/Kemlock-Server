@@ -730,7 +730,8 @@ mod tests {
     #[test]
     fn the_bitwarden_argon_hash_is_one_hmac_of_the_master_key_over_the_password() {
         // Small settings keep it quick; 8 MiB is the floor.
-        let hash = bitwarden_argon_hash(b"pässword", b"sam@example.co", 8 * 1024, 2, 1).expect("hash");
+        let hash = bitwarden_argon_hash("pässword".as_bytes(), b"sam@example.co", 8 * 1024, 2, 1)
+            .expect("hash");
         let salt = kemlock_crypto::hash::sha256(b"sam@example.co");
         let key = argon2id::master_key("pässword".as_bytes(), &salt, 8 * 1024, 2, 1).expect("key");
         let mut data = "pässword".as_bytes().to_vec();
@@ -743,20 +744,31 @@ mod tests {
         );
         assert_ne!(
             hash,
-            bitwarden_argon_hash(b"pässword", b"alex@example.co", 8 * 1024, 2, 1).expect("hash")
+            bitwarden_argon_hash("pässword".as_bytes(), b"alex@example.co", 8 * 1024, 2, 1)
+                .expect("hash")
         );
     }
 
     #[test]
     fn the_bitwarden_argon_hash_refuses_settings_a_hostile_server_could_ask_for() {
-        for (m, t, p) in [(1024, 2, 1), (8 * 1024, 1, 1), (8 * 1024, 11, 1), (8 * 1024, 2, 0), (8 * 1024, 2, 17), (1024 * 1024 + 1, 2, 1)] {
+        for (m, t, p) in [
+            (1024, 2, 1),
+            (8 * 1024, 1, 1),
+            (8 * 1024, 11, 1),
+            (8 * 1024, 2, 0),
+            (8 * 1024, 2, 17),
+            (1024 * 1024 + 1, 2, 1),
+        ] {
             assert_eq!(
                 bitwarden_argon_hash(b"pw", b"a@b.c", m, t, p),
                 Err(Error::Invalid),
                 "{m} {t} {p}"
             );
         }
-        assert_eq!(bitwarden_argon_hash(b"pw", b"", 8 * 1024, 2, 1), Err(Error::Invalid));
+        assert_eq!(
+            bitwarden_argon_hash(b"pw", b"", 8 * 1024, 2, 1),
+            Err(Error::Invalid)
+        );
     }
 
     #[test]
@@ -954,7 +966,6 @@ mod send_tests {
         );
     }
 }
-
 
 /// The Argon2id settings a Bitwarden account may have, in KiB, passes and lanes: wider than a
 /// Kemlock account's (Bitwarden allows 15 MiB), and bounded so a hostile server's prelogin can't ask

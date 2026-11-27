@@ -79,7 +79,10 @@ macro_rules! reserve_in {
                         .col_expr($table::Column::WindowStart, Expr::value(after.window_start))
                         .col_expr($table::Column::Count, Expr::value(after.count))
                         .col_expr($table::Column::Level, Expr::value(after.level))
-                        .col_expr($table::Column::BlockedUntil, Expr::value(after.blocked_until))
+                        .col_expr(
+                            $table::Column::BlockedUntil,
+                            Expr::value(after.blocked_until),
+                        )
                         .filter($table::Column::UserId.eq(user.0))
                         .filter($table::Column::WindowStart.eq(row.window_start))
                         .filter($table::Column::Count.eq(row.count))

@@ -422,7 +422,10 @@ where
     C: Connector + 'static,
 {
     require_step_up(&actor)?;
-    state.gate.audit(&actor, "federation.admin.check", None).await;
+    state
+        .gate
+        .audit(&actor, "federation.admin.check", None)
+        .await;
     Ok(Json(
         state
             .federation
@@ -443,7 +446,10 @@ where
     C: Connector + 'static,
 {
     require_step_up(&actor)?;
-    state.gate.audit(&actor, "federation.admin.consistency", None).await;
+    state
+        .gate
+        .audit(&actor, "federation.admin.consistency", None)
+        .await;
     Ok(Json(
         state
             .federation
@@ -519,7 +525,10 @@ where
     C: Connector + 'static,
 {
     require_step_up(&actor)?;
-    state.gate.audit(&actor, "federation.admin.kem_rotate", None).await;
+    state
+        .gate
+        .audit(&actor, "federation.admin.kem_rotate", None)
+        .await;
     Ok(Json(self_dto(&state.federation.rotate_kem(unix_now())?)))
 }
 
@@ -532,7 +541,10 @@ where
     C: Connector + 'static,
 {
     require_step_up(&actor)?;
-    state.gate.audit(&actor, "federation.admin.identity_rotate", None).await;
+    state
+        .gate
+        .audit(&actor, "federation.admin.identity_rotate", None)
+        .await;
     let change = state.federation.rotate_identity(unix_now()).await?;
     Ok(Json(key_change_dto(change)))
 }
@@ -547,7 +559,10 @@ where
     C: Connector + 'static,
 {
     require_step_up(&actor)?;
-    state.gate.audit(&actor, "federation.admin.suites", None).await;
+    state
+        .gate
+        .audit(&actor, "federation.admin.suites", None)
+        .await;
     let request: SuitesBody = super::parse_body(&body)?;
     if request
         .key_holding
@@ -594,7 +609,14 @@ where
     C: Connector + 'static,
 {
     require_step_up(&actor)?;
-    state.gate.audit(&actor, "federation.admin.mismatch_keep_blocking", peer_target(&peer)).await;
+    state
+        .gate
+        .audit(
+            &actor,
+            "federation.admin.mismatch_keep_blocking",
+            peer_target(&peer),
+        )
+        .await;
     let peer = parse_server(&peer)?;
     let now = unix_now();
     state

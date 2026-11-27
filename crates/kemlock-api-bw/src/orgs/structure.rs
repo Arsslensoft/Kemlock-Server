@@ -16,7 +16,6 @@ use crate::dates::format_date;
 use crate::env::random_uuid;
 use crate::error::{BwError, BwResult};
 use crate::events::kind;
-use kemlock_app::bitwarden::BwOrgStore;
 use kemlock_app::ports::TwoFactorRepo;
 use kemlock_app::spaces::{SpaceChanges, SpaceRepo};
 use kemlock_app::sso::SsoSettingsRepo;

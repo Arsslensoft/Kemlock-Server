@@ -20,8 +20,8 @@ use kemlock_api_kem::problem::rate_limited;
 use kemlock_api_kem::ratelimit::ip_key;
 use kemlock_api_kem::replay::Full;
 use kemlock_api_kem::{
-    Api, Crypto, CustomFieldDto, CustomFieldsDto, MaybeInviteLinks, Problem, Store,
-    forget_step_up, reserve_step_up,
+    Api, Crypto, CustomFieldDto, CustomFieldsDto, MaybeInviteLinks, Problem, Store, forget_step_up,
+    reserve_step_up,
 };
 use kemlock_app::admin::events::{cursor_text, filter as event_filter, parse_cursor};
 use kemlock_app::admin::{
@@ -816,13 +816,12 @@ where
                 continue;
             }
             let was = before.get(key).map_or("(unset)", String::as_str);
-            let now = settings
-                .get(key)
-                .await
-                .ok()
-                .flatten()
-                .unwrap_or_default();
-            let now = if now.is_empty() { "(unset)" } else { now.as_str() };
+            let now = settings.get(key).await.ok().flatten().unwrap_or_default();
+            let now = if now.is_empty() {
+                "(unset)"
+            } else {
+                now.as_str()
+            };
             described.push(format!("{key}: {was} -> {now}"));
         }
         env.audit()

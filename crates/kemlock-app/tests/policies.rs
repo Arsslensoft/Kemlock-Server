@@ -628,7 +628,10 @@ async fn a_restore_and_a_demotion_meet_the_join_policies_again() {
     let refused = p.w.offboard().restore(&actor(sam), space, ana).await;
     // The error is the policy's own, which the API answers with the join guard's problem type.
     assert!(
-        matches!(refused, Err(SpacesError::Join(PoliciesError::TwoStepRequired))),
+        matches!(
+            refused,
+            Err(SpacesError::Join(PoliciesError::TwoStepRequired))
+        ),
         "{refused:?}"
     );
     p.enrol_two_step(ana, true).await;
@@ -638,18 +641,32 @@ async fn a_restore_and_a_demotion_meet_the_join_policies_again() {
         .expect("restored once she has two-step login");
 
     // An admin is exempt; taking the role away makes them a member the policy binds.
-    let demoted = p
-        .w
-        .change_role()
-        .execute(&actor(sam), space, lee, SpaceRole::Member, CustomPermissions::NONE)
-        .await;
+    let demoted =
+        p.w.change_role()
+            .execute(
+                &actor(sam),
+                space,
+                lee,
+                SpaceRole::Member,
+                CustomPermissions::NONE,
+            )
+            .await;
     assert!(
-        matches!(demoted, Err(SpacesError::Join(PoliciesError::TwoStepRequired))),
+        matches!(
+            demoted,
+            Err(SpacesError::Join(PoliciesError::TwoStepRequired))
+        ),
         "{demoted:?}"
     );
     p.enrol_two_step(lee, true).await;
     p.w.change_role()
-        .execute(&actor(sam), space, lee, SpaceRole::Member, CustomPermissions::NONE)
+        .execute(
+            &actor(sam),
+            space,
+            lee,
+            SpaceRole::Member,
+            CustomPermissions::NONE,
+        )
         .await
         .expect("demoted once they have two-step login");
 }

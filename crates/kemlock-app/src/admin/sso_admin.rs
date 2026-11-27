@@ -288,13 +288,7 @@ where
         }
         self.sso.put_sso_settings(&settings).await?;
         self.audit()
-            .record(
-                actor,
-                ip,
-                "admin.sso.update",
-                None,
-                &summary,
-            )
+            .record(actor, ip, "admin.sso.update", None, &summary)
             .await;
         Ok(self.view(Some(settings)))
     }

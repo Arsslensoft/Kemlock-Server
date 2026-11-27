@@ -113,7 +113,8 @@ impl SpaceKeys {
         self.spaces.retain(|(held, _), _| held != space);
         self.collections.retain(|(held, _, _), _| held != space);
         self.unsigned_spaces.retain(|(held, _)| held != space);
-        self.unsigned_collections.retain(|(held, _, _)| held != space);
+        self.unsigned_collections
+            .retain(|(held, _, _)| held != space);
     }
 
     /// The verified state of a space that has a chain, when this unlock has verified it.
@@ -133,7 +134,11 @@ impl SpaceKeys {
 
     /// Refuses sealing, or writing, under the space key of `version` when it was opened from an
     /// unsigned box: such a key is read-only.
-    pub(crate) fn require_settled_space(&self, space: &[u8; 16], version: u32) -> Result<(), Error> {
+    pub(crate) fn require_settled_space(
+        &self,
+        space: &[u8; 16],
+        version: u32,
+    ) -> Result<(), Error> {
         if self.unsigned_spaces.contains(&(*space, version)) {
             Err(Error::Invalid)
         } else {
@@ -148,7 +153,10 @@ impl SpaceKeys {
         collection: &[u8; 16],
         version: u32,
     ) -> Result<(), Error> {
-        if self.unsigned_collections.contains(&(*space, *collection, version)) {
+        if self
+            .unsigned_collections
+            .contains(&(*space, *collection, version))
+        {
             Err(Error::Invalid)
         } else {
             Ok(())
@@ -458,7 +466,10 @@ impl Session {
         )?;
         let key = key_from(&plain)?;
         unlocked.spaces.spaces.insert((*space, key_version), key);
-        unlocked.spaces.unsigned_spaces.remove(&(*space, key_version));
+        unlocked
+            .spaces
+            .unsigned_spaces
+            .remove(&(*space, key_version));
         Ok(())
     }
 

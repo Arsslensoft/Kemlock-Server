@@ -302,10 +302,7 @@ pub trait MemberStore: Send + Sync {
     /// no account for yet, or a copy that came from that home, may be named.
     ///
     /// The default says nothing is held, for a store that keeps no accounts.
-    fn account_standing(
-        &self,
-        _user: UserId,
-    ) -> impl Future<Output = R<AccountStanding>> + Send {
+    fn account_standing(&self, _user: UserId) -> impl Future<Output = R<AccountStanding>> + Send {
         ready(Ok(AccountStanding::Unknown))
     }
 

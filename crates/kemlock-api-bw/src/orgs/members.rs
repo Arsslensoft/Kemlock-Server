@@ -509,14 +509,8 @@ pub(crate) async fn accept<S: BwStore>(
             }
             let proved = match hash {
                 Some(hash) => {
-                    crate::identity::check_password(
-                        app,
-                        &authed.user,
-                        &authed.account,
-                        hash,
-                        ip,
-                    )
-                    .await?;
+                    crate::identity::check_password(app, &authed.user, &authed.account, hash, ip)
+                        .await?;
                     true
                 }
                 None => false,
@@ -557,7 +551,7 @@ pub(crate) async fn accept_at_registration<S: BwStore>(app: &App<S>, account: &U
     let claims: InviteClaims =
         match app
             .keys
-            .decode(token, &app.settings.issuer("invite"), app.now_secs())
+            .decode::<InviteClaims>(token, &app.settings.issuer("invite"), app.now_secs())
         {
             Ok(claims) if claims.email == account.email.as_str() => claims,
             _ => return,

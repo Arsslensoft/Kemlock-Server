@@ -1159,7 +1159,8 @@ impl Vault {
         let space = ids::parse_uuid(space_id).map_err(fail)?;
         let sealed = b64::decode(sealed).map_err(fail)?;
         let opened = if unsigned == Some(true) {
-            self.session.open_space_unsigned(&space, key_version, &sealed)
+            self.session
+                .open_space_unsigned(&space, key_version, &sealed)
         } else {
             self.session.open_space(&space, key_version, &sealed)
         };

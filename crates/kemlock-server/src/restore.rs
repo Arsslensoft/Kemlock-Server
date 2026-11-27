@@ -860,7 +860,10 @@ mod tests {
         // The Bitwarden token key is in no archive, and one in an old archive is skipped.
         assert!(!is_restorable_data_file("rsa_key.pem"));
         let key = skipped_data_file_note("rsa_key.pem");
-        assert!(key.contains("token key") && key.contains("skipped"), "{key}");
+        assert!(
+            key.contains("token key") && key.contains("skipped"),
+            "{key}"
+        );
     }
 
     #[test]

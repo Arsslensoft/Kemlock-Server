@@ -1455,7 +1455,9 @@ async fn a_logout_naming_a_provider_session_ends_the_devices_that_session_signed
     sso.provider.say(with_sid("sid-a"));
     sso.sign_in("provider-code-1").await.expect("first session");
     sso.provider.say(with_sid("sid-b"));
-    sso.sign_in("provider-code-2").await.expect("second session");
+    sso.sign_in("provider-code-2")
+        .await
+        .expect("second session");
     assert_eq!(sso.world.store.refresh_tokens().len(), 2);
 
     // The subject and one session id: only that session's device.
@@ -1465,10 +1467,7 @@ async fn a_logout_naming_a_provider_session_ends_the_devices_that_session_signed
         session_id: Some("sid-a".to_owned()),
     }));
     let outcome = sso.logout().execute("t").await.expect("logs out");
-    assert!(matches!(
-        outcome,
-        LogoutOutcome::Revoked { devices: 1, .. }
-    ));
+    assert!(matches!(outcome, LogoutOutcome::Revoked { devices: 1, .. }));
     assert_eq!(sso.world.store.refresh_tokens().len(), 1);
 
     // A session id alone names the other one.
@@ -1478,20 +1477,19 @@ async fn a_logout_naming_a_provider_session_ends_the_devices_that_session_signed
         session_id: Some("sid-b".to_owned()),
     }));
     let outcome = sso.logout().execute("t").await.expect("logs out");
-    assert!(matches!(
-        outcome,
-        LogoutOutcome::Revoked { devices: 1, .. }
-    ));
+    assert!(matches!(outcome, LogoutOutcome::Revoked { devices: 1, .. }));
     assert!(sso.world.store.refresh_tokens().is_empty());
 }
-
 
 #[tokio::test]
 async fn a_device_that_passed_a_second_step_after_sso_is_ended_by_a_logout() {
     let sso = Sso::new();
     let existing = make_user(&sso.world, "ada@example.org").await;
     enable_totp(&sso.world, existing).await;
-    let signed_in = sso.sign_in("provider-code-1").await.expect("owes a second step");
+    let signed_in = sso
+        .sign_in("provider-code-1")
+        .await
+        .expect("owes a second step");
     let SignedIn::SecondStep(step) = &signed_in.outcome else {
         panic!("a second step expected");
     };
@@ -1513,7 +1511,10 @@ async fn a_device_that_passed_a_second_step_after_sso_is_ended_by_a_logout() {
     let recorded = sso.world.store.sso_sessions();
     assert_eq!(recorded.len(), 1);
     assert_eq!(recorded[0].subject, "sub-1");
-    assert_eq!(recorded[0].session_id.as_deref(), Some("provider-session-1"));
+    assert_eq!(
+        recorded[0].session_id.as_deref(),
+        Some("provider-session-1")
+    );
     sso.repos.adopt_sessions(recorded);
 
     let outcome = sso.logout().execute("t").await.expect("logs out");

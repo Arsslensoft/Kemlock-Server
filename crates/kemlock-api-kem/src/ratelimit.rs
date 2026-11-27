@@ -704,8 +704,15 @@ mod tests {
         assert_eq!(one, Proxy::from(ip("192.0.2.7")));
         // Not an address, a prefix too wide for its family, and /0 (every address) are refused.
         for bad in [
-            "", "proxy", "10.0.0.0/33", "2001:db8::/129", "10.0.0.0/0", "::/0", "10.0.0.0/x",
-            "10.0.0.0/", "::ffff:10.0.0.0/104",
+            "",
+            "proxy",
+            "10.0.0.0/33",
+            "2001:db8::/129",
+            "10.0.0.0/0",
+            "::/0",
+            "10.0.0.0/x",
+            "10.0.0.0/",
+            "::ffff:10.0.0.0/104",
         ] {
             assert_eq!(Proxy::parse(bad), None, "{bad:?}");
         }
@@ -738,9 +745,15 @@ mod tests {
         let mapped_proxy: IpAddr = "::ffff:10.0.0.1".parse().expect("ip");
         let client: IpAddr = "198.51.100.4".parse().expect("ip");
         let header = "::ffff:198.51.100.4, ::ffff:10.0.0.1";
-        assert_eq!(client_ip(mapped_proxy, Some(header), &[proxy.into()]), client);
+        assert_eq!(
+            client_ip(mapped_proxy, Some(header), &[proxy.into()]),
+            client
+        );
         // The other way round: a mapped entry in the list, an IPv4 peer.
-        assert_eq!(client_ip(proxy, Some(header), &[mapped_proxy.into()]), client);
+        assert_eq!(
+            client_ip(proxy, Some(header), &[mapped_proxy.into()]),
+            client
+        );
         // An untrusted mapped peer is returned canonical, so it keys per IPv4 address.
         let outsider: IpAddr = "::ffff:203.0.113.9".parse().expect("ip");
         assert_eq!(

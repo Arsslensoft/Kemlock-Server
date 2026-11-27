@@ -466,7 +466,11 @@ async fn forged_logout_tokens_force_one_fetch_of_the_keys_not_one_each() {
             Err(SsoError::Token(_))
         ));
     }
-    assert_eq!(rp.provider.discovery_requests(), 2, "one forced fetch, not twenty");
+    assert_eq!(
+        rp.provider.discovery_requests(),
+        2,
+        "one forced fetch, not twenty"
+    );
 }
 
 #[tokio::test]
@@ -480,11 +484,17 @@ async fn a_rotation_is_still_found_once_the_floor_has_passed() {
         .expect("valid");
     // A forged token uses up the forced fetch; the provider then rotates.
     let forged = Es256Signer::new("key-1").sign(&rp.provider.logout_claims(Some("a"), None));
-    assert!(oidc.validate_logout_token(&rp.config, &forged).await.is_err());
+    assert!(
+        oidc.validate_logout_token(&rp.config, &forged)
+            .await
+            .is_err()
+    );
     rp.provider.rotate_key();
     let token = rp.provider.logout_token(Some("a"), None);
     assert!(
-        oidc.validate_logout_token(&rp.config, &token).await.is_err(),
+        oidc.validate_logout_token(&rp.config, &token)
+            .await
+            .is_err(),
         "inside the floor the cached keys are used"
     );
     tokio::time::sleep(Duration::from_millis(80)).await;

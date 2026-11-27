@@ -3,7 +3,8 @@
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
 use kemlock_api_fed::{
-    DESCRIPTOR_MEDIA_TYPE, Duplex, FedEvent, FedState, SessionEnd, router, serve, serve_session_within,
+    DESCRIPTOR_MEDIA_TYPE, Duplex, FedEvent, FedState, SessionEnd, router, serve,
+    serve_session_within,
 };
 use kemlock_domain::{ItemId, Owner, UserId};
 use kemlock_federation::memory::MemoryStore;

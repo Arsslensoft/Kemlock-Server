@@ -196,12 +196,19 @@ impl<I> FakeSpaces<I> {
     }
 
     /// Sets the policies the join check of the use cases reads for `space`.
-    pub(crate) fn set_policies(&self, space: SpaceId, policies: kemlock_domain::policies::SpacePolicies) {
+    pub(crate) fn set_policies(
+        &self,
+        space: SpaceId,
+        policies: kemlock_domain::policies::SpacePolicies,
+    ) {
         self.lock().policies.insert(space, policies);
     }
 
     /// The policies stored for `space`, as a chain append or `set_policies` left them.
-    pub(crate) fn policies_of(&self, space: SpaceId) -> Option<kemlock_domain::policies::SpacePolicies> {
+    pub(crate) fn policies_of(
+        &self,
+        space: SpaceId,
+    ) -> Option<kemlock_domain::policies::SpacePolicies> {
         self.lock().policies.get(&space).cloned()
     }
 
@@ -947,7 +954,13 @@ impl<I: ItemStore> SpaceChainRepo for FakeSpaces<I> {
             return Ok(usage);
         }
         let mut usage = kemlock_app::spaces::ChainUsage::default();
-        for r in g.chains.get(&space).into_iter().flatten().filter(|r| r.by == member) {
+        for r in g
+            .chains
+            .get(&space)
+            .into_iter()
+            .flatten()
+            .filter(|r| r.by == member)
+        {
             usage.by_member_hour += u64::from(r.at >= since_hour);
             usage.by_member_day += u64::from(r.at >= since_day);
         }
