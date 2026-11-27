@@ -499,6 +499,44 @@ async fn a_vault_that_takes_signed_writes_only_installs_no_unsigned_item(store: 
         .expect("the install");
 }
 
+async fn an_install_keeps_both_bundles_and_when_the_old_one_was_retired(store: &SqlStore) {
+    let sam = account(store).await;
+    let first = UserRepo::bundle_at(store, sam.id, 1)
+        .await
+        .expect("read")
+        .expect("the first bundle");
+    RotationStore::install(store, install_of(&sam, request()))
+        .await
+        .expect("the install");
+    // The old bundle is in the history, retired when the install was made.
+    assert_eq!(
+        UserRepo::bundle_at(store, sam.id, 1).await.expect("read"),
+        Some(first)
+    );
+    assert_eq!(
+        UserRepo::bundle_retired_at(store, sam.id, 1)
+            .await
+            .expect("read"),
+        Some(T0.unix_timestamp())
+    );
+    // The new one is kept, and is not retired.
+    let second = UserRepo::bundle_at(store, sam.id, 2)
+        .await
+        .expect("read")
+        .expect("the new bundle");
+    assert_eq!(second.public_bundle, request().public_bundle);
+    assert_eq!(
+        UserRepo::bundle_retired_at(store, sam.id, 2)
+            .await
+            .expect("read"),
+        None
+    );
+    assert_eq!(
+        UserRepo::bundles_of(store, sam.id).await.expect("read").len(),
+        2
+    );
+}
+
 async fn all(store: &SqlStore) {
     a_vault_that_takes_signed_writes_only_installs_no_unsigned_item(store).await;
     rotation(store).await;
@@ -507,6 +545,7 @@ async fn all(store: &SqlStore) {
     wraps_written_through_the_repos_are_all_seen_and_replaced(store).await;
     an_approval_that_holds_the_old_root_key_does_not_survive_the_install(store).await;
     a_grant_that_names_the_account_as_contact_goes_back_to_waiting(store).await;
+    an_install_keeps_both_bundles_and_when_the_old_one_was_retired(store).await;
 }
 
 #[tokio::test]
