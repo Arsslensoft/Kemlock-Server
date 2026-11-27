@@ -59,11 +59,14 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
-          # A release comes only from a commit that went through the default branch's pull request
-          # rules. Every other job needs this one, so a tag on any other commit builds, signs and
-          # publishes nothing. (tools/repo-settings.sh also protects the tags themselves.)
+          # A guard against an accidental tag, not against a malicious one: a tag on an old commit
+          # runs that commit's copy of this workflow, so someone who can push a tag can push one
+          # whose workflow has no such check. What stops that is the server-side tag ruleset that
+          # tools/repo-settings.sh creates ("release-tags": only admins may create a version tag).
+          # Here a tag whose commit is not on the default branch fails this job, and every other
+          # job needs it, so such a tag builds, signs and publishes nothing. The checkout above
+          # fetched the whole history of every branch (fetch-depth: 0), so origin/<branch> is here.
           if [ "$GITHUB_REF_TYPE" = tag ]; then
-            git fetch --no-tags origin "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
             if ! git merge-base --is-ancestor "$GITHUB_SHA" "refs/remotes/origin/$DEFAULT_BRANCH"; then
               echo "::error::Tag $GITHUB_REF_NAME ($GITHUB_SHA) is not on $DEFAULT_BRANCH; refusing to release it"
               exit 1
