@@ -26,6 +26,16 @@ pub const PAST_BUNDLES_CAPABILITY: &str = "x-kemlock-past-bundles1";
 /// may still be dated, and be taken as signed before it.
 const RETIRED_KEY_SLACK_SECS: u64 = crate::extra::WRITE_SKEW_SECS;
 
+/// The highest revision a change may carry. Revisions go up by one with each write of an item, so no
+/// person's edits reach this; a record that says more is a peer's attempt to put an item out of
+/// reach (a head at the top of the range can't be written past, and outranks every real version).
+pub const MAX_REVISION: u64 = u32::MAX as u64;
+
+/// How far above the highest revision this server holds of an item a change may be. A replica that
+/// missed a stretch of edits catches up in order, so the real gap is small; one that jumps far ahead
+/// takes the head from every real version, since the head is ranked by revision first.
+pub const MAX_REVISION_JUMP: u64 = 10_000;
+
 /// What to do with a record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verdict {
@@ -86,6 +96,22 @@ pub async fn judge<S: ReplicaStore + MemberStore>(
                     "a change into a collection this server does not know yet",
                 ));
             }
+        }
+    }
+    if record.revision.0 > MAX_REVISION {
+        return Ok(Verdict::Refuse("a change with a revision no run of edits reaches"));
+    }
+    if record.revision.0 > MAX_REVISION_JUMP {
+        let top = store
+            .export_items(record.owner, &[record.item])
+            .await?
+            .iter()
+            .map(|held| held.item.revision.0)
+            .max();
+        if top.is_some_and(|top| record.revision.0 > top.saturating_add(MAX_REVISION_JUMP)) {
+            return Ok(Verdict::Refuse(
+                "a change with a revision far above the one this server holds",
+            ));
         }
     }
     if record.format != ItemFormat::Kem1 {
@@ -455,6 +481,46 @@ mod tests {
                 Ok(Verdict::Defer(_))
             ));
         }
+    }
+
+    #[tokio::test]
+    async fn a_revision_no_run_of_edits_reaches_is_refused_signed_or_not() {
+        let writer = UserId::random();
+        let key = sig1::SigningKey::from_bytes(&[5; 64]);
+        let store = store_for(writer, &key);
+        let owner = Owner::User(writer);
+        let mut record = signed_record(owner, writer, &key);
+        record.write = None;
+        assert_eq!(judge(&store, &record).await, Ok(Verdict::Accept));
+        for revision in [i64::MAX as u64, u64::MAX, MAX_REVISION + 1] {
+            record.revision = Revision(revision);
+            assert!(matches!(
+                judge(&store, &record).await,
+                Ok(Verdict::Refuse(_))
+            ));
+            record.format = ItemFormat::Bw;
+            assert!(matches!(
+                judge(&store, &record).await,
+                Ok(Verdict::Refuse(_))
+            ));
+            record.format = ItemFormat::Kem1;
+        }
+
+        // Far above what is held is refused too, where something is held; a gap a peer that missed
+        // some edits would leave is not.
+        let held = crate::testing::draft(record.item, owner, None, 1, 1_000);
+        store.put(held).expect("an item");
+        record.revision = Revision(1 + MAX_REVISION_JUMP);
+        assert!(!verdict_is_refusal(judge(&store, &record).await));
+        record.revision = Revision(2 + MAX_REVISION_JUMP);
+        assert!(matches!(
+            judge(&store, &record).await,
+            Ok(Verdict::Refuse(_))
+        ));
+        // A new item with a high revision that is in range has nothing to compare with.
+        record.item = ItemId::random();
+        record.revision = Revision(MAX_REVISION_JUMP + 5);
+        assert!(!verdict_is_refusal(judge(&store, &record).await));
     }
 
     #[tokio::test]
