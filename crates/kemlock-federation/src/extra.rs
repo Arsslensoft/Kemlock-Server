@@ -202,6 +202,17 @@ pub enum MemberApply {
     Refused,
 }
 
+/// What this server knows of an account id: whether it is its own, a copy, or not here at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccountStanding {
+    /// No account of this id lives here, as an original or as a copy.
+    Unknown,
+    /// An account of this server (not a copy from another server).
+    Local,
+    /// A copy that came from this server.
+    Copy(ServerId),
+}
+
 /// The member accounts of a federated vault: what the home publishes and a replica keeps. Never
 /// an OPAQUE record, so no password secret is shared; the copy signs in with its device keys.
 pub trait MemberStore: Send + Sync {
@@ -261,6 +272,19 @@ pub trait MemberStore: Send + Sync {
     /// Whether `user` is a copy from another server.
     fn is_replica_account(&self, _user: UserId) -> impl Future<Output = R<bool>> + Send {
         ready(Ok(false))
+    }
+
+    /// What this server holds under the account id `user`: nothing, an account of its own, or a
+    /// copy and the server it came from. A replica asks before it lets a space's home name `user`
+    /// as a member, a group seat, a grantee or the owner of key copies: only an id this server has
+    /// no account for yet, or a copy that came from that home, may be named.
+    ///
+    /// The default says nothing is held, for a store that keeps no accounts.
+    fn account_standing(
+        &self,
+        _user: UserId,
+    ) -> impl Future<Output = R<AccountStanding>> + Send {
+        ready(Ok(AccountStanding::Unknown))
     }
 
     /// The public-key bundle `user` had at `key_version` as this server holds it, whether the

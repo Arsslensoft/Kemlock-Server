@@ -177,6 +177,8 @@ struct Extras {
     accounts_applied: Vec<(ServerId, UserId)>,
     /// The accounts that live here, for `member_account`.
     accounts_held: HashMap<UserId, crate::members::MemberAccount>,
+    /// What `account_standing` answers, where a test says: absent means nothing is held.
+    standings: HashMap<UserId, crate::extra::AccountStanding>,
     /// What a promotion from another server does here; holds unless a test says otherwise.
     promotion_mode: crate::extra::PromotionMode,
     /// The keys each peer used before its current one.
@@ -374,6 +376,11 @@ impl MemoryStore {
     /// An account that lives on this store, as `member_account` answers for it.
     pub fn set_member_account(&self, account: crate::members::MemberAccount) {
         self.extras().accounts_held.insert(account.id, account);
+    }
+
+    /// Sets what `account_standing` answers for `user`.
+    pub fn set_account_standing(&self, user: UserId, standing: crate::extra::AccountStanding) {
+        self.extras().standings.insert(user, standing);
     }
 
     /// The account copies applied so far, as (the home that signed them, the user).
@@ -1031,6 +1038,18 @@ impl crate::extra::MemberStore for MemoryStore {
     ) -> Result<crate::extra::MemberApply, StoreError> {
         self.extras().accounts_applied.push((home, account.id));
         Ok(crate::extra::MemberApply::Applied)
+    }
+
+    async fn account_standing(
+        &self,
+        user: UserId,
+    ) -> Result<crate::extra::AccountStanding, StoreError> {
+        Ok(self
+            .extras()
+            .standings
+            .get(&user)
+            .copied()
+            .unwrap_or(crate::extra::AccountStanding::Unknown))
     }
 }
 impl crate::extra::BlobSync for MemoryStore {

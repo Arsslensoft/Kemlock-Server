@@ -24,8 +24,8 @@ use kemlock_domain::{
     UserId,
 };
 use kemlock_federation::extra::{
-    Acknowledgement, BlobSync, ErasureOutbox, FedAdminRepo, Leases, MemberApply, MemberStore,
-    PendingErasure, PromotionMode, StoredOffer, VaultErased, VaultErasure,
+    AccountStanding, Acknowledgement, BlobSync, ErasureOutbox, FedAdminRepo, Leases, MemberApply,
+    MemberStore, PendingErasure, PromotionMode, StoredOffer, VaultErased, VaultErasure,
 };
 use kemlock_federation::home::Policy;
 use kemlock_federation::insight::{MismatchRecord, PeerSecurityRecord, VaultInfo};
@@ -587,6 +587,21 @@ impl MemberStore for SqlStore {
             .await
             .store()?
             .is_some())
+    }
+
+    async fn account_standing(&self, user: UserId) -> Result<AccountStanding, StoreError> {
+        let copy = replicated_accounts::Entity::find_by_id(user.0)
+            .one(self.writer())
+            .await
+            .store()?;
+        if let Some(copy) = copy {
+            return Ok(AccountStanding::Copy(ServerId(copy.home)));
+        }
+        Ok(if UserRepo::by_id(self, user).await?.is_some() {
+            AccountStanding::Local
+        } else {
+            AccountStanding::Unknown
+        })
     }
 }
 

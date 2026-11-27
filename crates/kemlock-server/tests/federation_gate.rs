@@ -1249,6 +1249,162 @@ async fn a_space_follows_its_home_in_roles_keys_and_policies_and_stale_writes_ar
     assert_eq!(refused.json()["home"]["address"], b.domain.as_str());
 }
 
+// ---- a space's home may not make an account of a replica a member ----
+
+#[tokio::test]
+async fn a_spaces_home_cannot_make_an_account_of_the_replica_a_member() {
+    let fabric = Arc::new(Fabric::default());
+    let a = Node::new("n3-a", &fabric).await;
+    let b = Node::new("n3-b", &fabric).await;
+    pair(&a, &b).await;
+
+    // The victim has an account at B. A never had it, but it names the same id (the attacker read
+    // it from a shared space) and so can put a row under it in a space of its own.
+    let victim = new_user("victim@example.org");
+    UserRepo::insert(b.store(), &victim).await.expect("a user");
+    let mut shadow = new_user("shadow@example.org");
+    shadow.id = victim.id;
+    UserRepo::insert(a.store(), &shadow).await.expect("a user");
+    let owner_account = new_user("grace@example.org");
+    UserRepo::insert(a.store(), &owner_account)
+        .await
+        .expect("an account");
+
+    let space = SpaceId::random();
+    let vault = Owner::Space(space);
+    let now = OffsetDateTime::now_utc();
+    let collection = Collection {
+        id: CollectionId::random(),
+        space,
+        parent: None,
+        name: vec![2; 40],
+        key_version: 1,
+        stale_since: None,
+        created_at: now,
+    };
+    let member = |user: UserId, role: SpaceRole| Member {
+        space,
+        user,
+        role,
+        custom: CustomPermissions::NONE,
+        state: MemberState::Confirmed,
+        invited_by: owner_account.id,
+        invited_at: now,
+        accepted_at: Some(now),
+        sealed_space_key: Some(vec![5; 64]),
+        sealed_by: None,
+        key_version: Some(1),
+        confirmation: None,
+        revoked_at: None,
+    };
+    SpaceRepo::create(
+        a.store(),
+        SpaceChanges {
+            space: Some(Space {
+                id: space,
+                name: vec![1; 40],
+                key_version: 1,
+                keys_pending_since: None,
+                created_at: now,
+                updated_at: now,
+            }),
+            members: vec![
+                member(owner_account.id, SpaceRole::Owner),
+                member(victim.id, SpaceRole::Member),
+            ],
+            collections: vec![collection.clone()],
+            grants: vec![
+                CollectionGrant {
+                    collection: collection.id,
+                    grantee: Grantee::Member(owner_account.id),
+                    permission: CollectionPermission::Manage,
+                },
+                CollectionGrant {
+                    collection: collection.id,
+                    grantee: Grantee::Member(victim.id),
+                    permission: CollectionPermission::Edit,
+                },
+            ],
+            key_copies: vec![
+                KeyCopy {
+                    collection: collection.id,
+                    user: owner_account.id,
+                    key_version: 1,
+                    sealed: vec![9; 80],
+                    sealed_by: None,
+                },
+                KeyCopy {
+                    collection: collection.id,
+                    user: victim.id,
+                    key_version: 1,
+                    sealed: vec![8; 80],
+                    sealed_by: None,
+                },
+            ],
+            ..SpaceChanges::new(space)
+        },
+    )
+    .await
+    .expect("a space");
+    PolicyRepo::put_space_policies(
+        a.store(),
+        space,
+        &SpacePolicies {
+            require_sso: true,
+            ..SpacePolicies::default()
+        },
+        owner_account.id,
+        now,
+    )
+    .await
+    .expect("policies");
+
+    a.facade
+        .set_policy(vault, Policy::Federated, vec![b.id])
+        .await
+        .expect("the home federates the space");
+    a.visit(&b).await;
+    b.facade.accept_offer(vault).await.expect("B accepts");
+    a.visit(&b).await;
+    b.visit(&a).await;
+    b.visit(&a).await;
+
+    // The space arrived, with the member the home really has an account for.
+    let held = SpaceRepo::load(b.store(), space)
+        .await
+        .expect("a read")
+        .expect("the space was copied");
+    assert!(held.members.iter().any(|m| m.user == owner_account.id));
+    // The victim is no member of it, holds no key of it and is bound by none of its policies.
+    assert!(
+        held.members.iter().all(|m| m.user != victim.id),
+        "the home made an account of B a member"
+    );
+    assert!(
+        SpaceRepo::memberships(b.store(), victim.id)
+            .await
+            .expect("memberships")
+            .is_empty()
+    );
+    assert!(
+        SpaceRepo::key_copies(b.store(), space, victim.id)
+            .await
+            .expect("keys")
+            .is_empty()
+    );
+    assert!(
+        held.grants
+            .iter()
+            .all(|g| g.grantee != Grantee::Member(victim.id)),
+        "nor does it hold a grant"
+    );
+    let on_b = UserRepo::by_id(b.store(), victim.id)
+        .await
+        .expect("a read")
+        .expect("the victim's account");
+    assert_eq!(on_b.email, victim.email, "the victim's own account is as it was");
+}
+
 // ---- the event logs: only when the sender's Send and the receiver's Pull are both on ----
 
 #[tokio::test]
