@@ -5,9 +5,15 @@
 use crate::state::{FedEvent, FedState};
 use kemlock_federation::{FedError, FedStore, SessionServer, unix_now};
 use std::future::Future;
+use std::time::Duration;
 
 /// Frames a peer may send per minute before the session is dropped.
 pub const MAX_FRAMES_PER_MINUTE: u32 = 1_000;
+
+/// How long a connection may take to send its hello. The route is open to the internet, so a
+/// connection that opens a socket and says nothing would otherwise hold a task and a descriptor
+/// for as long as it likes.
+pub const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A stream of binary messages in both directions.
 pub trait Duplex: Send {
@@ -80,13 +86,24 @@ pub async fn serve_session<S: FedStore, D: Duplex>(
     io: &mut D,
     clock: fn() -> u64,
 ) -> SessionEnd {
-    let Some(hello) = io.recv().await else {
+    serve_session_within(state, io, clock, HELLO_TIMEOUT).await
+}
+
+/// [`serve_session`], waiting `hello_timeout` for the hello.
+pub async fn serve_session_within<S: FedStore, D: Duplex>(
+    state: &FedState<S>,
+    io: &mut D,
+    clock: fn() -> u64,
+    hello_timeout: Duration,
+) -> SessionEnd {
+    let Ok(Some(hello)) = tokio::time::timeout(hello_timeout, io.recv()).await else {
+        // Nothing came in time, or the stream ended.
         return SessionEnd::Cut;
     };
-    let accepted = {
-        let mut cache = state.nonces.lock().await;
-        state.replica.accept(&mut cache, &hello, clock()).await
-    };
+    let accepted = state
+        .replica
+        .accept_shared(&state.nonces, &hello, clock())
+        .await;
     let (reply, session) = match accepted {
         Ok(accepted) => accepted,
         Err(error) => return refuse(state, error),

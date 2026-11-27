@@ -162,6 +162,25 @@ impl<S: FedStore> Replica<S> {
         Ok(SecureChannel::new(session, transport))
     }
 
+    /// [`accept`](Self::accept) with the nonce cache behind a lock that is held only while the
+    /// handshake itself runs, which needs no storage: the keys of the paired peers are read before
+    /// it is taken and the peer's last-seen time is written after it is let go, so a slow database
+    /// can't make every other hello wait on the lock.
+    pub async fn accept_shared(
+        &self,
+        cache: &tokio::sync::Mutex<NonceCache>,
+        hello: &[u8],
+        now: u64,
+    ) -> Result<(Vec<u8>, Session)> {
+        let keys = self.peer_keys().await?;
+        let accepted = {
+            let mut cache = cache.lock().await;
+            handshake::respond(&self.identity(), &keys, &mut cache, hello, now, self.padding)?
+        };
+        self.store.touch_peer(accepted.session.peer, now).await?;
+        Ok((accepted.reply, accepted.session))
+    }
+
     /// Answers a hello from a peer. Only a paired peer gets past it. Returns the reply to send
     /// and the responder's end of the session.
     pub async fn accept(
