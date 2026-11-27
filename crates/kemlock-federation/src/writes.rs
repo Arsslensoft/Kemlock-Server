@@ -384,6 +384,21 @@ mod tests {
             judge(&store, &moved).await,
             Ok(Verdict::Refuse(_))
         ));
+        // Even where the writer may edit both collections, a signature binds exactly one of them:
+        // the one it was made for is accepted, and the same signature under the other is refused.
+        let other = CollectionId(uuid::Uuid::from_bytes([0xC1; 16]));
+        store.set_edit(space, writer, other, Some(true));
+        assert!(matches!(
+            judge(&store, &moved).await,
+            Ok(Verdict::Refuse(_))
+        ));
+        let mut for_other = record.clone().in_collection(Some(other));
+        sign(&mut for_other, writer, &key);
+        assert_eq!(judge(&store, &for_other).await, Ok(Verdict::Accept));
+        assert!(matches!(
+            judge(&store, &for_other.in_collection(Some(collection))).await,
+            Ok(Verdict::Refuse(_))
+        ));
         // A signed write of a space that names no collection is no write of the space.
         assert!(matches!(
             judge(&store, &record.clone().in_collection(None)).await,
