@@ -11,7 +11,7 @@ use crate::error::StoreResult;
 use crate::store::SqlStore;
 use crate::tables::federation_wiring::{replicated_accounts, vault_offers};
 use kemlock_app::ports::{StoreError, UserRepo};
-use kemlock_app::privacy::{AccountEraser, ErasedRows};
+use kemlock_app::privacy::ErasedRows;
 use kemlock_domain::{Owner, ServerId, UserId};
 use kemlock_federation::extra::MemberStore;
 use kemlock_federation::forget::{Forgetting, Forgotten};
@@ -29,7 +29,9 @@ impl SqlStore {
             return Ok(());
         }
         if let Some(account) = UserRepo::by_id(self, user).await? {
-            let rows = AccountEraser::erase_user(self, &account).await?;
+            // Not the account's own erasure: the owner check of that one would refuse a copy that
+            // owns a space with local members, and the clean-up of an unpaired peer must finish.
+            let rows = self.erase_account(&account, false).await?;
             out.items += rows.items;
             out.blobs.extend(rows.blobs);
             out.accounts += 1;
@@ -50,10 +52,18 @@ impl Forgetting for SqlStore {
         if peer == me {
             return Ok(out);
         }
-        for vault in VaultRepo::list_vaults(self).await? {
-            if vault.home != peer {
-                continue;
-            }
+        // The peer's spaces go before its account copies: a copy that was the only owner of a
+        // space is erased without the space's local members in the way.
+        let vaults: Vec<_> = VaultRepo::list_vaults(self)
+            .await?
+            .into_iter()
+            .filter(|vault| vault.home == peer)
+            .collect();
+        for vault in vaults
+            .iter()
+            .filter(|v| matches!(v.owner, Owner::Space(_)))
+            .chain(vaults.iter().filter(|v| matches!(v.owner, Owner::User(_))))
+        {
             match vault.owner {
                 Owner::User(user) => self.forget_account_copy(user, &mut out).await?,
                 Owner::Space(space) => {

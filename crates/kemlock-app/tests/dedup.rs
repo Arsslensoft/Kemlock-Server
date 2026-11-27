@@ -650,6 +650,49 @@ async fn an_answer_in_a_space_is_seen_by_every_member() {
 }
 
 #[tokio::test]
+async fn a_viewer_cannot_take_back_an_answer_and_sees_only_their_own_waiting_items() {
+    let sc = space_scene().await;
+    let owner = Owner::Space(sc.space);
+    let ids: Vec<ItemId> = sc.items.iter().map(|i| i.id).collect();
+    let answer =
+        sc.s.dismiss()
+            .execute(&actor(sc.sam), owner, ids)
+            .await
+            .expect("the owner answers");
+    // Kim may only view the collection: the answer is not hers to take back.
+    assert!(matches!(
+        sc.s.undismiss().execute(&actor(sc.kim), answer.id).await,
+        Err(DedupError::Forbidden(_))
+    ));
+    sc.s.undismiss()
+        .execute(&actor(sc.sam), answer.id)
+        .await
+        .expect("the owner takes it back");
+
+    // An item with no tags waits for them. Kim holds the collection and counts it; Lee holds
+    // none and is told of none.
+    let everyone = sc
+        .s
+        .w
+        .spaces
+        .item_collection(sc.items[0].id)
+        .expect("the item's collection");
+    sc.s.w
+        .put_space_item()
+        .execute(
+            &actor(sc.sam),
+            everyone,
+            sc.s.w.item_write(sc.space, ItemId::random(), None, 1, 1),
+        )
+        .await
+        .expect("an untagged space item");
+    let kim = sc.s.list().execute(&actor(sc.kim), owner).await.expect("kim");
+    let lee = sc.s.list().execute(&actor(sc.lee), owner).await.expect("lee");
+    assert_eq!(kim.waiting, 1);
+    assert_eq!(lee.waiting, 0);
+}
+
+#[tokio::test]
 async fn a_tag_write_names_only_the_matches_the_writer_may_see() {
     let s = Scene::new();
     let sam = s.user("sam@example.org").await;

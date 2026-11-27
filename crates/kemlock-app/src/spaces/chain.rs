@@ -243,6 +243,15 @@ pub enum AppendOutcome {
     Stale(Option<ChainHead>),
 }
 
+/// How much of the chain one account signed lately (`SpaceChainRepo::chain_usage`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ChainUsage {
+    /// Records the member signed in the last hour.
+    pub by_member_hour: u64,
+    /// Records the member signed in the last day.
+    pub by_member_day: u64,
+}
+
 /// What federation says about this server and a space, when the space is federated.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HomeGate {
@@ -295,6 +304,33 @@ pub trait SpaceChainRepo: Send + Sync {
         space: SpaceId,
     ) -> impl Future<Output = Result<Option<(ChainHead, Arc<State>)>, StoreError>> + Send {
         replay_state(self, space)
+    }
+
+    /// How many records `member` signed in the chain at or after `since_hour` and `since_day`
+    /// (Unix seconds, by the record's `at`): what the quota of the append asks. The default reads
+    /// the whole chain; a store counts. The chain's own totals are not read here: the state at the
+    /// head carries them.
+    fn chain_usage(
+        &self,
+        space: SpaceId,
+        member: UserId,
+        since_hour: u64,
+        since_day: u64,
+    ) -> impl Future<Output = Result<ChainUsage, StoreError>> + Send {
+        async move {
+            let mut usage = ChainUsage::default();
+            for row in self.chain_records(space, 0).await? {
+                if row.by == member {
+                    if row.at >= since_hour {
+                        usage.by_member_hour = usage.by_member_hour.saturating_add(1);
+                    }
+                    if row.at >= since_day {
+                        usage.by_member_day = usage.by_member_day.saturating_add(1);
+                    }
+                }
+            }
+            Ok(usage)
+        }
     }
 
     /// Federation's view of the space, or `None` for a space that isn't federated.

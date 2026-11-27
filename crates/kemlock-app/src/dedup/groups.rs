@@ -64,7 +64,15 @@ impl<T: TagStore, D: DismissalStore, R: SpaceRepo> ListDuplicates<T, D, R> {
                 })
                 .collect();
         }
-        let waiting = self.tags.waiting(owner, settings.version).await?;
+        // In a space the count is of what this member sees, as the groups are.
+        let waiting = match &state {
+            Some(state) => {
+                let waiting = self.tags.waiting_items(owner, settings.version).await?;
+                let seen = visible(&self.spaces, state, actor.user, &waiting).await?;
+                u64::try_from(seen.len()).unwrap_or(u64::MAX)
+            }
+            None => self.tags.waiting(owner, settings.version).await?,
+        };
         Ok(DuplicateReport {
             enabled: true,
             version: settings.version,

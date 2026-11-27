@@ -319,14 +319,39 @@ fn chain_case(case: &Case, valid: &Case) -> Value {
         Value::Array(case.chain[prefix..].iter().map(wire).collect()),
     );
     if let Some(anchor) = &case.anchor {
-        m.insert(
-            "anchor".into(),
-            json!({
-                "seq": anchor.seq,
-                "epoch": anchor.epoch,
-                "links": anchor.links.iter().map(|l| hx(l)).collect::<Vec<_>>(),
-            }),
+        let mut a = Map::new();
+        a.insert("seq".into(), json!(anchor.seq));
+        a.insert("epoch".into(), json!(anchor.epoch));
+        a.insert(
+            "links".into(),
+            json!(anchor.links.iter().map(|l| hx(l)).collect::<Vec<_>>()),
         );
+        // The confirmed Owners the device kept with its anchor, each with SHA-256 of their bundle,
+        // when it kept them.
+        if let Some(owners) = &anchor.owners {
+            let mut kept = Map::new();
+            for (id, bundle) in owners {
+                kept.insert(uuid_text(id), hx(bundle));
+            }
+            a.insert("owners".into(), Value::Object(kept));
+        }
+        // The promotion records the device holds and verified.
+        if !anchor.promotions.is_empty() {
+            a.insert(
+                "promotions".into(),
+                json!(
+                    anchor
+                        .promotions
+                        .iter()
+                        .map(|(home, promotion)| json!({
+                            "home": uuid_text(home),
+                            "promotion": hx(promotion),
+                        }))
+                        .collect::<Vec<_>>()
+                ),
+            );
+        }
+        m.insert("anchor".into(), Value::Object(a));
     }
     let expect = match case.expect {
         Expect::Accepted {
@@ -357,6 +382,50 @@ fn chain_case(case: &Case, valid: &Case) -> Value {
     Value::Object(m)
 }
 
+/// The end of a chain ("Limits", "The end of a chain"): which records a chain taken to a given
+/// `seq` and byte total still takes, from whom. Each case names the `seq` the record would have,
+/// the chain's record `bytes` with it, the signer's `role`, the record's `kind`, and for a `keys`
+/// record whether every key it replaces is marked, and says whether the record is `taken`.
+fn end_of_chain_cases() -> Vec<Value> {
+    use crate::space_chain::Limits;
+    let mut out = Vec::new();
+    let mut case = |name: &str, seq: u64, bytes: u64, role: &str, kind: &str, marked: bool, taken: bool| {
+        out.push(json!({
+            "type": "end-of-chain",
+            "name": name,
+            "seq": seq,
+            "bytes": bytes,
+            "role": role,
+            "kind": kind,
+            "keys_marked": marked,
+            "expect": if taken { "taken" } else { "refused" },
+        }));
+    };
+    let (open, owner_only) = (Limits::OPEN_RECORDS, Limits::OWNER_ONLY_FROM);
+    let (open_bytes, owner_bytes) = (Limits::OPEN_BYTES, Limits::OWNER_ONLY_BYTES);
+    // By record count.
+    case("records-before-the-reserve", open - 1, 1_000, "admin", "policies", false, true);
+    case("records-in-the-reserve-a-policy", open, 1_000, "admin", "policies", false, false);
+    case("records-in-the-reserve-a-removal", open, 1_000, "admin", "remove", false, true);
+    case("records-in-the-reserve-marked-keys", open, 1_000, "admin", "keys", true, true);
+    case("records-in-the-reserve-unmarked-keys", open, 1_000, "admin", "keys", false, false);
+    case("records-in-the-reserve-unmarked-keys-of-a-manager", open, 1_000, "custom", "keys", false, false);
+    case("records-last-of-the-reserve-a-removal", owner_only - 1, 1_000, "member", "remove", false, true);
+    case("records-owner-only-a-removal", owner_only, 1_000, "member", "remove", false, false);
+    case("records-owner-only-marked-keys", owner_only, 1_000, "admin", "keys", true, false);
+    case("records-owner-only-an-owner", Limits::CHAIN_RECORDS - 1, 1_000, "owner", "policies", false, true);
+    // By record bytes.
+    case("bytes-before-the-reserve", 100, open_bytes, "admin", "policies", false, true);
+    case("bytes-in-the-reserve-a-policy", 100, open_bytes + 1, "admin", "policies", false, false);
+    case("bytes-in-the-reserve-a-removal", 100, open_bytes + 1, "admin", "remove", false, true);
+    case("bytes-in-the-reserve-marked-keys", 100, open_bytes + 1, "admin", "keys", true, true);
+    case("bytes-in-the-reserve-unmarked-keys", 100, open_bytes + 1, "admin", "keys", false, false);
+    case("bytes-last-of-the-reserve-a-removal", 100, owner_bytes, "admin", "remove", false, true);
+    case("bytes-owner-only-a-removal", 100, owner_bytes + 1, "admin", "remove", false, false);
+    case("bytes-owner-only-an-owner", 100, Limits::CHAIN_BYTES_U64, "owner", "remove", false, true);
+    out
+}
+
 /// The whole file.
 pub(crate) fn generate() -> Result<Value, Error> {
     let seed = G::sha256(b"kemlock-vectors/space-chain");
@@ -367,6 +436,7 @@ pub(crate) fn generate() -> Result<Value, Error> {
         out.extend(encoding_cases());
         out.push(signing_case(&valid));
         out.extend(seals_cases());
+        out.extend(end_of_chain_cases());
         for case in &all {
             out.push(chain_case(case, &valid));
         }
@@ -378,6 +448,9 @@ pub(crate) fn generate() -> Result<Value, Error> {
              `signing` case pins the signing input, \"kemlock/v1/sig1\" || lp(\"space-chain\") || \
              lp(record), and a record signature; `seals` cases pin commitments: seal hash = \
              SHA-256(box), digest, key check, and each recipient's box with its context and aad; \
+             `end-of-chain` cases give the `seq` and record `bytes` a record would take the chain \
+             to, its signer's `role`, its `kind` and whether the keys of a `keys` record are \
+             marked, and say whether the chain takes it (`taken`) or not (`refused`); \
              `chain` cases are chains of records (the first case is a valid chain with every kind; \
              a chain that has `base` and `prefix` starts with that many records of the base chain) \
              with the verdict a verifier must give: accepted with the head, or refused with the \
@@ -406,7 +479,8 @@ mod check {
         kx1, sealed_box,
         sig1::{self, context::SPACE_CHAIN},
         space_chain::{
-            Anchor, KeyRef, Reason, Record, SignedRecord, b64, key_check, link, parse_uuid,
+            Anchor, KeyRef, Kind, Reason, Record, Role, SignedRecord, b64, end_of_chain_allows,
+            key_check, link, parse_uuid,
             seals::{key_check_in, seal_digest_in},
             verify::verify_chain_in,
             verify_record_signature,
@@ -469,6 +543,24 @@ mod check {
             "{}",
             s(case, "name")
         );
+    }
+
+    fn end_of_chain_case(case: &Value) {
+        let name = s(case, "name");
+        let role = Role::parse(s(case, "role")).expect("a role");
+        let kind = Kind::parse(s(case, "kind")).expect("a kind");
+        let taken = end_of_chain_allows(
+            int(case, "seq"),
+            int(case, "bytes"),
+            role,
+            kind,
+            case["keys_marked"].as_bool().expect("a bool"),
+        );
+        match s(case, "expect") {
+            "taken" => assert!(taken, "{name}"),
+            "refused" => assert!(!taken, "{name}"),
+            other => panic!("{name}: unknown expectation {other}"),
+        }
     }
 
     fn signing_case<B: Backend>(case: &Value) {
@@ -591,6 +683,40 @@ mod check {
                         .expect("32 bytes")
                 })
                 .collect(),
+            owners: a.get("owners").map(|owners| {
+                owners
+                    .as_object()
+                    .expect("owners")
+                    .iter()
+                    .map(|(id, bundle)| {
+                        (
+                            parse_uuid(id).expect("a uuid"),
+                            hex::decode(bundle.as_str().expect("hex"))
+                                .expect("hex")
+                                .try_into()
+                                .expect("32 bytes"),
+                        )
+                    })
+                    .collect()
+            }),
+            promotions: a
+                .get("promotions")
+                .map(|list| {
+                    list.as_array()
+                        .expect("promotions")
+                        .iter()
+                        .map(|p| {
+                            (
+                                parse_uuid(s(p, "home")).expect("a uuid"),
+                                hex::decode(s(p, "promotion"))
+                                    .expect("hex")
+                                    .try_into()
+                                    .expect("32 bytes"),
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
         });
         let verdict = verify_chain_in::<B>(&space, &chain, anchor.as_ref());
         let expect = &case["expect"];
@@ -645,6 +771,7 @@ mod check {
                 "encoding" => encoding_case(case),
                 "signing" => signing_case::<B>(case),
                 "seals" => seals_case::<B>(case),
+                "end-of-chain" => end_of_chain_case(case),
                 "chain" => {
                     let chain = chain_case::<B>(case, &known);
                     known.insert(s(case, "name").to_owned(), chain);
@@ -652,7 +779,7 @@ mod check {
                 other => panic!("unknown space-chain case type {other}"),
             }
         }
-        for needed in ["link", "encoding", "signing", "seals", "chain"] {
+        for needed in ["link", "encoding", "signing", "seals", "end-of-chain", "chain"] {
             assert!(kinds.contains(needed), "no {needed} case");
         }
         // The valid chain has every kind of record.

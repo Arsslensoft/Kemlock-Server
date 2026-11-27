@@ -1588,3 +1588,80 @@ async fn no_item_is_written_while_the_space_key_waits_to_be_replaced() {
     let ok = sam.post(&uri(space), body).await;
     assert_eq!(ok.status, StatusCode::CREATED, "{:?}", ok.json());
 }
+
+#[tokio::test]
+async fn an_account_past_its_record_quota_is_told_to_wait() {
+    use kemlock_app::spaces::ChainUsage;
+
+    let rig = Rig::new();
+    let sam = rig.person("sam@example.org", 1).await;
+    let ana = rig.person("ana@example.org", 2).await;
+    let (space, _, mut chain, _) = make(&rig, &sam).await;
+    let invite = chain.invite(&sam.person, ana.person.id, Role::Member);
+
+    // The day is asked of everyone, an Owner included: 429, and nothing is stored.
+    rig.spaces.set_usage(ChainUsage {
+        by_member_hour: 0,
+        by_member_day: 4_096,
+    });
+    let reply = sam.post(&uri(space), request(&[&invite])).await;
+    assert_eq!(reply.status, StatusCode::TOO_MANY_REQUESTS, "{:?}", reply.json());
+    assert!(problem_type(&reply).ends_with("space-chain-quota"));
+    assert_eq!(
+        sam.get(&uri(space)).await.json().as_array().map(Vec::len),
+        Some(1)
+    );
+
+    // The hour is not asked of a space's Owners and Admins: the same record goes in.
+    rig.spaces.set_usage(ChainUsage {
+        by_member_hour: 1_024,
+        by_member_day: 0,
+    });
+    let reply = sam.post(&uri(space), request(&[&invite])).await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+}
+
+#[tokio::test]
+async fn a_role_record_that_demotes_an_admin_meets_the_join_policies() {
+    use kemlock_crypto::space_chain::Body;
+    use kemlock_domain::policies::SpacePolicies;
+
+    let rig = Rig::new();
+    let sam = rig.person("sam@example.org", 1).await;
+    let ana = rig.person("ana@example.org", 2).await;
+    let (space, _, mut chain, _) = make(&rig, &sam).await;
+    // Ana joins as an Admin, whom the join policies do not bind.
+    let invite = chain.invite(&sam.person, ana.person.id, Role::Admin);
+    let confirm = chain.confirm(&sam.person, &ana.person);
+    let seal = chain.seal_space_key(&sam.person, &ana.person);
+    let reply = sam.post(&uri(space), request(&[&invite])).await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+    ana.accept(space).await;
+    let reply = sam.post(&uri(space), request(&[&confirm, &seal])).await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+
+    // The space asks for two-step login, which Ana has not set up. A record that makes her a member
+    // is refused, with the problem type of the join guard on the routes; nothing is stored.
+    rig.spaces.set_policies(
+        space,
+        SpacePolicies {
+            two_step: true,
+            ..SpacePolicies::default()
+        },
+    );
+    let demote = chain.record(
+        &sam.person,
+        Body::Role {
+            custom: Vec::new(),
+            member: ana.person.id,
+            role: Role::Member,
+        },
+    );
+    let reply = sam.post(&uri(space), request(&[&demote])).await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN, "{:?}", reply.json());
+    assert!(problem_type(&reply).ends_with("policy-two-step-required"));
+    assert_eq!(
+        sam.get(&uri(space)).await.json().as_array().map(Vec::len),
+        Some(4)
+    );
+}

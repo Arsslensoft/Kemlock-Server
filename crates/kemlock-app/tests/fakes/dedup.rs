@@ -200,6 +200,20 @@ impl TagStore for FakeStore {
             .count();
         Ok(u64::try_from(waiting).unwrap_or(u64::MAX))
     }
+
+    async fn waiting_items(&self, owner: Owner, version: u32) -> Result<Vec<ItemId>, StoreError> {
+        let tagged: BTreeSet<ItemId> = self
+            .valid_tags(owner, version)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        Ok(self
+            .live_items(owner)
+            .keys()
+            .filter(|id| !tagged.contains(*id))
+            .copied()
+            .collect())
+    }
 }
 
 impl DismissalStore for FakeStore {

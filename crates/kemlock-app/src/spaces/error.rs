@@ -30,6 +30,10 @@ pub enum SpacesError {
     /// A rule of item writes (revision, size, owner) refused a write.
     #[error(transparent)]
     Item(ItemError),
+    /// The space's join policies (two-step login, one space per member), or those of a space the
+    /// account is in, refuse a restore or a role change. The API answers it as the join guard does.
+    #[error(transparent)]
+    Join(#[from] crate::policies::PoliciesError),
     /// The store failed; the message is for logs only.
     #[error("store failure: {0}")]
     Store(String),
@@ -85,6 +89,7 @@ impl From<SpacesError> for AppError {
             SpacesError::StaleAccountKeys { current } => AppError::StaleKeyVersion { current },
             SpacesError::StaleItem { item, current } => AppError::Conflict { item, current },
             SpacesError::Item(e) => AppError::Item(e),
+            SpacesError::Join(_) => AppError::Forbidden,
             SpacesError::Store(message) => AppError::Store(message),
         }
     }

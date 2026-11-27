@@ -78,6 +78,7 @@ impl From<SpacesError> for DedupError {
             SpacesError::StaleAccountKeys { current } => DedupError::StaleAccountKeys { current },
             SpacesError::StaleItem { item, current } => DedupError::StaleItem { item, current },
             SpacesError::Item(_) => DedupError::Invalid("the item write was refused"),
+            SpacesError::Join(_) => DedupError::Invalid("the space's policies refuse this"),
             SpacesError::Store(message) => DedupError::Store(message),
         }
     }

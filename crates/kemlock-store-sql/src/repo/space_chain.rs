@@ -8,19 +8,19 @@
 //! finds the head moved, or loses the unique key of `(space, seq)`, and is `Stale`.
 
 use super::items::{release_written, write_in};
-use super::spaces::{apply_in, finish, link_item};
+use super::spaces::{apply_in, ensure_items_of, finish, link_item};
 use crate::error::StoreResult;
 use crate::store::SqlStore;
 use crate::tables::settings;
 use crate::tables::space_chain::{held, names, pending, records, seals};
 use kemlock_app::ports::StoreError;
 use kemlock_app::spaces::{
-    AppendOutcome, ChainAppend, ChainHead, ExternalChangeMode, ExternalSource, HomeGate,
+    AppendOutcome, ChainAppend, ChainHead, ChainUsage, ExternalChangeMode, ExternalSource, HomeGate,
     PendingChange, PendingExternal, SpaceChainRepo, StoredRecord, StoredSeal, pending_from_changes,
     replay_state,
 };
-use kemlock_crypto::space_chain::KeyRef;
 use kemlock_crypto::space_chain::State;
+use kemlock_crypto::space_chain::{self as sc, KeyRef};
 use kemlock_domain::spaces::{CollectionId, CollectionPermission, CustomPermissions, SpaceRole};
 use kemlock_domain::{ItemDraft, ItemId, Owner, SpaceId, UserId};
 use kemlock_federation::chain::{ChainWire, WireName, WireSeal};
@@ -29,7 +29,8 @@ use kemlock_federation::ports::{ReplicaStore, VaultRepo};
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
 use sea_orm::{
-    ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, QueryOrder, TransactionTrait,
+    ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
+    QuerySelect, TransactionTrait,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -249,6 +250,7 @@ impl SpaceChainRepo for SqlStore {
                 .await
                 .store()?;
             }
+            ensure_items_of(&txn, Owner::Space(space), &append.held).await?;
             for item in &append.held {
                 held::Entity::delete_many()
                     .filter(held::Column::ItemId.eq(item.0))
@@ -315,6 +317,20 @@ impl SpaceChainRepo for SqlStore {
         }
     }
 
+    async fn chain_usage(
+        &self,
+        space: SpaceId,
+        member: UserId,
+        since_hour: u64,
+        since_day: u64,
+    ) -> Result<ChainUsage, StoreError> {
+        let db = self.reader();
+        Ok(ChainUsage {
+            by_member_hour: signed_since(db, space, member, since_hour).await?,
+            by_member_day: signed_since(db, space, member, since_day).await?,
+        })
+    }
+
     async fn chain_home_gate(&self, space: SpaceId) -> Result<Option<HomeGate>, StoreError> {
         let Some(vault) = VaultRepo::get_vault(self, Owner::Space(space)).await? else {
             return Ok(None);
@@ -370,6 +386,23 @@ impl SpaceChainRepo for SqlStore {
             .store()?;
         Ok(result.rows_affected > 0)
     }
+}
+
+/// How many records `member` signed in the chain at or after `since` (Unix seconds, by `at`). A count
+/// over `(space_id, signer, at)`, which an index serves.
+async fn signed_since<C: ConnectionTrait>(
+    db: &C,
+    space: SpaceId,
+    member: UserId,
+    since: u64,
+) -> Result<u64, StoreError> {
+    records::Entity::find()
+        .filter(records::Column::SpaceId.eq(space.0))
+        .filter(records::Column::Signer.eq(member.0))
+        .filter(records::Column::At.gte(i64::try_from(since).unwrap_or(i64::MAX)))
+        .count(db)
+        .await
+        .store()
 }
 
 fn grants_text(grants: &[(CollectionId, CollectionPermission)]) -> String {
@@ -501,7 +534,62 @@ fn pending_of(row: pending::Model) -> Result<PendingExternal, StoreError> {
     })
 }
 
+/// The setting that says the one-time pass of `project_chain_policies` was done.
+const POLICIES_PROJECTED_KEY: &str = "chain_policies_projected_v1";
+
 impl SqlStore {
+    /// Writes the policy settings the chain of `space` signs into `space_policy_settings`, which
+    /// is what the server enforces: the chain is the one place they are set on a chained space.
+    /// `false` when the space has no chain.
+    pub(crate) async fn project_policies_of(&self, space: SpaceId) -> Result<bool, StoreError> {
+        let Some((_, state)) = SpaceChainRepo::chain_state(self, space).await? else {
+            return Ok(false);
+        };
+        let creator = records::Entity::find_by_id((space.0, 0i64))
+            .one(self.reader())
+            .await
+            .store()?
+            .map(|row| UserId(row.signer))
+            .ok_or_else(|| bad("a chain with no first record"))?;
+        super::policies::upsert_policies(
+            self.writer(),
+            space,
+            &kemlock_app::spaces::chain_project::policies_of(&state.policies),
+            creator,
+            OffsetDateTime::now_utc(),
+        )
+        .await?;
+        Ok(true)
+    }
+
+    /// Once, at the first start of a server that enforces the policies a chain signs: projects the
+    /// policies of every chained space into `space_policy_settings`. Spaces chained before then
+    /// kept the settings their route (now refused on a chained space) had last set, which the
+    /// chain does not say. Returns how many spaces it wrote; cheap when it was done already.
+    pub async fn project_chain_policies(&self) -> Result<u64, StoreError> {
+        use kemlock_app::admin::SettingsRepo;
+        let done = SettingsRepo::settings_with_prefix(self, POLICIES_PROJECTED_KEY).await?;
+        if done.iter().any(|(key, _)| key == POLICIES_PROJECTED_KEY) {
+            return Ok(0);
+        }
+        let spaces: Vec<Uuid> = records::Entity::find()
+            .select_only()
+            .column(records::Column::SpaceId)
+            .filter(records::Column::Seq.eq(0i64))
+            .into_tuple()
+            .all(self.reader())
+            .await
+            .store()?;
+        let mut written = 0;
+        for space in spaces {
+            if self.project_policies_of(SpaceId(space)).await? {
+                written += 1;
+            }
+        }
+        SettingsRepo::put_setting(self, POLICIES_PROJECTED_KEY, "1").await?;
+        Ok(written)
+    }
+
     /// Whether the space has any record of a chain.
     pub(crate) async fn space_has_chain(&self, space: SpaceId) -> Result<bool, StoreError> {
         Ok(records::Entity::find()
@@ -597,6 +685,7 @@ impl SqlStore {
     ) -> Result<(), StoreError> {
         let txn = self.writer().begin().await.store()?;
         let outcome = async {
+            ensure_items_of(&txn, Owner::Space(space), items).await?;
             for item in items {
                 held::Entity::delete_many()
                     .filter(held::Column::ItemId.eq(item.0))
@@ -802,6 +891,14 @@ impl SqlStore {
             Ok(())
         }
         .await;
-        finish(txn, outcome, "a failed chain record from the home").await
+        let kept = finish(txn, outcome, "a failed chain record from the home").await;
+        // A record that sets the space's policies sets what this replica enforces too: derived from
+        // the chain, never from a policies record of the home's own that no chain record backs.
+        let sets_policies = sc::Record::parse(&wire.entry)
+            .is_ok_and(|r| matches!(r.kind(), sc::Kind::Create | sc::Kind::Policies));
+        if kept.is_ok() && sets_policies {
+            self.project_policies_of(space).await?;
+        }
+        kept
     }
 }

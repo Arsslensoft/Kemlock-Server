@@ -229,6 +229,43 @@ async fn confirmed_in<S: BwStore>(app: &App<S>, user: UserId, space: Uuid) -> Bw
         .any(|m| m.space == SpaceId(space) && m.is_confirmed()))
 }
 
+/// Whether the account is a confirmed member of the space who may see the item: an owner or admin,
+/// or one with a grant on the item's collection (directly or through a group).
+async fn can_see<S: BwStore>(
+    app: &App<S>,
+    user: UserId,
+    space: SpaceId,
+    item: ItemId,
+) -> BwResult<bool> {
+    let Some(state) = SpaceRepo::load(&app.store, space).await? else {
+        return Ok(false);
+    };
+    let Some(me) = state.member(user).filter(|m| m.is_confirmed()) else {
+        return Ok(false);
+    };
+    if matches!(me.role, SpaceRole::Owner | SpaceRole::Admin) {
+        return Ok(true);
+    }
+    let Some((_, collection)) = SpaceRepo::item_collections(&app.store, &[item])
+        .await?
+        .into_iter()
+        .next()
+    else {
+        return Ok(false);
+    };
+    Ok(state.access(user, collection).is_some())
+}
+
+/// How far back a cipher event may be dated (a client keeps events while it is offline), and how far
+/// ahead (a clock that runs fast). Anything else is not an event of now.
+const EVENT_AGE: time::Duration = time::Duration::days(7);
+const EVENT_AHEAD: time::Duration = time::Duration::minutes(5);
+
+/// Whether an event dated `at` is one of now (`now`).
+fn near_now(at: OffsetDateTime, now: OffsetDateTime) -> bool {
+    at >= now - EVENT_AGE && at <= now + EVENT_AHEAD
+}
+
 async fn collect_one<S: BwStore>(
     app: &App<S>,
     user: UserId,
@@ -278,9 +315,11 @@ async fn collect_one<S: BwStore>(
             let Some(item) = ItemStore::get(&app.store, ItemId(cipher)).await? else {
                 return Ok(());
             };
+            let now = app.now();
             if let Owner::Space(space) = item.owner
                 && !item.is_tombstone()
-                && confirmed_in(app, user, space.0).await?
+                && near_now(at, now)
+                && can_see(app, user, space, item.id).await?
             {
                 let source = cipher.to_string();
                 let target = target_json(t, Some(&source), Some(space.0), None, ip);
@@ -560,5 +599,22 @@ mod tests {
         for t in [1115, 1116, 1118, 1134, 1000, 1602] {
             assert!(!is_cipher_event(t), "{t}");
         }
+    }
+}
+
+#[cfg(test)]
+mod collect_tests {
+    use super::*;
+    use time::macros::datetime;
+
+    #[test]
+    fn a_cipher_event_is_dated_within_a_week_back_and_minutes_ahead() {
+        let now = datetime!(2026-11-26 12:00 UTC);
+        assert!(near_now(now, now));
+        assert!(near_now(now - time::Duration::days(6), now));
+        assert!(near_now(now + time::Duration::minutes(4), now));
+        assert!(!near_now(now - time::Duration::days(8), now));
+        assert!(!near_now(now + time::Duration::hours(1), now));
+        assert!(!near_now(now + time::Duration::days(365), now));
     }
 }

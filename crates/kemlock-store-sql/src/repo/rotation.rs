@@ -258,6 +258,10 @@ impl RotationStore for SqlStore {
         let rotation = Uuid::from_bytes(rotation);
         let txn = self.writer().begin().await.store()?;
         let outcome = async {
+            // Only the account's own items are staged for it: an id is global, and a row about
+            // another owner's item would be installed over it. The use case checks too.
+            let ids: Vec<ItemId> = staged.iter().map(|s| s.id).collect();
+            super::spaces::ensure_items_of(&txn, Owner::User(user), &ids).await?;
             // Rows of another attempt, and rows that ran out, are no use to anyone.
             rotation_staged_items::Entity::delete_many()
                 .filter(rotation_staged_items::Column::UserId.eq(user.0))

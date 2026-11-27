@@ -11,19 +11,23 @@
 //! tables from the chain in the same transaction (S2).
 
 use super::chain::{
-    AppendOutcome, ChainAppend, ChainHead, HomeGate, PendingChange, PendingExternal,
+    AppendOutcome, ChainAppend, ChainHead, ChainUsage, HomeGate, PendingChange, PendingExternal,
     SpaceChainRepo, StoredName, StoredRecord, StoredSeal,
 };
-use super::chain_project::{Batch, custom_of, id_of, permission_of, project, role_of, user_of};
+use super::chain_project::{
+    Batch, custom_of, id_of, permission_of, policies_of, project, role_of, user_of,
+};
 use super::error::SpacesError;
 use super::ports::{SpaceItemInfo, SpaceRepo};
 use super::support::record;
 use crate::authenticate::Actor;
 use crate::dedup::TagStore;
-use crate::ports::{Clock, EventLog, ItemStore, Notifier, StoreError, UserRepo};
+use crate::policies::{PoliciesError, check_join};
+use crate::ports::{Clock, EventLog, ItemStore, Notifier, StoreError, TwoFactorRepo, UserRepo};
 use kemlock_crypto::space_chain::{
     self as sc, Body, ChainError, KeyRef, Limits, NameTarget, Reason, Record, SignedRecord,
 };
+use kemlock_domain::policies::is_exempt;
 use kemlock_domain::spaces::{CollectionId, MemberState, SpaceRole, apply_space_write};
 use kemlock_domain::{
     ItemDraft, ItemFormat, ItemId, ItemLimits, ItemWrite, Owner, SpaceId, UserId,
@@ -81,6 +85,11 @@ pub enum AppendError {
     },
     /// The request itself is wrong (`400`).
     Invalid(&'static str),
+    /// The member has signed as many records lately as one member may (`429`).
+    Quota(&'static str),
+    /// A `confirm` would bring in a member the space's policies (or those of a space they are in)
+    /// refuse: two-step login, one space per member (`403`).
+    JoinRefused(PoliciesError),
     /// The records are fine but aren't the queued change they were sent to answer (`422`).
     Mismatch(&'static str),
     /// The request holds an item that isn't in a collection whose key one of its `keys` records
@@ -119,6 +128,15 @@ fn refuse(seq: Option<u64>, reason: Reason, detail: &'static str) -> AppendError
 /// How far a record's `at` may be from the server's clock (A6), in seconds.
 const CLOCK_SLACK: u64 = 600;
 
+/// The most records one account signs in a space in an hour (not asked of the space's Owners and
+/// Admins, who do the bulk work: invites, confirms, seals), and in a day (asked of everyone). One
+/// member must not be able to fill a chain (a chain holds `Limits::CHAIN_RECORDS`) before its
+/// Owners notice. Only the server applies these (docs/crypto.md, A14).
+const MEMBER_RECORDS_PER_HOUR: u64 = 1_024;
+const MEMBER_RECORDS_PER_DAY: u64 = 4_096;
+const HOUR: u64 = 3_600;
+const DAY: u64 = 86_400;
+
 /// Appends records to a space's chain.
 #[derive(Debug)]
 pub struct AppendChain<R, U, V, C, I, T, N> {
@@ -138,7 +156,7 @@ pub struct AppendChain<R, U, V, C, I, T, N> {
 impl<R, U, V, C, I, T, N> AppendChain<R, U, V, C, I, T, N>
 where
     R: SpaceRepo + SpaceChainRepo,
-    U: UserRepo,
+    U: UserRepo + TwoFactorRepo,
     V: EventLog,
     C: Clock,
     I: ItemStore,
@@ -249,6 +267,33 @@ where
         let gate = self.spaces.chain_home_gate(space).await?;
         let me = id_of(actor.user);
 
+        // N5: one account's share of the chain. The chain's own limits (records, bytes and the end
+        // of the chain kept for Owners) are rules of the verifier, which the state at the head
+        // carries the totals for. The append is atomic against the head, so what is read here is
+        // what these records are added to.
+        let usage = if head.is_some() {
+            self.spaces
+                .chain_usage(
+                    space,
+                    actor.user,
+                    now_secs.saturating_sub(HOUR),
+                    now_secs.saturating_sub(DAY),
+                )
+                .await?
+        } else {
+            ChainUsage::default()
+        };
+        let requested = u64::try_from(request.records.len()).unwrap_or(u64::MAX);
+        let exempt_hourly = state
+            .members
+            .get(&me)
+            .is_some_and(|m| matches!(m.role, sc::Role::Owner | sc::Role::Admin));
+        if head.is_some() && over_quota(&usage, requested, exempt_hourly) {
+            return Err(AppendError::Quota(
+                "this account has signed as many records of this space lately as one member may: wait, or ask an owner",
+            ));
+        }
+
         let mut accepted: Vec<(Record, sc::Applied, &SignedRecord)> = Vec::new();
         // The members this request invites: they accept again before a confirm.
         let mut invited_here: BTreeSet<sc::Id> = BTreeSet::new();
@@ -325,6 +370,30 @@ where
                             "a member is confirmed only after they accepted the invitation",
                         ));
                     }
+                    // The join policies, which the route's guard can't see in a record: a member
+                    // the chain brings in (not a new key version of a confirmed one) is checked
+                    // as the confirm route checks one.
+                    if state.confirmed(member).is_none() {
+                        let role = applied
+                            .state
+                            .members
+                            .get(member)
+                            .map_or(SpaceRole::Member, |m| role_of(m.role));
+                        check_join(&self.spaces, &self.users, user_of(member), space, role)
+                            .await
+                            .map_err(AppendError::JoinRefused)?;
+                    }
+                }
+                // A role that stops being an owner's or admin's makes a member of someone the join
+                // policies didn't bind.
+                Body::Role { member, role, .. } => {
+                    let was = state.members.get(member).map(|m| role_of(m.role));
+                    let now = role_of(*role);
+                    if was.is_some_and(is_exempt) && !is_exempt(now) {
+                        check_join(&self.spaces, &self.users, user_of(member), space, now)
+                            .await
+                            .map_err(AppendError::JoinRefused)?;
+                    }
                 }
                 _ => {}
             }
@@ -350,7 +419,7 @@ where
         let newest = writes.last().map(|(draft, _)| draft.id);
 
         let holders = self.spaces.holders(space).await?;
-        let changes = project(
+        let mut changes = project(
             space,
             existing.as_ref(),
             &holders,
@@ -361,6 +430,15 @@ where
             },
             now,
         );
+        // A `create` or a `policies` record sets the space's policy settings: what the server
+        // enforces (Require SSO, two-step login, one space per member, the Send rules) is what the
+        // chain says, and nothing else sets it on a chained space (M14).
+        if accepted
+            .iter()
+            .any(|(rec, _, _)| matches!(rec.body, Body::Create { .. } | Body::Policies { .. }))
+        {
+            changes.policies = Some((policies_of(&state.policies), actor.user));
+        }
         let creating = matches!(accepted[0].0.body, Body::Create { .. });
         let state_after = Arc::new(state.clone());
         let records: Vec<StoredRecord> = accepted
@@ -803,6 +881,14 @@ fn matches_pending<'a>(
     }
 }
 
+/// Whether `requested` more records would pass what one account may sign in an hour or a day. The
+/// hour is not asked of a space's Owners and Admins (`exempt_hourly`); the day is asked of all.
+fn over_quota(usage: &ChainUsage, requested: u64, exempt_hourly: bool) -> bool {
+    (!exempt_hourly
+        && usage.by_member_hour.saturating_add(requested) > MEMBER_RECORDS_PER_HOUR)
+        || usage.by_member_day.saturating_add(requested) > MEMBER_RECORDS_PER_DAY
+}
+
 fn id_of_collection(id: kemlock_domain::spaces::CollectionId) -> sc::Id {
     *id.as_bytes()
 }
@@ -961,5 +1047,27 @@ mod tests {
             reason(check_home(Some(&GATE), &fresh, &first)),
             Some(Reason::BadEpoch)
         );
+    }
+
+    #[test]
+    fn a_member_signs_so_many_records_an_hour_and_a_day() {
+        let usage = ChainUsage {
+            by_member_hour: MEMBER_RECORDS_PER_HOUR - 16,
+            by_member_day: 10,
+            ..ChainUsage::default()
+        };
+        assert!(!over_quota(&usage, 16, false));
+        assert!(over_quota(&usage, 17, false));
+        // An Owner or Admin is not asked for the hour.
+        assert!(!over_quota(&usage, 17, true));
+        let day = ChainUsage {
+            by_member_hour: 0,
+            by_member_day: MEMBER_RECORDS_PER_DAY,
+            ..ChainUsage::default()
+        };
+        assert!(!over_quota(&day, 0, false));
+        assert!(over_quota(&day, 1, false));
+        // But everyone is asked for the day.
+        assert!(over_quota(&day, 1, true));
     }
 }

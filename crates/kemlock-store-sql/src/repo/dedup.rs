@@ -290,6 +290,20 @@ impl TagStore for SqlStore {
         let waiting = live.keys().filter(|id| !tagged.contains(*id)).count();
         u64::try_from(waiting).map_err(|_| corrupt("waiting count"))
     }
+
+    async fn waiting_items(&self, owner: Owner, version: u32) -> Result<Vec<ItemId>, StoreError> {
+        let live = live_items(self.reader(), owner).await?;
+        let tagged: BTreeSet<Uuid> = valid_rows(self.reader(), owner, version)
+            .await?
+            .into_iter()
+            .map(|row| row.item_id)
+            .collect();
+        Ok(live
+            .keys()
+            .filter(|id| !tagged.contains(*id))
+            .map(|id| ItemId(*id))
+            .collect())
+    }
 }
 
 impl DismissalStore for SqlStore {

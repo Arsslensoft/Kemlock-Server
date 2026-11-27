@@ -479,6 +479,13 @@ impl From<AppendError> for Problem {
                 detail.map_or_else(|| error.reason.as_str().to_owned(), str::to_owned),
             ),
             AppendError::Invalid(why) => bad(why),
+            AppendError::JoinRefused(refusal) => Problem::from(refusal),
+            AppendError::Quota(why) => Problem::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                "space-chain-quota",
+                "Too many records lately",
+            )
+            .detail(why),
             AppendError::Mismatch(why) => Problem::new(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "pending-change-mismatch",
@@ -939,6 +946,7 @@ fn doc_get_chain() {}
         (status = 201, description = "Appended; the new head", body = HeadDto),
         (status = 409, description = "seq or prev isn't the next; the problem carries the current head"),
         (status = 422, description = "A record was refused; the problem carries the reason and the seq"),
+        (status = 429, description = "The account signed as many records of this space lately as one member who isn't an owner may (1,024 an hour, 4,096 a day)"),
     )
 )]
 #[allow(dead_code)]

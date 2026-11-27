@@ -67,7 +67,7 @@ pub use ports::{
 };
 pub use push_relay::{PushRelayControl, RelayStatus};
 pub use settings::{Change, EnvSettings, FnEnv, NoEnv, SettingView, Settings, Source};
-pub use spaces::AdminSpaces;
+pub use spaces::{AdminSpaces, OwnerChange};
 pub use sso_admin::{SecretChange, SsoAdmin, SsoInput, SsoView};
 pub use step_up::{Issued, PasswordStarted, StepUp};
 pub use users::{AccountErasure, AdminUsers, InviteIssued};

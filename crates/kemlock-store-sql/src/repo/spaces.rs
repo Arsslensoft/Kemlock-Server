@@ -9,6 +9,7 @@
 use super::items::{release_written, write_in};
 use crate::error::StoreResult;
 use crate::store::SqlStore;
+use crate::tables::bw_docs;
 use crate::tables::items as item_rows;
 use crate::tables::space_chain::held;
 use crate::tables::space_recovery;
@@ -310,6 +311,13 @@ impl SpaceRepo for SqlStore {
         finish(txn, outcome, "a failed batch of items").await
     }
 
+    async fn join_policies_of(
+        &self,
+        spaces: &[SpaceId],
+    ) -> Result<kemlock_domain::policies::PoliciesBySpace, StoreError> {
+        kemlock_app::policies::PolicyRepo::policies_of_spaces(self, spaces).await
+    }
+
     async fn is_chained(&self, space: SpaceId) -> Result<bool, StoreError> {
         self.space_has_chain(space).await
     }
@@ -510,13 +518,58 @@ async fn group_ids<C: ConnectionTrait>(db: &C, space: Uuid) -> Result<Vec<Uuid>,
         .collect())
 }
 
-/// Records that `item` is in `collection`, replacing an earlier record.
+/// Refuses (`Duplicate`) unless every one of `items` is an item of `owner`. The stores that write
+/// a row about an item (the held set, the staged rotation rows, the item-to-collection record)
+/// check this themselves, in their own transaction, rather than trust that their caller did: an id
+/// is global, and a row about another owner's item would hold, move or reveal it.
+pub(super) async fn ensure_items_of<C: ConnectionTrait>(
+    db: &C,
+    owner: Owner,
+    items: &[ItemId],
+) -> Result<(), StoreError> {
+    if items.is_empty() {
+        return Ok(());
+    }
+    let (owner_type, owner_id) = item_rows::owner_parts(owner);
+    let wanted: BTreeSet<Uuid> = items.iter().map(|i| i.0).collect();
+    let mut owned = 0usize;
+    // In chunks, so a long list stays within a statement's parameter limit.
+    let ids: Vec<Uuid> = wanted.iter().copied().collect();
+    for chunk in ids.chunks(500) {
+        owned += item_rows::Entity::find()
+            .filter(item_rows::Column::Id.is_in(chunk.to_vec()))
+            .filter(item_rows::Column::OwnerType.eq(owner_type))
+            .filter(item_rows::Column::OwnerId.eq(owner_id))
+            .all(db)
+            .await
+            .store()?
+            .len();
+    }
+    if owned == wanted.len() {
+        Ok(())
+    } else {
+        Err(StoreError::Duplicate)
+    }
+}
+
+/// Records that `item` is in `collection`, replacing an earlier record. The item must be one of
+/// `space`, and the collection, if the store has it, one of `space` too (`Duplicate` otherwise): a
+/// record from outside (a federation peer's) names both, and a collection id is global.
 pub(super) async fn link_item(
     txn: &DatabaseTransaction,
     item: ItemId,
     space: SpaceId,
     collection: CollectionId,
 ) -> Result<(), StoreError> {
+    ensure_items_of(txn, Owner::Space(space), &[item]).await?;
+    let foreign = collections::Entity::find_by_id(collection.0)
+        .filter(collections::Column::SpaceId.ne(space.0))
+        .one(txn)
+        .await
+        .store()?;
+    if foreign.is_some() {
+        return Err(StoreError::Duplicate);
+    }
     item_collections::Entity::delete_many()
         .filter(item_collections::Column::ItemId.eq(item.0))
         .exec(txn)
@@ -546,6 +599,7 @@ pub(super) async fn apply_in(
     for user in &changes.members_removed {
         let in_space = collection_ids(txn, space).await?;
         delete_recovery_box(txn, space, user.0).await?;
+        delete_bitwarden_member(txn, space, user.0).await?;
         members::Entity::delete_many()
             .filter(members::Column::SpaceId.eq(space))
             .filter(members::Column::UserId.eq(user.0))
@@ -693,8 +747,41 @@ pub(super) async fn apply_in(
             .await
             .store()?;
     }
+    // The policy settings a chain's `policies` record set, so what the server enforces is what
+    // the chain says.
+    if let Some((policies, by)) = &changes.policies {
+        super::policies::upsert_policies(
+            txn,
+            changes.space_id,
+            policies,
+            *by,
+            time::OffsetDateTime::now_utc(),
+        )
+        .await?;
+    }
     Ok(())
 }
+
+/// Deletes what the Bitwarden API keeps of a member of an organization: their document, with the
+/// key they enrolled for account recovery. It goes when they are removed, so an invitation later
+/// starts a membership with nothing enrolled that the person didn't enrol again.
+async fn delete_bitwarden_member(
+    txn: &DatabaseTransaction,
+    space: Uuid,
+    user: Uuid,
+) -> Result<(), StoreError> {
+    bw_docs::Entity::delete_many()
+        .filter(bw_docs::Column::Scope.eq(space))
+        .filter(bw_docs::Column::Kind.eq(BW_MEMBER_KIND))
+        .filter(bw_docs::Column::DocKey.eq(user.to_string()))
+        .exec(txn)
+        .await
+        .store()?;
+    Ok(())
+}
+
+/// The kind of the Bitwarden API's member documents (`kemlock-api-bw`, `KIND_MEMBER`).
+const BW_MEMBER_KIND: &str = "member";
 
 /// Deletes a member's recovery box: it goes when they leave or are removed.
 pub(super) async fn delete_recovery_box(

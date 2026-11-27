@@ -6,6 +6,7 @@ use super::ports::{DismissalStore, TagStore};
 use crate::authenticate::Actor;
 use crate::ports::{Clock, ItemStore};
 use crate::spaces::SpaceRepo;
+use kemlock_domain::spaces::SpaceRole;
 use kemlock_domain::{Dismissal, DismissalId, ItemId, Owner};
 
 /// Saves "these items are not duplicates" for an owner.
@@ -57,10 +58,22 @@ pub struct Undismiss<D, R> {
 }
 
 impl<D: DismissalStore, R: SpaceRepo> Undismiss<D, R> {
-    /// Removes the answer. Any member of its owner may, since every member sees it.
+    /// Removes the answer. In a space only its owners and admins may, and whoever gave it: a member
+    /// who may only view could otherwise take back what the others answered. The vault's own
+    /// answers are the account's.
     pub async fn execute(&self, actor: &Actor, id: DismissalId) -> Result<(), DedupError> {
         let dismissal = self.dismissals.get(id).await?.ok_or(DedupError::NotFound)?;
-        authorize(&self.spaces, actor.user, dismissal.owner, Need::Read).await?;
+        let state = authorize(&self.spaces, actor.user, dismissal.owner, Need::Read).await?;
+        if let Some(state) = &state
+            && dismissal.by != actor.user
+            && !state
+                .member(actor.user)
+                .is_some_and(|m| matches!(m.role, SpaceRole::Owner | SpaceRole::Admin))
+        {
+            return Err(DedupError::Forbidden(
+                "only a space's owners and admins, or whoever gave the answer, take it back",
+            ));
+        }
         if self.dismissals.remove(id).await? {
             Ok(())
         } else {

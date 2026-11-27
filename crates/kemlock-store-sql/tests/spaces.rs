@@ -5,6 +5,7 @@
 mod common;
 
 use common::{draft, memory, user};
+use kemlock_app::bitwarden::BwOrgStore;
 use kemlock_app::ports::{Clock, ItemStore, Notifier, StoreError, UserRepo};
 use kemlock_app::spaces::{
     AcceptInvitation, BundleFingerprints, CollectionRekey, ConfirmInput, ConfirmMember,
@@ -647,6 +648,132 @@ async fn removing_a_member_clears_their_grants_keys_and_group_memberships() {
         .expect("exists");
     assert!(loaded.groups.is_empty());
     assert_eq!(loaded.grants.len(), 1);
+}
+
+#[tokio::test]
+async fn removing_a_member_forgets_what_the_bitwarden_api_kept_of_them() {
+    let store = memory().await;
+    let sam = person(&store, 1, "sam@example.org").await;
+    let ana = person(&store, 2, "ana@example.org").await;
+    let (space, everyone) = make_space(&store, sam.id).await;
+    join(&store, space, everyone, &sam, &ana).await;
+    // Ana enrolled a key for account recovery (a Bitwarden member document), and Sam's is there too.
+    let document = r#"{"akey":"","accessAll":false,"atype":2,"status":2,"resetPasswordKey":"k"}"#;
+    for who in [ana.id, sam.id] {
+        BwOrgStore::doc_put(&store, space.0, "member", &who.to_string(), document)
+            .await
+            .expect("a member document");
+    }
+
+    SpaceRepo::apply(
+        &store,
+        SpaceChanges {
+            members_removed: vec![ana.id],
+            ..SpaceChanges::new(space)
+        },
+    )
+    .await
+    .expect("Ana is removed");
+    assert_eq!(
+        BwOrgStore::doc_get(&store, space.0, "member", &ana.id.to_string())
+            .await
+            .expect("reads"),
+        None,
+        "an invitation later starts with nothing enrolled"
+    );
+    assert!(
+        BwOrgStore::doc_get(&store, space.0, "member", &sam.id.to_string())
+            .await
+            .expect("reads")
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn the_store_checks_whose_item_a_hold_and_a_collection_link_are_about() {
+    let store = memory().await;
+    let sam = person(&store, 1, "sam@example.org").await;
+    let zed = person(&store, 2, "zed@example.org").await;
+    let (space, everyone) = make_space(&store, sam.id).await;
+    let (other, other_everyone) = make_space(&store, zed.id).await;
+
+    // An item of each space, written the ordinary way.
+    let mine = ItemId::random();
+    let theirs = ItemId::random();
+    put_space_item(&store)
+        .execute(&actor(sam.id), everyone, write(space, mine, None, 1, 1))
+        .await
+        .expect("an item of the space");
+    put_space_item(&store)
+        .execute(&actor(zed.id), other_everyone, write(other, theirs, None, 1, 1))
+        .await
+        .expect("an item of the other space");
+
+    // A hold names only the space's own items: another space's item, and one that is nobody's,
+    // are refused whatever the caller checked.
+    store.hold_items(space, &[mine]).await.expect("its own item");
+    for foreign in [theirs, ItemId::random()] {
+        assert_eq!(
+            store.hold_items(space, &[mine, foreign]).await,
+            Err(StoreError::Duplicate)
+        );
+    }
+    assert_eq!(store.held_items(space).await.expect("held"), vec![mine]);
+    assert!(store.held_items(other).await.expect("held").is_empty());
+
+    // An item of the space can't be written into a collection of another space.
+    let moved = put_space_item(&store)
+        .execute(&actor(sam.id), other_everyone, write(space, mine, Some(1), 2, 1))
+        .await;
+    assert!(moved.is_err(), "{moved:?}");
+    assert_eq!(
+        SpaceRepo::item_collections(&store, &[mine])
+            .await
+            .expect("links"),
+        vec![(mine, everyone)]
+    );
+}
+
+#[tokio::test]
+async fn an_account_that_owns_a_space_alone_is_not_erased_by_the_store() {
+    use kemlock_app::privacy::AccountEraser;
+    use kemlock_domain::User;
+
+    let store = memory().await;
+    let sam = person(&store, 1, "sam@example.org").await;
+    let ana = person(&store, 2, "ana@example.org").await;
+    let (space, everyone) = make_space(&store, sam.id).await;
+    join(&store, space, everyone, &sam, &ana).await;
+    let account: User = UserRepo::by_id(&store, sam.id)
+        .await
+        .expect("reads")
+        .expect("the account");
+
+    // The only owner of a space with another member: the erasure's own transaction refuses.
+    assert_eq!(
+        AccountEraser::erase_user(&store, &account).await,
+        Err(StoreError::Backend(OWNER_REQUIRED.to_owned()))
+    );
+    assert!(UserRepo::by_id(&store, sam.id).await.expect("reads").is_some());
+    assert_eq!(
+        AccountEraser::blocking_spaces(&store, sam.id).await,
+        Ok(vec![space])
+    );
+
+    // With the member gone, the space goes with its only owner.
+    SpaceRepo::apply(
+        &store,
+        SpaceChanges {
+            members_removed: vec![ana.id],
+            ..SpaceChanges::new(space)
+        },
+    )
+    .await
+    .expect("Ana is removed");
+    AccountEraser::erase_user(&store, &account)
+        .await
+        .expect("erased");
+    assert_eq!(SpaceRepo::load(&store, space).await, Ok(None));
 }
 
 #[tokio::test]

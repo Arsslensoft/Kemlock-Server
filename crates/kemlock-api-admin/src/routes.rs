@@ -526,7 +526,9 @@ where
         json_ok(env.describe_space(&links, &row).await)
     }
 
-    /// `PUT /admin/v1/spaces/{id}/owner`: the new owner must be a confirmed member.
+    /// `PUT /admin/v1/spaces/{id}/owner`: the new owner must be a confirmed member. On a space with
+    /// a chain the change is only queued for the space's admins to sign, and the answer says so
+    /// (`ownerChangeQueued`).
     async fn space_change_owner(
         State(env): State<Self>,
         writer: Writer,
@@ -534,7 +536,7 @@ where
         body: Body,
     ) -> Result<Json<AdminSpaceDto>, ApiError> {
         let request: ChangeOwnerRequest = body.json()?;
-        let row = env
+        let changed = env
             .spaces()
             .change_owner(
                 &writer.actor,
@@ -544,7 +546,9 @@ where
                 request.demote_previous,
             )
             .await?;
-        json_ok(AdminSpaceDto::from(&row))
+        let mut dto = AdminSpaceDto::from(&changed.row);
+        dto.owner_change_queued = changed.queued;
+        json_ok(dto)
     }
 
     /// `GET /admin/v1/spaces/{id}/members/{user}/invite-link`: the link that accepts a member's
