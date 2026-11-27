@@ -329,26 +329,43 @@ fn two_step_changed(notice: &TwoStepChangedNotice, brand: &Branding) -> Rendered
         "email" => "emailed codes",
         "yubikey" => "a YubiKey",
         "duo" => "Duo",
+        "totp" => "an authenticator app",
         _ => "a security key",
     };
+    // A passkey signs in on its own, so it is a way into the account, not a second step.
+    let passkey = notice.method == "passkey";
     let verb = if notice.on { "turned on" } else { "turned off" };
-    let lead = format!(
-        "On {}, {what} was {verb} as a second step of your account.",
-        when(notice.at)
-    );
+    let (lead, subject) = if passkey {
+        let (done, to_from) = if notice.on {
+            ("added", "to")
+        } else {
+            ("removed", "from")
+        };
+        (
+            format!(
+                "On {}, a passkey was {done} {to_from} your account. It can sign in without your \
+                 password.",
+                when(notice.at)
+            ),
+            format!("A passkey was {done} {to_from} your {} account", brand.app_name),
+        )
+    } else {
+        (
+            format!(
+                "On {}, {what} was {verb} as a second step of your account.",
+                when(notice.at)
+            ),
+            format!(
+                "A second step was {verb} on your {} account",
+                brand.app_name
+            ),
+        )
+    };
     let body = Body::new(&[
         &lead,
         "If this was you, there is nothing to do. If it wasn't, someone is signed in to your account: sign in, change your password and check your devices.",
     ]);
-    finish(
-        notice.to.as_str(),
-        format!(
-            "A second step was {verb} on your {} account",
-            brand.app_name
-        ),
-        &body,
-        brand,
-    )
+    finish(notice.to.as_str(), subject, &body, brand)
 }
 
 fn protected_action(notice: &ProtectedActionNotice, brand: &Branding) -> Rendered {
@@ -852,6 +869,46 @@ mod tests {
         assert!(r.text.contains("2026-11-26 09:05 UTC"));
     }
 
+
+    #[test]
+    fn a_turned_on_authenticator_app_and_a_new_passkey_are_named() {
+        let render_for = |method, on| {
+            render(
+                &Notice::TwoStepChanged(TwoStepChangedNotice {
+                    to: email(),
+                    at: datetime!(2026-11-26 10:05 +01:00),
+                    method,
+                    on,
+                }),
+                &brand(),
+            )
+        };
+        let totp = render_for("totp", true);
+        assert_eq!(
+            totp.subject,
+            "A second step was turned on on your Kemlock account"
+        );
+        assert!(
+            totp.text.contains("an authenticator app was turned on"),
+            "{}",
+            totp.text
+        );
+        let passkey = render_for("passkey", true);
+        assert_eq!(
+            passkey.subject,
+            "A passkey was added to your Kemlock account"
+        );
+        assert!(
+            passkey.text.contains("a passkey was added to your account"),
+            "{}",
+            passkey.text
+        );
+        assert!(
+            render_for("passkey", false)
+                .text
+                .contains("a passkey was removed from your account")
+        );
+    }
     #[test]
     fn the_mail_to_a_new_address_carries_the_link_and_nothing_else_that_opens_anything() {
         let r = render(

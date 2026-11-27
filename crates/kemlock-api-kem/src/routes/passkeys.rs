@@ -580,6 +580,7 @@ where
             prf,
         })
         .await?;
+    announce_change(&api, &authed, "passkey", true).await;
     Ok((
         StatusCode::CREATED,
         Json(PasskeyDto::from_passkey(&passkey)),
@@ -628,6 +629,7 @@ where
     manage(&api, &runtime)
         .delete(authed.actor.user, passkey_id(&id)?)
         .await?;
+    announce_change(&api, &authed, "passkey", false).await;
     Ok(StatusCode::NO_CONTENT)
 }
 

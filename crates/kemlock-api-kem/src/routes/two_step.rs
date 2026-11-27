@@ -950,8 +950,9 @@ where
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Records that a second step was turned on or off, and tells the owner by mail. Neither can fail
-/// the call: what they describe has happened.
+/// Records that a second step was turned on or off, or a passkey added or removed (`method` is
+/// `"passkey"`), and tells the owner by mail. Neither can fail the call: what they describe has
+/// happened.
 pub(crate) async fn announce_change<S, P, K>(
     api: &Api<S, P, K>,
     authed: &Authed,
@@ -965,10 +966,11 @@ pub(crate) async fn announce_change<S, P, K>(
     let sessions = api.sessions();
     sessions
         .record(
-            if on {
-                "account.two_step_added"
-            } else {
-                "account.two_step_removed"
+            match (method, on) {
+                ("passkey", true) => "account.passkey_added",
+                ("passkey", false) => "account.passkey_removed",
+                (_, true) => "account.two_step_added",
+                (_, false) => "account.two_step_removed",
             },
             authed.actor.user,
             Some(authed.actor.device),

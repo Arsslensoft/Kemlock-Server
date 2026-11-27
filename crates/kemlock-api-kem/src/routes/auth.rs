@@ -424,6 +424,7 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
             .await?;
         // The first second step an account turns on gives it a recovery code, as in Vaultwarden.
         api.recovery_codes().ensure(authed.actor.user).await?;
+        super::two_step::announce_change(&api, &authed, "totp", true).await;
         Ok(StatusCode::NO_CONTENT)
     }
 
