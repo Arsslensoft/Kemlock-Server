@@ -254,6 +254,7 @@ fn registry() -> Result<Vec<TableSpec>, StoreError> {
         federation_wiring::federation_replicated_sends::Entity,
         federation_wiring::federation_withheld::Entity,
         federation_wiring::vault_rank_pins::Entity,
+        federation_wiring::peer_blob_cursors::Entity,
         federation_logs::peer_events::Entity,
         federation_keys::key_records::Entity,
         federation_keys::learned_keys::Entity,

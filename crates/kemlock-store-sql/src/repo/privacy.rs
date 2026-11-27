@@ -16,7 +16,7 @@ use crate::tables::federation::{
 };
 use crate::tables::federation_logs::peer_events;
 use crate::tables::federation_wiring::{
-    federation_erasures, replicated_accounts, vault_offers, vault_rank_pins,
+    federation_erasures, peer_blob_cursors, replicated_accounts, vault_offers, vault_rank_pins,
 };
 use crate::tables::items;
 use crate::tables::items::owner_parts;
@@ -878,6 +878,12 @@ pub(crate) async fn erase_replica_vault(
         .await
         .store()?;
     vault_rank_pins::Entity::delete_by_id((owner_type, owner_id))
+        .exec(txn)
+        .await
+        .store()?;
+    peer_blob_cursors::Entity::delete_many()
+        .filter(peer_blob_cursors::Column::OwnerType.eq(owner_type))
+        .filter(peer_blob_cursors::Column::OwnerId.eq(owner_id))
         .exec(txn)
         .await
         .store()?;

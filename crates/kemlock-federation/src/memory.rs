@@ -197,6 +197,8 @@ struct Extras {
     local_accounts: HashSet<Owner>,
     /// The attachment rows, for `BlobSync`.
     attachments: Vec<kemlock_domain::Attachment>,
+    /// Where each peer's list of a vault's attachments stopped.
+    blob_cursors: HashMap<(ServerId, Owner), [u8; 16]>,
     /// The offers received from homes, by vault.
     offers: BTreeMap<Owner, crate::extra::StoredOffer>,
     /// The owners that accept signed `kem1` writes only.
@@ -1105,6 +1107,25 @@ impl crate::extra::MemberStore for MemoryStore {
     }
 }
 impl crate::extra::BlobSync for MemoryStore {
+    async fn blob_cursor(&self, peer: ServerId, vault: Owner) -> Result<[u8; 16], StoreError> {
+        Ok(self
+            .extras()
+            .blob_cursors
+            .get(&(peer, vault))
+            .copied()
+            .unwrap_or([0; 16]))
+    }
+
+    async fn set_blob_cursor(
+        &self,
+        peer: ServerId,
+        vault: Owner,
+        after: [u8; 16],
+    ) -> Result<(), StoreError> {
+        self.extras().blob_cursors.insert((peer, vault), after);
+        Ok(())
+    }
+
     async fn attachments_after(
         &self,
         owner: Owner,

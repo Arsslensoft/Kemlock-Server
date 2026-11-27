@@ -1379,6 +1379,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_peer_that_always_has_more_is_pulled_from_for_a_bounded_number_of_pages() {
+        use kemlock_domain::{ChangeId, Hlc};
+        let t = two().await;
+        struct Endless {
+            calls: u64,
+            origin: ServerId,
+        }
+        impl Channel for Endless {
+            async fn call(&mut self, request: &Request) -> Result<Response> {
+                let Request::Pull { vault, since, .. } = request else {
+                    return Err(FedError::Malformed("not a pull"));
+                };
+                self.calls += 1;
+                // Nothing to apply, but the cursor moves each time and there is always more.
+                let mut next = since.clone();
+                next.observe(&ChangeId {
+                    origin: self.origin,
+                    seq: self.calls,
+                    hlc: Hlc(1),
+                });
+                Ok(Response::Changes {
+                    vault: *vault,
+                    records: Vec::new(),
+                    next,
+                    more: true,
+                })
+            }
+        }
+        let mut channel = Endless {
+            calls: 0,
+            origin: ServerId::random(),
+        };
+        let report =
+            t.b.pull(&mut channel, t.a.server_id(), t.vault)
+                .await
+                .expect("a bounded pull");
+        assert_eq!(report.pages, MAX_PAGES_PER_VISIT);
+        assert_eq!(channel.calls, MAX_PAGES_PER_VISIT as u64);
+    }
+
+    #[tokio::test]
     async fn a_forged_record_is_left_out_and_the_cursor_still_moves() {
         let t = two().await;
         t.a.store

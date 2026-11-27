@@ -12,7 +12,8 @@ use crate::tables::events;
 use crate::tables::federation::{item_siblings, peers};
 use crate::tables::federation_keys::peer_trusted_addresses;
 use crate::tables::federation_wiring::{
-    federation_erasures, peer_acknowledgements, replicated_accounts, vault_offers,
+    federation_erasures, peer_acknowledgements, peer_blob_cursors, replicated_accounts,
+    vault_offers,
 };
 use crate::tables::items::{owner_from, owner_parts};
 use crate::tables::settings;
@@ -638,6 +639,46 @@ impl MemberStore for SqlStore {
 }
 
 impl BlobSync for SqlStore {
+    async fn blob_cursor(&self, peer: ServerId, vault: Owner) -> Result<[u8; 16], StoreError> {
+        let (owner_type, owner_id) = owner_parts(vault);
+        Ok(
+            peer_blob_cursors::Entity::find_by_id((peer.0, owner_type, owner_id))
+                .one(self.reader())
+                .await
+                .store()?
+                .map_or([0; 16], |row| *row.after.as_bytes()),
+        )
+    }
+
+    async fn set_blob_cursor(
+        &self,
+        peer: ServerId,
+        vault: Owner,
+        after: [u8; 16],
+    ) -> Result<(), StoreError> {
+        let (owner_type, owner_id) = owner_parts(vault);
+        let conflict = OnConflict::columns([
+            peer_blob_cursors::Column::Peer,
+            peer_blob_cursors::Column::OwnerType,
+            peer_blob_cursors::Column::OwnerId,
+        ])
+        .update_column(peer_blob_cursors::Column::After)
+        .to_owned();
+        let inserted = peer_blob_cursors::Entity::insert(peer_blob_cursors::ActiveModel {
+            peer: Set(peer.0),
+            owner_type: Set(owner_type),
+            owner_id: Set(owner_id),
+            after: Set(Uuid::from_bytes(after)),
+        })
+        .on_conflict(conflict)
+        .exec(self.writer())
+        .await;
+        match inserted {
+            Ok(_) | Err(sea_orm::DbErr::RecordNotInserted) => Ok(()),
+            Err(err) => Err(map_db(err)),
+        }
+    }
+
     async fn attachments_after(
         &self,
         owner: Owner,

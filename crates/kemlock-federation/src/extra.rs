@@ -345,6 +345,27 @@ pub trait BlobSync: Send + Sync {
         ready(Ok(Vec::new()))
     }
 
+    /// Where the list of `vault`'s attachments stopped last time with `peer`: the id the next page
+    /// asks after (all zeros to start). A vault with more attachments than one visit lists is listed
+    /// over several, and the list starts again from the beginning when it was reached the end of.
+    fn blob_cursor(
+        &self,
+        _peer: ServerId,
+        _vault: Owner,
+    ) -> impl Future<Output = R<[u8; 16]>> + Send {
+        ready(Ok([0; 16]))
+    }
+
+    /// Keeps where the list stopped. Idempotent.
+    fn set_blob_cursor(
+        &self,
+        _peer: ServerId,
+        _vault: Owner,
+        _after: [u8; 16],
+    ) -> impl Future<Output = R<()>> + Send {
+        ready(Ok(()))
+    }
+
     /// The attachment stored as `blob`, if any.
     fn attachment_of_blob(
         &self,

@@ -21,6 +21,7 @@ use kemlock_app::files::{BlobError, BlobRead, BlobStore, BlobUpload, PresignedUr
 use kemlock_app::sends::SendBlobs;
 use kemlock_domain::{Attachment, AttachmentId, AttachmentStatus, BlobId, Owner, ServerId};
 use std::sync::Arc;
+use std::time::Instant;
 use time::OffsetDateTime;
 
 /// Files larger than this are fetched the first time they are used, not with their item.
@@ -240,6 +241,9 @@ pub struct BlobReport {
     pub deferred: usize,
     /// Entries left out: an item this vault doesn't hold, or a file another row already holds.
     pub skipped: usize,
+    /// The listing stopped (its pages or its time ran out) before the end: the rest comes at the
+    /// next visit, from where it stopped.
+    pub unfinished: bool,
 }
 
 fn blob_error(e: &BlobError) -> FedError {
@@ -353,6 +357,20 @@ impl<S: FedStore> Replica<S> {
         self.fetch_file(channel, vault, blob, size, false).await
     }
 
+    /// [`fetch_blob`](Self::fetch_blob) that gives up when `until` has passed, between two chunks.
+    /// False when it did: nothing was stored, and the file is fetched when someone first opens it.
+    pub async fn fetch_blob_until<C: Channel>(
+        &self,
+        channel: &mut C,
+        vault: Owner,
+        blob: BlobId,
+        size: u64,
+        until: Instant,
+    ) -> Result<bool> {
+        self.fetch_file_until(channel, vault, blob, size, false, Some(until))
+            .await
+    }
+
     /// As [`fetch_blob`](Self::fetch_blob); `raw` is the file of a Send in a format storage can't
     /// check (a Bitwarden app's), held to its size alone.
     pub(crate) async fn fetch_file<C: Channel>(
@@ -363,6 +381,22 @@ impl<S: FedStore> Replica<S> {
         size: u64,
         raw: bool,
     ) -> Result<()> {
+        self.fetch_file_until(channel, vault, blob, size, raw, None)
+            .await
+            .map(|_| ())
+    }
+
+    /// As [`fetch_file`](Self::fetch_file), giving up when `until` (if any) has passed, between
+    /// two chunks: false then, with nothing stored.
+    pub(crate) async fn fetch_file_until<C: Channel>(
+        &self,
+        channel: &mut C,
+        vault: Owner,
+        blob: BlobId,
+        size: u64,
+        raw: bool,
+        until: Option<Instant>,
+    ) -> Result<bool> {
         let files = self
             .files
             .as_ref()
@@ -372,6 +406,9 @@ impl<S: FedStore> Replica<S> {
         }
         let mut data: Vec<u8> = Vec::with_capacity(size.min(64 * 1024 * 1024) as usize);
         while (data.len() as u64) < size {
+            if until.is_some_and(|until| Instant::now() >= until) {
+                return Ok(false);
+            }
             let offset = data.len() as u64;
             let len = (size - offset).min(u64::from(MAX_CHUNK)) as u32;
             let response = channel
@@ -404,7 +441,8 @@ impl<S: FedStore> Replica<S> {
         } else {
             files.store(blob, data).await
         };
-        stored.map_err(|e| blob_error(&e))
+        stored.map_err(|e| blob_error(&e))?;
+        Ok(true)
     }
 
     /// Whether a row of this server, an attachment or a Send, already holds the file `blob`.
@@ -421,10 +459,29 @@ impl<S: FedStore> Replica<S> {
         peer: ServerId,
         vault: Owner,
     ) -> Result<BlobReport> {
+        let far = Instant::now() + std::time::Duration::from_secs(60 * 60 * 24);
+        self.sync_blobs_until(channel, peer, vault, far).await
+    }
+
+    /// [`sync_blobs`](Self::sync_blobs) that stops at `until` (between two files), and keeps where
+    /// the listing is, per peer and vault, so the next visit goes on from there: a vault with more
+    /// attachments than one visit lists is listed in full over several. A file that couldn't be
+    /// fetched before `until` is left for its first use, like a large one.
+    pub async fn sync_blobs_until<C: Channel>(
+        &self,
+        channel: &mut C,
+        peer: ServerId,
+        vault: Owner,
+        until: Instant,
+    ) -> Result<BlobReport> {
         self.authorize(peer, vault).await?;
         let mut report = BlobReport::default();
-        let mut after = [0u8; 16];
+        let mut after = self.store.blob_cursor(peer, vault).await?;
         for _ in 0..crate::message::MAX_PAGES_PER_VISIT {
+            if Instant::now() >= until {
+                report.unfinished = true;
+                return Ok(report);
+            }
             let response = channel
                 .call(&Request::Blobs {
                     vault,
@@ -442,6 +499,8 @@ impl<S: FedStore> Replica<S> {
                 _ => return Err(FedError::Malformed("an unexpected response to a file list")),
             };
             let Some(last) = entries.last() else {
+                // The end: the next visit lists from the beginning again.
+                self.store.set_blob_cursor(peer, vault, [0; 16]).await?;
                 return Ok(report);
             };
             // A page that doesn't move past the last one is a peer that says there is more and
@@ -508,17 +567,26 @@ impl<S: FedStore> Replica<S> {
                 }
                 if entry.size > ON_DEMAND_THRESHOLD {
                     report.deferred += 1;
-                } else {
-                    self.fetch_blob(channel, vault, entry.blob, entry.size)
-                        .await?;
+                } else if self
+                    .fetch_blob_until(channel, vault, entry.blob, entry.size, until)
+                    .await?
+                {
                     report.fetched += 1;
+                } else {
+                    // Out of time for it: it is fetched when someone first opens it.
+                    report.deferred += 1;
+                    report.unfinished = true;
                 }
             }
+            // The page is done: the next visit goes on after it.
+            self.store.set_blob_cursor(peer, vault, after).await?;
             if !more {
+                self.store.set_blob_cursor(peer, vault, [0; 16]).await?;
                 return Ok(report);
             }
         }
         // The page limit of a visit: the rest comes at the next.
+        report.unfinished = true;
         Ok(report)
     }
 }
@@ -761,5 +829,85 @@ mod tests {
             .await
             .expect("sync");
         assert_eq!((report.rows, report.fetched, report.skipped), (0, 0, 2));
+    }
+
+    #[tokio::test]
+    async fn the_file_list_is_bounded_and_must_move_forward() {
+        use crate::extra::BlobSync as _;
+        use crate::memory::MemoryStore;
+        use crate::message::BlobEntry;
+        use crate::suite::Suite;
+        use crate::testing::identity;
+        use kemlock_domain::{ItemId, UserId};
+
+        const NOW: u64 = 1_800_000_000;
+        let ia = identity(1, NOW, &Suite::IMPLEMENTED);
+        let ib = identity(2, NOW, &Suite::IMPLEMENTED);
+        let home = ia.server;
+        let me = Replica::new(MemoryStore::new(ib.server), Arc::new(ib.clone()));
+        me.pin_peer(&ia.descriptor, NOW).await.expect("pin");
+        let vault = Owner::User(UserId::random());
+        me.accept_vault(vault, home, vec![ib.server])
+            .await
+            .expect("accept");
+        let entry = |n: u128| BlobEntry {
+            attachment: AttachmentId(uuid::Uuid::from_u128(n)),
+            item: ItemId::random(),
+            blob: BlobId::random(),
+            size: 10,
+        };
+
+        // A peer that always has one more entry: asked for a bounded number of pages, and the
+        // listing says it didn't finish.
+        struct Endless {
+            calls: u128,
+            vault: Owner,
+        }
+        impl Channel for Endless {
+            async fn call(&mut self, _request: &Request) -> Result<Response> {
+                self.calls += 1;
+                Ok(Response::Blobs {
+                    vault: self.vault,
+                    entries: vec![BlobEntry {
+                        attachment: AttachmentId(uuid::Uuid::from_u128(self.calls)),
+                        item: ItemId::random(),
+                        blob: BlobId::random(),
+                        size: 10,
+                    }],
+                    more: true,
+                })
+            }
+        }
+        let mut endless = Endless { calls: 0, vault };
+        let report = me
+            .sync_blobs(&mut endless, home, vault)
+            .await
+            .expect("a bounded listing");
+        assert!(report.unfinished);
+        assert_eq!(endless.calls, crate::message::MAX_PAGES_PER_VISIT as u128);
+        // Where it stopped is kept, so the next visit goes on from there.
+        assert_eq!(
+            me.store.blob_cursor(home, vault).await,
+            Ok(*uuid::Uuid::from_u128(endless.calls).as_bytes())
+        );
+
+        // A second page that is not past the first is a peer saying there is more and repeating.
+        let same = entry(10_000);
+        let mut repeating = Canned(vec![
+            Response::Blobs {
+                vault,
+                entries: vec![same.clone()],
+                more: true,
+            },
+            Response::Blobs {
+                vault,
+                entries: vec![same],
+                more: true,
+            },
+        ]);
+        assert!(matches!(
+            me.sync_blobs(&mut repeating, home, vault).await,
+            Err(FedError::Invalid(_))
+        ));
     }
 }

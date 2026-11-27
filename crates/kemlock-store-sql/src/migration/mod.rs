@@ -70,6 +70,7 @@ mod m20261203_020001_rotation_staged_signatures;
 mod m20261204_050001_vault_rank_pins;
 mod m20261204_050002_held_rotations;
 mod m20261204_050003_peer_events_received;
+mod m20261204_050004_peer_blob_cursors;
 
 use sea_orm_migration::prelude::*;
 
@@ -145,6 +146,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261204_050001_vault_rank_pins::Migration),
             Box::new(m20261204_050002_held_rotations::Migration),
             Box::new(m20261204_050003_peer_events_received::Migration),
+            Box::new(m20261204_050004_peer_blob_cursors::Migration),
         ]
     }
 }
