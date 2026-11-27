@@ -56,7 +56,7 @@ impl<B> MakeSpan<B> for PathOnlySpan {
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long a POST to the space chain may take. A key replacement is one request of up to 32 MiB,
-/// which the route reads at 256 KiB a second or faster (a little over two minutes for the most),
+/// which the route reads at 256 KiB a second or faster (two and a half minutes at most, after a 30 second start),
 /// so the two chain POST routes have a timeout of their own and enforce the rate themselves. The
 /// other chain routes keep [`REQUEST_TIMEOUT`].
 const CHAIN_TIMEOUT: Duration = Duration::from_secs(5 * 60);

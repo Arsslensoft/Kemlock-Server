@@ -2398,18 +2398,34 @@ A stranger, a member who may only view, and an owner of a space with no key wait
 soon as the body passes 8 MiB. The pending-answer route (`POST .../chain/pending/{pending}`) never
 reads above 8 MiB: no queued change is a `keys` record.
 
-A body above 8 MiB holds a place among the large bodies until the request is answered. The server
-has two places, and an account and a space have one each (`429` with `Retry-After` when they are
-taken). An account whose large body ended in a refusal (any `4xx` but `409`, which is a retry
-the client makes itself) waits 60 seconds for another. The body must also keep coming: after the
-first 8 MiB it must arrive at **256 KiB a second or faster** (about 2 Mbit/s, with 1 MiB of
-slack), and no chunk may take more than 15 seconds; otherwise it is `408` and the place is
-free again at once. A body up to 8 MiB has 30 seconds, as every request has. The chain routes have a
-timeout of five minutes of their own instead of the 30 seconds of the other routes. 32 MiB is room
-for about 5,000 items of ordinary size (about 6 KiB each with their signatures), which takes
-two minutes at the slowest rate allowed; a space with more live items in the replaced collections,
-or a connection slower than that, can't have its keys replaced from the web vault, which says so
-and sends nothing.
+**Large bodies.** A body above 8 MiB is a *large body*, and the server limits them:
+
+- *Places.* It has two, and an account and a space have one each at a time. A request that finds
+  none waits up to ten seconds, and the next place goes to the request that has waited longest:
+  an account has one place or one turn in the queue, never two, so the queue is round-robin
+  between accounts, and a request that comes back after its turn goes behind the others. After the
+  ten seconds it is `429` with `Retry-After`, as it is at once for an account or a space that
+  has a place or a turn already.
+- *Every large body counts* against the account that sent it, whatever came of it (read, refused,
+  too slow, or stored): the account waits 60 seconds, counted from the moment the request is over,
+  before another. The one exception is a request that was stored (`201`) and replaced a marked
+  collection key, which is what the places are for: it costs neither the wait nor budget.
+- *A budget* of four large bodies an hour for each account, on top of the places (`429` with
+  `Retry-After`).
+- *A floor on the rate.* Every body, from its first byte, has 30 seconds and one more second for
+  each 256 KiB it has by then: it must arrive at **256 KiB a second or faster** (2 Mbit/s) after a
+  30 second start, and no chunk may take more than 15 seconds; otherwise it is `408`, and a place it
+  held is free again at once. The chain's two POST routes have a timeout of five minutes of their
+  own, which this floor stays well under; the other routes keep 30 seconds. 32 MiB is room for about
+  5,000 items of ordinary size (about 6 KiB each with their signatures), which takes at most
+  2 minutes 30 at the slowest rate allowed; a space with more live items in the replaced
+  collections, or a connection slower than that, can't have its keys replaced from the web vault,
+  which says so and sends nothing.
+
+*What remains.* These limits bound what one account can ask of a server, not what many can. A person
+who can make accounts (each its own space, each with a marked key it may replace) can still keep both
+places busy and so delay the key replacements of others by up to the ten seconds a request waits,
+each of them. A server with sign-ups off, where only its admin makes accounts, has no such person.
 
 The server refuses a record unless all of these hold:
 
