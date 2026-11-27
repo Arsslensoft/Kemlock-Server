@@ -950,3 +950,51 @@ async fn a_wrong_hash_at_accept_counts_with_the_password_grant_and_a_junk_token_
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["message"], "Username or password is incorrect. Try again");
 }
+
+/// On a server that verifies sign-ups by mail, the token of an invitation to an organization that
+/// names the address was mailed to it, so it proves the address as the verification link does: the
+/// registration finishes with it alone, and any other token does not.
+#[tokio::test]
+async fn on_a_verifying_server_the_organization_invitation_proves_the_address() {
+    let mailbox = Arc::new(Mailbox::default());
+    let h = Harness::with_mail_set(mailbox.clone(), |s| s.signups_verify = true).await;
+    let (eve, _) = h.signed_in("eve@example.com").await;
+    let org = organization(&h, &eve).await;
+    invite(&h, &eve, &org, "new@example.com").await;
+    let pending = member_of(&h, &eve, &org, "new@example.com").await;
+    let (status, body) = h
+        .json(
+            "GET",
+            &format!("/api/organizations/{org}/users/{pending}/invite-link"),
+            Some(&eve),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let token = body["token"].as_str().expect("a token").to_owned();
+    let finish = |email: &'static str, org_token: String| {
+        let h = &h;
+        async move {
+            h.json(
+                "POST",
+                "/identity/accounts/register/finish",
+                None,
+                Some(json!({
+                    "email": email,
+                    "masterPasswordHash": HASH,
+                    "kdf": 0, "kdfIterations": 600_000,
+                    "userSymmetricKey": common::USER_KEY,
+                    "orgInviteToken": org_token
+                })),
+            )
+            .await
+        }
+    };
+    // A token for another address proves nothing for this one.
+    let (status, body) = finish("other@example.com", token.clone()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    // The one that names the address does.
+    let (status, body) = finish("new@example.com", token).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(status_of(&h, &eve, &org, "new@example.com").await, Some(1));
+}

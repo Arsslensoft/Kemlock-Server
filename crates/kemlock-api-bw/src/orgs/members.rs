@@ -535,6 +535,14 @@ pub(crate) async fn accept<S: BwStore>(
     accept_claims(app, &account, &claims, reset_key).await
 }
 
+/// Whether `token` is a good, unexpired token of an invitation to `email`: it was mailed to that
+/// address (or handed over by an administrator who read it), so it says which address was invited.
+pub(crate) fn org_invite_names<S: BwStore>(app: &App<S>, email: &str, token: &str) -> bool {
+    app.keys
+        .decode::<InviteClaims>(token, &app.settings.issuer("invite"), app.now_secs())
+        .is_ok_and(|claims| claims.email.eq_ignore_ascii_case(email.trim()))
+}
+
 /// The acceptance an account makes in the registration request that made it, when the request
 /// carries the token of an invitation to the address (Vaultwarden's `orgInviteToken`). The account
 /// did not exist before, so there is no session to ask for, and the registration proved the

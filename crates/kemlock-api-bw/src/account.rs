@@ -576,24 +576,34 @@ pub(crate) async fn verification_clicked<S: BwStore>(
 
 /// `POST /identity/accounts/register/finish`: makes a Compatible account.
 pub(crate) async fn register<S: BwStore>(app: &App<S>, request: Registration) -> BwResult<()> {
-    let Some(token) = &request.verification_token else {
-        return Err(BwError::msg("Registration is missing required parameters"));
+    // The token of an invitation to an organization that names this address was mailed to it (as a
+    // Vaultwarden invitation is), so it proves the address as the verification link does.
+    let org_proof = request
+        .org_invite_token
+        .as_deref()
+        .is_some_and(|t| crate::orgs::members::org_invite_names(app, &request.email, t));
+    let (verified, name) = match &request.verification_token {
+        Some(token) => {
+            let claims: RegisterVerifyClaims = app
+                .keys
+                .decode(
+                    token,
+                    &app.settings.issuer("register_verify"),
+                    app.now_secs(),
+                )
+                .map_err(|e| BwError::msg(e.to_string()))?;
+            if claims.sub != request.email {
+                return Err(BwError::msg(
+                    "Email verification token does not match email",
+                ));
+            }
+            (claims.verified, claims.name)
+        }
+        None if org_proof => (true, None),
+        None => {
+            return Err(BwError::msg("Registration is missing required parameters"));
+        }
     };
-    let claims: RegisterVerifyClaims = app
-        .keys
-        .decode(
-            token,
-            &app.settings.issuer("register_verify"),
-            app.now_secs(),
-        )
-        .map_err(|e| BwError::msg(e.to_string()))?;
-    if claims.sub != request.email {
-        return Err(BwError::msg(
-            "Email verification token does not match email",
-        ));
-    }
-    let verified = claims.verified;
-    let name = claims.name;
     if name.as_ref().is_some_and(|n| n.len() > 50) {
         return Err(BwError::msg(
             "The field Name must be a string with a maximum length of 50.",
@@ -604,8 +614,12 @@ pub(crate) async fn register<S: BwStore>(app: &App<S>, request: Registration) ->
         return Err(BwError::msg(REGISTRATION_REFUSED));
     }
     // Where the server verifies sign-ups, the token has to be the one mailed to the address: the
-    // asker never sees it. A server invitation was mailed to the address too, so it proves it.
-    if crate::signup_hold::verifies(app) && !verified && !matches!(admission, Admission::Invited(_))
+    // asker never sees it. A server invitation, or an organization's, was mailed to the address too,
+    // so it proves it.
+    if crate::signup_hold::verifies(app)
+        && !verified
+        && !org_proof
+        && !matches!(admission, Admission::Invited(_))
     {
         return Err(BwError::msg(
             "Email verification is required: open the link mailed to the address to finish registering",
