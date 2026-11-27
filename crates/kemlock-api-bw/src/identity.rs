@@ -939,14 +939,19 @@ async fn password_login<S: BwStore>(
         Ok(email) => UserRepo::by_email(&app.store, &email).await?,
         Err(_) => None,
     };
-    let Some(user) = user else {
-        return Err(BwError::msg(BAD_LOGIN));
-    };
-    let Some(mut account) = account_of(app, &user).await? else {
-        return Err(BwError::msg(BAD_LOGIN));
-    };
-
     let password = data.password.as_deref().unwrap_or_default();
+    let account = match &user {
+        Some(user) => account_of(app, user).await?,
+        None => None,
+    };
+    let (Some(user), Some(mut account)) = (user, account) else {
+        // The work of a check is done all the same, so the time of the answer does not say whether
+        // the address has an account.
+        if data.auth_request.is_none() {
+            app.password_decoy(password).await?;
+        }
+        return Err(BwError::msg(BAD_LOGIN));
+    };
     // A login approved on another device isn't supported: Kemlock never starts one.
     if data.auth_request.is_some() {
         return Err(BwError::msg("Auth request not found. Try again."));
@@ -1286,6 +1291,11 @@ pub(crate) async fn send_email_login<S: BwStore>(
         None => None,
     };
     let (Some(user), Some(account), Some(hash)) = (user, account, password_hash) else {
+        // A hash was sent for an address with no account: the work of a check is done all the
+        // same, so the time of the answer does not say who has an account.
+        if let Some(hash) = password_hash {
+            app.password_decoy(hash).await?;
+        }
         return Err(BwError::msg(BAD_LOGIN));
     };
     check_password(app, &user, &account, hash).await?;

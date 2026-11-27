@@ -186,6 +186,19 @@ impl<S: BwStore> App<S> {
         self.hashing(move || verify_password(&secret, &salt, &previous, iterations))
             .await
     }
+
+    /// The work of a password check for an address that has no account, so that answering takes as
+    /// long as it does for one that has: the answer is always "incorrect", and the time says
+    /// nothing about who has an account.
+    pub(crate) async fn password_decoy(&self, password: &str) -> BwResult<()> {
+        let secret = password.as_bytes().to_vec();
+        let salt = self.prelogin_key;
+        let iterations = self.settings.password_iterations;
+        self.hashing(move || {
+            let _ = std::hint::black_box(hash_password(&secret, &salt, iterations));
+        })
+        .await
+    }
 }
 
 /// Re-hashes the password with the current number of rounds when the account has fewer, as
