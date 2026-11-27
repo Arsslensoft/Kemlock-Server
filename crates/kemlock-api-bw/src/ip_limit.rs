@@ -3,20 +3,22 @@
 //! `LOGIN_RATELIMIT_SECONDS` (60). A refusal is a 429; its message is the route's to choose.
 //!
 //! Kept in memory (a restart forgets it, which only lets a client have a few more tries). The map
-//! is bounded: when it is full, buckets that have refilled are dropped, and if none has, the
-//! oldest half.
+//! is bounded: when it is full, buckets that have refilled are dropped first, then the ones with the
+//! most tokens left. A bucket that is drained is the one that matters, so it is never dropped to
+//! make room: with no room left, a new address is refused until one of them refills.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv6Addr};
 use std::sync::{Mutex, PoisonError};
 
-/// The address a client is followed by: an IPv6 client holds a whole /64 (what a household or a
-/// mobile device gets), so changing the low 64 bits is not a new client, and an IPv4-mapped
-/// address is the IPv4 one.
+/// The address a client is followed by: an IPv6 client holds a whole /56 (what a household gets,
+/// and what a mobile network may hand out per device), so changing the low 72 bits is not a new
+/// client, and an IPv4-mapped address is the IPv4 one.
 fn bucket_key(ip: IpAddr) -> IpAddr {
     match ip.to_canonical() {
         IpAddr::V6(v6) => {
             let mut octets = v6.octets();
+            octets[7] = 0;
             octets[8..].fill(0);
             IpAddr::V6(Ipv6Addr::from(octets))
         }
@@ -24,8 +26,10 @@ fn bucket_key(ip: IpAddr) -> IpAddr {
     }
 }
 
-/// The most addresses followed at once.
+/// The most addresses followed at once before the map makes room.
 const MAX_ADDRESSES: usize = 10_000;
+/// The most it holds even when every bucket in it is drained.
+const HARD_MAX_ADDRESSES: usize = 2 * MAX_ADDRESSES;
 
 #[derive(Debug)]
 pub(crate) struct IpLimit {
@@ -53,19 +57,49 @@ impl IpLimit {
         }
     }
 
+    /// The tokens a bucket holds at `now`, the refill not yet written back.
+    fn tokens_at(&self, bucket: &Bucket, now: i64) -> i64 {
+        let given = (now - bucket.refilled).max(0) / self.period;
+        i64::from(bucket.tokens)
+            .saturating_add(given)
+            .min(i64::from(self.burst))
+    }
+
+    /// Drops buckets that are full again, then half of the rest that hold the most tokens. A
+    /// drained bucket (no token left) is a client being limited and is kept.
+    fn make_room(&self, buckets: &mut HashMap<IpAddr, Bucket>, now: i64) {
+        buckets.retain(|_, b| self.tokens_at(b, now) < i64::from(self.burst));
+        if buckets.len() < MAX_ADDRESSES {
+            return;
+        }
+        let mut held: Vec<i64> = buckets
+            .values()
+            .map(|b| self.tokens_at(b, now))
+            .filter(|tokens| *tokens > 0)
+            .collect();
+        if held.is_empty() {
+            return;
+        }
+        held.sort_unstable();
+        // The most tokens go: everything above the median of what is left to spare.
+        let cut = held[held.len() / 2];
+        buckets.retain(|_, b| {
+            let tokens = self.tokens_at(b, now);
+            tokens == 0 || tokens < cut
+        });
+    }
+
     /// Takes one request of `ip` at `now` (Unix seconds). `Err(seconds)` is how long until one is
     /// given back.
     pub(crate) fn check(&self, ip: IpAddr, now: i64) -> Result<(), u64> {
         let ip = bucket_key(ip);
         let mut buckets = self.buckets.lock().unwrap_or_else(PoisonError::into_inner);
         if buckets.len() >= MAX_ADDRESSES && !buckets.contains_key(&ip) {
-            let full_after = self.period.saturating_mul(i64::from(self.burst));
-            buckets.retain(|_, b| now - b.refilled < full_after);
-            if buckets.len() >= MAX_ADDRESSES {
-                let mut stamps: Vec<i64> = buckets.values().map(|b| b.refilled).collect();
-                stamps.sort_unstable();
-                let cut = stamps[stamps.len() / 2];
-                buckets.retain(|_, b| b.refilled > cut);
+            self.make_room(&mut buckets, now);
+            if buckets.len() >= HARD_MAX_ADDRESSES {
+                // Every address held is drained: none is dropped for a stranger.
+                let wait = self.period.min(60);
+                return Err(u64::try_from(wait).unwrap_or(1));
             }
         }
         let bucket = buckets.entry(ip).or_insert(Bucket {
@@ -129,13 +163,15 @@ mod tests {
     }
 
     #[test]
-    fn an_ipv6_client_is_followed_by_its_64_bit_prefix() {
+    fn an_ipv6_client_is_followed_by_its_56_bit_prefix() {
         let limit = IpLimit::new(2, 60);
         let a: IpAddr = "2001:db8:1:2::1".parse().expect("an address");
         let b: IpAddr = "2001:db8:1:2:aaaa:bbbb:cccc:dddd"
             .parse()
             .expect("an address");
-        let elsewhere: IpAddr = "2001:db8:1:3::1".parse().expect("an address");
+        // Another /64 of the same /56 is the same client; the next /56 is not.
+        let same_56: IpAddr = "2001:db8:1:ff::1".parse().expect("an address");
+        let elsewhere: IpAddr = "2001:db8:1:100::1".parse().expect("an address");
         assert_eq!(limit.check(a, 0), Ok(()));
         assert_eq!(limit.check(b, 0), Ok(()));
         assert_eq!(
@@ -143,7 +179,28 @@ mod tests {
             Err(60),
             "one client, however it picks its low bits"
         );
+        assert_eq!(limit.check(same_56, 0), Err(60));
         assert_eq!(limit.check(elsewhere, 0), Ok(()));
+    }
+
+    #[test]
+    fn making_room_keeps_the_drained_buckets() {
+        let limit = IpLimit::new(2, 60);
+        // One address drained, then the map filled with addresses that used one token each.
+        for _ in 0..2 {
+            assert_eq!(limit.check(ONE, 0), Ok(()));
+        }
+        assert!(limit.check(ONE, 0).is_err());
+        for n in 0..u32::try_from(MAX_ADDRESSES).expect("small") {
+            let [a, b, c, d] = n.to_be_bytes();
+            assert_eq!(
+                limit.check(IpAddr::V4(Ipv4Addr::new(a | 10, b, c, d)), 1),
+                Ok(())
+            );
+        }
+        // A new address finds the map full, and the drained one is still limited after.
+        assert_eq!(limit.check(OTHER, 1), Ok(()));
+        assert!(limit.check(ONE, 1).is_err(), "the drained bucket stayed");
     }
 
     #[test]
