@@ -8,7 +8,7 @@
 //! finds the head moved, or loses the unique key of `(space, seq)`, and is `Stale`.
 
 use super::items::{release_written, write_in};
-use super::spaces::{apply_in, finish, link_item};
+use super::spaces::{apply_in, ensure_items_of, finish, link_item};
 use crate::error::StoreResult;
 use crate::store::SqlStore;
 use crate::tables::settings;
@@ -250,6 +250,7 @@ impl SpaceChainRepo for SqlStore {
                 .await
                 .store()?;
             }
+            ensure_items_of(&txn, Owner::Space(space), &append.held).await?;
             for item in &append.held {
                 held::Entity::delete_many()
                     .filter(held::Column::ItemId.eq(item.0))
@@ -646,6 +647,7 @@ impl SqlStore {
     ) -> Result<(), StoreError> {
         let txn = self.writer().begin().await.store()?;
         let outcome = async {
+            ensure_items_of(&txn, Owner::Space(space), items).await?;
             for item in items {
                 held::Entity::delete_many()
                     .filter(held::Column::ItemId.eq(item.0))

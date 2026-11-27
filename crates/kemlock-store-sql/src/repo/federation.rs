@@ -537,7 +537,15 @@ async fn apply_in(
     if merge.head == key
         && let (Owner::Space(space), Some(collection)) = (record.owner, record.collection)
     {
-        super::spaces::link_item(txn, record.item, space, collection).await?;
+        match super::spaces::link_item(txn, record.item, space, collection).await {
+            Ok(()) => {}
+            // The record names a collection of another space: the item keeps the link it had
+            // (if any) and the batch goes on.
+            Err(StoreError::Duplicate) => {
+                tracing::warn!(item = %record.item.0, "a federated record names another space's collection; not linked");
+            }
+            Err(other) => return Err(other),
+        }
     }
     Ok(if merge.head == key {
         ApplyOutcome::Applied

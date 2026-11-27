@@ -690,6 +690,51 @@ async fn removing_a_member_forgets_what_the_bitwarden_api_kept_of_them() {
 }
 
 #[tokio::test]
+async fn the_store_checks_whose_item_a_hold_and_a_collection_link_are_about() {
+    let store = memory().await;
+    let sam = person(&store, 1, "sam@example.org").await;
+    let zed = person(&store, 2, "zed@example.org").await;
+    let (space, everyone) = make_space(&store, sam.id).await;
+    let (other, other_everyone) = make_space(&store, zed.id).await;
+
+    // An item of each space, written the ordinary way.
+    let mine = ItemId::random();
+    let theirs = ItemId::random();
+    put_space_item(&store)
+        .execute(&actor(sam.id), everyone, write(space, mine, None, 1, 1))
+        .await
+        .expect("an item of the space");
+    put_space_item(&store)
+        .execute(&actor(zed.id), other_everyone, write(other, theirs, None, 1, 1))
+        .await
+        .expect("an item of the other space");
+
+    // A hold names only the space's own items: another space's item, and one that is nobody's,
+    // are refused whatever the caller checked.
+    store.hold_items(space, &[mine]).await.expect("its own item");
+    for foreign in [theirs, ItemId::random()] {
+        assert_eq!(
+            store.hold_items(space, &[mine, foreign]).await,
+            Err(StoreError::Duplicate)
+        );
+    }
+    assert_eq!(store.held_items(space).await.expect("held"), vec![mine]);
+    assert!(store.held_items(other).await.expect("held").is_empty());
+
+    // An item of the space can't be written into a collection of another space.
+    let moved = put_space_item(&store)
+        .execute(&actor(sam.id), other_everyone, write(space, mine, Some(1), 2, 1))
+        .await;
+    assert!(moved.is_err(), "{moved:?}");
+    assert_eq!(
+        SpaceRepo::item_collections(&store, &[mine])
+            .await
+            .expect("links"),
+        vec![(mine, everyone)]
+    );
+}
+
+#[tokio::test]
 async fn deleting_a_collection_clears_its_grants_keys_and_item_links() {
     let store = memory().await;
     let sam = person(&store, 1, "sam@example.org").await;

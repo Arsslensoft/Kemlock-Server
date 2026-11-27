@@ -518,13 +518,58 @@ async fn group_ids<C: ConnectionTrait>(db: &C, space: Uuid) -> Result<Vec<Uuid>,
         .collect())
 }
 
-/// Records that `item` is in `collection`, replacing an earlier record.
+/// Refuses (`Duplicate`) unless every one of `items` is an item of `owner`. The stores that write
+/// a row about an item (the held set, the staged rotation rows, the item-to-collection record)
+/// check this themselves, in their own transaction, rather than trust that their caller did: an id
+/// is global, and a row about another owner's item would hold, move or reveal it.
+pub(super) async fn ensure_items_of<C: ConnectionTrait>(
+    db: &C,
+    owner: Owner,
+    items: &[ItemId],
+) -> Result<(), StoreError> {
+    if items.is_empty() {
+        return Ok(());
+    }
+    let (owner_type, owner_id) = item_rows::owner_parts(owner);
+    let wanted: BTreeSet<Uuid> = items.iter().map(|i| i.0).collect();
+    let mut owned = 0usize;
+    // In chunks, so a long list stays within a statement's parameter limit.
+    let ids: Vec<Uuid> = wanted.iter().copied().collect();
+    for chunk in ids.chunks(500) {
+        owned += item_rows::Entity::find()
+            .filter(item_rows::Column::Id.is_in(chunk.to_vec()))
+            .filter(item_rows::Column::OwnerType.eq(owner_type))
+            .filter(item_rows::Column::OwnerId.eq(owner_id))
+            .all(db)
+            .await
+            .store()?
+            .len();
+    }
+    if owned == wanted.len() {
+        Ok(())
+    } else {
+        Err(StoreError::Duplicate)
+    }
+}
+
+/// Records that `item` is in `collection`, replacing an earlier record. The item must be one of
+/// `space`, and the collection, if the store has it, one of `space` too (`Duplicate` otherwise): a
+/// record from outside (a federation peer's) names both, and a collection id is global.
 pub(super) async fn link_item(
     txn: &DatabaseTransaction,
     item: ItemId,
     space: SpaceId,
     collection: CollectionId,
 ) -> Result<(), StoreError> {
+    ensure_items_of(txn, Owner::Space(space), &[item]).await?;
+    let foreign = collections::Entity::find_by_id(collection.0)
+        .filter(collections::Column::SpaceId.ne(space.0))
+        .one(txn)
+        .await
+        .store()?;
+    if foreign.is_some() {
+        return Err(StoreError::Duplicate);
+    }
     item_collections::Entity::delete_many()
         .filter(item_collections::Column::ItemId.eq(item.0))
         .exec(txn)
