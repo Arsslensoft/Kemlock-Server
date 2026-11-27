@@ -3,7 +3,9 @@
 //! Members, roles, policies, groups, collections, grants and key replacement are home-only writes
 //! (`docs/federation.md`, "Home epochs, promotion and the fence"). [`home_gate`] is a middleware for
 //! the merged router. For a write to `/kem/v1/spaces/{id}/{members, collections, groups, grants,
-//! key-replacement, reseal, policies}` of a space this server federates:
+//! key-replacement, reseal, policies, chain}`, to the Bitwarden API's `/api/organizations/{id}/{users,
+//! collections, groups, policies, keys, leave}` or to the admin console's
+//! `/admin/v1/spaces/{id}/owner`, of a space this server federates:
 //!
 //! - at a server that is **not** the home (a replica, or an old home that was promoted over) the
 //!   write is refused with `409` and the home's address, in the problem body and in the
@@ -13,7 +15,8 @@
 //!   replicas, so they follow at once instead of at their next visit.
 //!
 //! Reads and writes of anything else pass untouched, and so does everything for a space that is
-//! not federated here.
+//! not federated here. A write whose space id can't be read is refused with `400`, and one the gate
+//! can't check (the vault's settings can't be read) with `503`, never passed on.
 
 use axum::extract::{Request, State};
 use axum::http::{HeaderValue, Method, StatusCode, header};
@@ -27,8 +30,9 @@ use std::sync::Arc;
 /// The header that names the home's address in a refusal.
 pub const HOME_HEADER: &str = "x-kemlock-home";
 
-/// The parts of `/kem/v1/spaces/{id}/…` only the home may write.
-const HOME_ONLY: [&str; 7] = [
+/// The parts of `/kem/v1/spaces/{id}/…` only the home may write. `chain` is the space's signed
+/// chain: appending to it changes members, roles and keys.
+const HOME_ONLY: [&str; 8] = [
     "members",
     "collections",
     "groups",
@@ -36,7 +40,12 @@ const HOME_ONLY: [&str; 7] = [
     "key-replacement",
     "reseal",
     "policies",
+    "chain",
 ];
+
+/// The parts of `/api/organizations/{id}/…` (the Bitwarden API's name for a space) only the home
+/// may write: members, collections, groups, policies, the organization's keys and leaving it.
+const BITWARDEN_HOME_ONLY: [&str; 6] = ["users", "collections", "groups", "policies", "keys", "leave"];
 
 /// What the gate needs: the engine, and what to call when the home changed something so the
 /// replicas are visited soon (the server passes the replication job's `mark_dirty`).
@@ -69,19 +78,94 @@ impl<S: FedStore> HomeGate<S> {
     }
 }
 
-/// The space a request writes home-only state of, if it is such a write.
-pub fn home_only_target(method: &Method, path: &str) -> Option<SpaceId> {
+/// What a request that writes home-only state names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HomeTarget {
+    /// The space it writes.
+    Space(SpaceId),
+    /// A request for the home-only part of a space whose id this middleware can't read: it is
+    /// refused rather than passed, because the handler might read the same text another way.
+    Malformed,
+}
+
+/// A path parameter as the router hands it to a handler: percent-decoded. `None` for a `%` that
+/// isn't followed by two hex digits, or for bytes that aren't UTF-8.
+fn decode_segment(segment: &str) -> Option<String> {
+    let bytes = segment.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] == b'%' {
+            let pair = bytes.get(at + 1..at + 3)?;
+            if !pair.iter().all(u8::is_ascii_hexdigit) {
+                return None;
+            }
+            let text = std::str::from_utf8(pair).ok()?;
+            out.push(u8::from_str_radix(text, 16).ok()?);
+            at += 3;
+        } else {
+            out.push(bytes[at]);
+            at += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// What a request writes home-only state of, if it is such a write: `/kem/v1/spaces/{id}/…`, the
+/// Bitwarden API's `/api/organizations/{id}/…` and the admin console's
+/// `/admin/v1/spaces/{id}/owner`. The router matches the literal parts of a path as they came and
+/// decodes its parameters, so the space's id is decoded here too: `%30` is `0` to the handler.
+pub fn home_only_target(method: &Method, path: &str) -> Option<HomeTarget> {
     if matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) {
         return None;
     }
-    let rest = path.strip_prefix("/kem/v1/spaces/")?;
-    let mut parts = rest.split('/');
-    let id = parts.next()?;
-    let section = parts.next()?;
-    if !HOME_ONLY.contains(&section) {
-        return None;
-    }
-    uuid::Uuid::parse_str(id).ok().map(SpaceId)
+    let segments: Vec<&str> = path.split('/').collect();
+    let id = match segments.as_slice() {
+        ["", "kem", "v1", "spaces", id, section, ..] if HOME_ONLY.contains(section) => id,
+        ["", "api", "organizations", id, section, ..] if BITWARDEN_HOME_ONLY.contains(section) => {
+            id
+        }
+        ["", "admin", "v1", "spaces", id, "owner", ..] => id,
+        _ => return None,
+    };
+    Some(
+        decode_segment(id)
+            .and_then(|id| uuid::Uuid::parse_str(&id).ok())
+            .map_or(HomeTarget::Malformed, |id| HomeTarget::Space(SpaceId(id))),
+    )
+}
+
+/// The `400` of a home-only write whose space id can't be read.
+fn malformed() -> Response {
+    problem_response(
+        StatusCode::BAD_REQUEST,
+        "urn:kemlock:problem:bad-request",
+        "The space in the address isn't a valid id",
+    )
+}
+
+/// The `503` of a home-only write when the vault's settings couldn't be read: the write is not
+/// passed on, because the fence can't say whether this server may take it.
+fn unavailable() -> Response {
+    problem_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "urn:kemlock:problem:unavailable",
+        "This change can't be checked against the vault's home right now: try again shortly",
+    )
+}
+
+fn problem_response(status: StatusCode, kind: &str, title: &str) -> Response {
+    let body = serde_json::json!({
+        "type": kind,
+        "title": title,
+        "status": status.as_u16(),
+    });
+    (
+        status,
+        [(header::CONTENT_TYPE, "application/problem+json")],
+        body.to_string(),
+    )
+        .into_response()
 }
 
 /// The `409` of a home-only write at a server that isn't the home.
@@ -115,8 +199,10 @@ pub async fn home_gate<S: FedStore + 'static>(
     request: Request,
     next: Next,
 ) -> Response {
-    let Some(space) = home_only_target(request.method(), request.uri().path()) else {
-        return next.run(request).await;
+    let space = match home_only_target(request.method(), request.uri().path()) {
+        None => return next.run(request).await,
+        Some(HomeTarget::Malformed) => return malformed(),
+        Some(HomeTarget::Space(space)) => space,
     };
     let vault = Owner::Space(space);
     let me = gate.replica.server_id();
@@ -126,7 +212,7 @@ pub async fn home_gate<S: FedStore + 'static>(
         Ok(_) => return next.run(request).await,
         Err(e) => {
             tracing::warn!(error = %e, "the home check of a space write could not read the vault");
-            return next.run(request).await;
+            return unavailable();
         }
     };
     if settings.home != me {
@@ -168,11 +254,12 @@ mod tests {
     #[test]
     fn only_writes_to_the_home_only_parts_of_a_space_are_targeted() {
         let id = uuid::Uuid::new_v4();
+        let space = Some(HomeTarget::Space(SpaceId(id)));
         let target = |method: Method, path: String| home_only_target(&method, &path);
         for section in HOME_ONLY {
             assert_eq!(
                 target(Method::POST, format!("/kem/v1/spaces/{id}/{section}")),
-                Some(SpaceId(id)),
+                space,
                 "{section}"
             );
             assert_eq!(
@@ -186,18 +273,82 @@ mod tests {
                 Method::PUT,
                 format!("/kem/v1/spaces/{id}/members/{id}/role")
             ),
-            Some(SpaceId(id))
+            space
         );
         assert_eq!(target(Method::POST, "/kem/v1/spaces".to_owned()), None);
         assert_eq!(
             target(Method::POST, format!("/kem/v1/spaces/{id}/items")),
             None
         );
-        assert_eq!(
-            target(Method::POST, "/kem/v1/spaces/me/members".to_owned()),
-            None
-        );
         assert_eq!(target(Method::POST, format!("/kem/v1/items/{id}")), None);
+    }
+
+    #[test]
+    fn the_bitwarden_organization_routes_and_the_admin_owner_route_are_fenced_too() {
+        let id = uuid::Uuid::new_v4();
+        let space = Some(HomeTarget::Space(SpaceId(id)));
+        let target = |method: Method, path: String| home_only_target(&method, &path);
+        for section in BITWARDEN_HOME_ONLY {
+            assert_eq!(
+                target(Method::POST, format!("/api/organizations/{id}/{section}")),
+                space,
+                "{section}"
+            );
+            assert_eq!(
+                target(Method::GET, format!("/api/organizations/{id}/{section}")),
+                None
+            );
+        }
+        assert_eq!(
+            target(
+                Method::PUT,
+                format!("/api/organizations/{id}/users/{id}/confirm")
+            ),
+            space
+        );
+        assert_eq!(
+            target(Method::PUT, format!("/admin/v1/spaces/{id}/owner")),
+            space
+        );
+        // Other organization and admin routes are not home-only writes.
+        for path in [
+            "/api/organizations".to_owned(),
+            format!("/api/organizations/{id}/api-key"),
+            format!("/api/organizations/{id}/export"),
+            format!("/admin/v1/spaces/{id}"),
+        ] {
+            assert_eq!(target(Method::POST, path.clone()), None, "{path}");
+        }
+    }
+
+    #[test]
+    fn the_space_id_is_read_as_the_router_hands_it_to_the_handler() {
+        let id = uuid::Uuid::new_v4();
+        let space = Some(HomeTarget::Space(SpaceId(id)));
+        // `%30` is `0` and `%61` is `a`: an encoded digit is still the same space.
+        let text = id.to_string();
+        let mut encoded = text.clone();
+        let first = encoded.remove(0);
+        encoded.insert_str(0, &format!("%{:02X}", u32::from(first)));
+        assert_eq!(
+            home_only_target(&Method::POST, &format!("/kem/v1/spaces/{encoded}/members")),
+            space
+        );
+        assert_eq!(
+            home_only_target(
+                &Method::POST,
+                &format!("/api/organizations/{encoded}/users/invite")
+            ),
+            space
+        );
+        // An id that can't be read is refused by the gate, not passed on.
+        for bad in ["me", "%zz", "%FF", "%2", "not-a-space"] {
+            assert_eq!(
+                home_only_target(&Method::POST, &format!("/kem/v1/spaces/{bad}/members")),
+                Some(HomeTarget::Malformed),
+                "{bad}"
+            );
+        }
     }
 
     type Server = Arc<Replica<MemoryStore>>;
@@ -344,6 +495,24 @@ mod tests {
             "the space, two members, a group, two collections, a key set and the policies"
         );
         assert_eq!(*told_home.lock().expect("lock"), vec![replica.server_id()]);
+    }
+
+    #[tokio::test]
+    async fn a_write_for_a_space_the_gate_cannot_read_is_refused_not_passed() {
+        let home = server(4);
+        let told = Arc::new(Mutex::new(Vec::new()));
+        let app = app(&home, &told);
+        for path in [
+            "/kem/v1/spaces/%6De/members",
+            "/kem/v1/spaces/%zz/members",
+            "/kem/v1/spaces/not-a-space/members",
+        ] {
+            let (status, _, body) = send(&app, "POST", path).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{path}: {body}");
+        }
+        // A read of the same address passes: only writes are fenced.
+        let (status, _, _) = send(&app, "GET", "/kem/v1/spaces/not-a-space/members").await;
+        assert_eq!(status, StatusCode::OK);
     }
 
     #[tokio::test]
