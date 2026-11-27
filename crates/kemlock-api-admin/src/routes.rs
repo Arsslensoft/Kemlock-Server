@@ -46,6 +46,22 @@ const DEFAULT_PUSH_RELAY_URL: &str = "https://push.kemlock.app";
 // ---------------------------------------------------------------------------------------------
 // Small helpers
 
+/// Whether `key` names a setting that holds a secret: its value is never put in the audit trail.
+fn is_secret_setting(key: &str) -> bool {
+    kemlock_app::admin::settings::definition(key)
+        .is_some_and(|d| d.kind == kemlock_app::admin::settings::Kind::Secret)
+}
+
+/// `text` cut to at most `max` characters, with an ellipsis when it was cut.
+fn truncated(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_owned();
+    }
+    let mut cut: String = text.chars().take(max.saturating_sub(3)).collect();
+    cut.push_str("...");
+    cut
+}
+
 fn bad(why: impl Into<String>) -> ApiError {
     ApiError(Problem::bad_request(why))
 }
@@ -754,19 +770,44 @@ where
             })
             .collect();
         let settings = env.settings();
+        // What each setting was before, for the audit trail: a value may be a secret, so a secret
+        // is named and never shown; any other is recorded as it was and as it is.
+        let mut before: BTreeMap<String, String> = BTreeMap::new();
+        for key in changes.keys() {
+            if is_secret_setting(key) {
+                continue;
+            }
+            if let Ok(Some(value)) = settings.get(key).await {
+                before.insert(key.clone(), value);
+            }
+        }
         settings.apply(&changes).await?;
         // This replica re-reads at once; the others at their next poll.
         if let Some(saved) = &env.rt.settings_saved {
             saved();
         }
-        // The names only: a value may be a secret.
-        let names: Vec<&str> = changes.keys().map(String::as_str).collect();
+        let mut described: Vec<String> = Vec::with_capacity(changes.len());
+        for key in changes.keys() {
+            if is_secret_setting(key) {
+                described.push(key.clone());
+                continue;
+            }
+            let was = before.get(key).map_or("(unset)", String::as_str);
+            let now = settings
+                .get(key)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            let now = if now.is_empty() { "(unset)" } else { now.as_str() };
+            described.push(format!("{key}: {was} -> {now}"));
+        }
         env.audit()
             .record(
                 &writer.actor,
                 Some(writer.ip),
                 "admin.settings.update",
-                Some(names.join(",")),
+                Some(truncated(&described.join("; "), 1000)),
                 "changed the server settings",
             )
             .await;

@@ -1762,6 +1762,137 @@ async fn secrets_are_sealed_and_never_shown() {
     assert_eq!(events[0].target.as_deref(), Some("smtp_password"));
 }
 
+#[tokio::test]
+async fn rate_limit_settings_have_sane_caps() {
+    let rig = Rig::new();
+    let root = rig.admin(ADMIN).await;
+    let token = root.step_up(&rig).await;
+    for (key, ok, too_many) in [
+        ("rate_sign_in_per_minute", "100", "101"),
+        ("rate_password_failures_per_15_minutes", "30", "31"),
+        ("rate_second_step_failures_per_15_minutes", "20", "21"),
+        ("rate_second_step_challenges_per_5_minutes", "30", "31"),
+        ("rate_register_per_hour", "50", "51"),
+    ] {
+        for (value, status) in [(ok, StatusCode::OK), (too_many, StatusCode::BAD_REQUEST)] {
+            let reply = root
+                .write(
+                    "PUT",
+                    "/admin/v1/settings",
+                    Some(json!({"changes": {key: value}})),
+                    &token,
+                )
+                .await;
+            assert_eq!(reply.status, status, "{key}={value}: {:?}", reply.json());
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_audit_trail_records_what_a_setting_was_and_became_but_never_a_secret() {
+    let rig = Rig::new();
+    let root = rig.admin(ADMIN).await;
+    let token = root.step_up(&rig).await;
+    let saved = root
+        .write(
+            "PUT",
+            "/admin/v1/settings",
+            Some(json!({"changes": {
+                "trash_days": "45",
+                "smtp_password": "hunter2-hunter2",
+            }})),
+            &token,
+        )
+        .await;
+    assert_eq!(saved.status, StatusCode::OK, "{:?}", saved.json());
+    let target = rig.admin.events()[0].target.clone().expect("a target");
+    assert!(target.contains("trash_days: 30 -> 45"), "{target}");
+    assert!(target.contains("smtp_password"), "{target}");
+    assert!(!target.contains("hunter2"), "{target}");
+
+    let reset = root
+        .write(
+            "PUT",
+            "/admin/v1/settings",
+            Some(json!({"changes": {"trash_days": null}})),
+            &token,
+        )
+        .await;
+    assert_eq!(reset.status, StatusCode::OK);
+    let target = rig.admin.events().last().and_then(|e| e.target.clone()).expect("a target");
+    assert_eq!(target, "trash_days: 45 -> 30");
+}
+
+#[tokio::test]
+async fn a_new_smtp_host_starts_without_the_saved_smtp_password() {
+    let rig = Rig::new();
+    let root = rig.admin(ADMIN).await;
+    let token = root.step_up(&rig).await;
+    let put = |changes: Value| {
+        root.write(
+            "PUT",
+            "/admin/v1/settings",
+            Some(json!({ "changes": changes })),
+            &token,
+        )
+    };
+    assert_eq!(
+        put(json!({"smtp_host": "mail.example.org", "smtp_password": "hunter2-hunter2"}))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert!(rig.admin.saved_setting("setting.smtp_password").is_some());
+    // Another setting of the mail server, or the same host again: the password stays.
+    assert_eq!(
+        put(json!({"smtp_host": "mail.example.org", "smtp_port": "465"}))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert!(rig.admin.saved_setting("setting.smtp_password").is_some());
+    // A new host with a new password keeps the new one.
+    assert_eq!(
+        put(json!({"smtp_host": "smtp.other.example", "smtp_password": "another-secret-1"}))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert!(rig.admin.saved_setting("setting.smtp_password").is_some());
+    // A new host alone drops the password the old one was given.
+    assert_eq!(
+        put(json!({"smtp_host": "evil.example"})).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(rig.admin.saved_setting("setting.smtp_password"), None);
+}
+
+#[tokio::test]
+async fn a_new_sso_issuer_starts_without_the_stored_client_secret() {
+    let rig = Rig::new();
+    let root = rig.admin(ADMIN).await;
+    let token = root.step_up(&rig).await;
+    let saved = root
+        .write("PUT", "/admin/v1/sso", Some(sso_body()), &token)
+        .await;
+    assert_eq!(saved.status, StatusCode::OK, "{:?}", saved.json());
+    // The same issuer, the secret left out: kept.
+    let mut keep = sso_body();
+    keep.as_object_mut().expect("object").remove("clientSecret");
+    let kept = root
+        .write("PUT", "/admin/v1/sso", Some(keep.clone()), &token)
+        .await
+        .json();
+    assert_eq!(kept["clientSecretSet"], true);
+    // Another issuer with the secret left out: the secret does not follow it.
+    keep["issuer"] = json!("https://idp.attacker.example/realms/kemlock");
+    let moved = root
+        .write("PUT", "/admin/v1/sso", Some(keep), &token)
+        .await
+        .json();
+    assert_eq!(moved["clientSecretSet"], false);
+}
+
 // ---------------------------------------------------------------------------------------------
 // SSO
 
