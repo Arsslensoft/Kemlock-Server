@@ -16,10 +16,6 @@ use kemlock_domain::{Device, DeviceId, DeviceKind, User, UserId};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-/// The most devices one account may have. A new device past it is refused at sign-in (one that
-/// is already registered still signs in), so the account has to sign one out first.
-pub const MAX_DEVICES_PER_ACCOUNT: usize = 100;
-
 /// What a client says about the device it signs in from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeviceInfo {
@@ -120,13 +116,9 @@ impl<D: DeviceRepo, T: TokenRepo, K: TokenSigner, E: Platform, V: EventLog, F: T
                 }
             }
             None => {
-                // Each device may make its own stream of authenticated requests, so one account
-                // with endless devices would take a large share of what every account shares.
-                if self.devices.list(user).await?.len() >= MAX_DEVICES_PER_ACCOUNT {
-                    return Err(AppError::Invalid(
-                        "this account has too many signed-in devices: sign one out first",
-                    ));
-                }
+                // No cap on devices: one never expires, so private windows and cleared storage
+                // would lock an account out of new ones. What one account's devices take of the
+                // authenticated replay set is bounded by its own share of it (`dpop.rs`).
                 Device {
                     id,
                     user,
