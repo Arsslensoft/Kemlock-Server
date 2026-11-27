@@ -23,6 +23,9 @@ pub enum DedupError {
     /// The tags were made under another dedup key version than the owner's current one.
     #[error("the owner's dedup key is at version {current}")]
     StaleVersion { current: u32 },
+    /// A wrap of the account's root key was for a key version the account no longer has.
+    #[error("the account's key version is {current}")]
+    StaleAccountKeys { current: u32 },
     /// The item isn't at the revision the caller named (`If-Match`).
     #[error("item {item} changed: stored revision is {current:?}")]
     StaleItem {
@@ -40,9 +43,7 @@ impl From<StoreError> for DedupError {
             StoreError::Conflict { item, current } => DedupError::StaleItem { item, current },
             StoreError::NotFound => DedupError::NotFound,
             StoreError::Duplicate => DedupError::Invalid("that already exists"),
-            StoreError::StaleKeyVersion { .. } => {
-                DedupError::Invalid("the account's keys changed: unlock again")
-            }
+            StoreError::StaleKeyVersion { current } => DedupError::StaleAccountKeys { current },
             StoreError::Backend(message) => DedupError::Store(message),
         }
     }
@@ -74,6 +75,7 @@ impl From<SpacesError> for DedupError {
             SpacesError::Rule(rule) => rule.into(),
             SpacesError::NotFound => DedupError::NotFound,
             SpacesError::Duplicate => DedupError::Invalid("that already exists"),
+            SpacesError::StaleAccountKeys { current } => DedupError::StaleAccountKeys { current },
             SpacesError::StaleItem { item, current } => DedupError::StaleItem { item, current },
             SpacesError::Item(_) => DedupError::Invalid("the item write was refused"),
             SpacesError::Store(message) => DedupError::Store(message),
