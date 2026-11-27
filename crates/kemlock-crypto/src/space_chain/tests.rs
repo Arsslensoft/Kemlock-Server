@@ -806,3 +806,23 @@ fn the_end_of_a_chain_is_kept_for_owners_and_removals() {
         .1
         .expect("an Owner's removal in the last records");
 }
+
+#[test]
+fn a_member_confirmed_again_under_a_bundle_they_did_not_sign_is_marked() {
+    let mut kit = world::<Gen>();
+    let (owner, ana) = (uid(OWNER), uid(ANA));
+    // The first confirmation leaves no mark.
+    assert_eq!(kit.state.members[&ana].reconfirmed_seq, None);
+
+    // The Owner confirms Ana again under a newer bundle; Ana signed nothing of it.
+    kit.add(Account::new::<Gen>(ANA, 2));
+    let applied = kit.confirm::<Gen>(&owner, &ana);
+    let seq = applied.state.head.map(|h| h.seq);
+    assert!(seq.is_some());
+    assert_eq!(kit.state.members[&ana].reconfirmed_seq, seq);
+    assert_eq!(kit.state.members[&ana].bundle_version(), 2);
+
+    // Her own rekey to a newer one clears it.
+    kit.rekey::<Gen>(&ana);
+    assert_eq!(kit.state.members[&ana].reconfirmed_seq, None);
+}
