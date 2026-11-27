@@ -274,7 +274,9 @@ async fn a_send_sealed_for_another_key_version_is_a_409_with_the_current_one() {
         if let Some(version) = key_version {
             body["keyVersion"] = json!(version);
         }
-        rig.call("PUT", &format!("/kem/v1/sends/{id}"), Some(body))
+        let uri = format!("/kem/v1/sends/{id}");
+        let rig = &rig;
+        async move { rig.call("PUT", &uri, Some(body)).await }
     };
     let stale = edit(Some(1)).await;
     assert_eq!(stale.status, StatusCode::CONFLICT, "{:?}", stale.json());

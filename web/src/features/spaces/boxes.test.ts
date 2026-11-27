@@ -231,7 +231,7 @@ describe('a key box from before keys were signed', () => {
     await expect(openKeyBox(ctx, { key: finance, version: 1, ...unsigned })).resolves.toEqual({
       legacy: true,
     });
-    expect(crypto.calls).toContain(`openCollection:${FINANCE}`);
+    expect(crypto.calls).toContain(`openCollection:${FINANCE}:unsigned`);
     expect((await boxes.load(ME, SPACE, `collection:${FINANCE}`, 1))?.signed).toBe(false);
     // The same box opens again, and is still flagged; nobody is asked who sealed it.
     await expect(openKeyBox(ctx, { key: finance, version: 1, sealed: unsigned.sealed, sealedBy: undefined })).resolves
