@@ -15,6 +15,6 @@ pub mod message;
 pub mod relay;
 
 pub use events::{BwNotifier, BwPushing};
-pub use hub::{BwHub, HubAuth, HubConfig, HubIdentity, router};
+pub use hub::{BwHub, HubAuth, HubConfig, HubIdentity, Recheck, router};
 pub use message::{Field, Message, Protocol, UpdateType};
 pub use relay::{BitwardenPush, BitwardenPushConfig, BwPush, BwPushDevice, BwPushSwitch};

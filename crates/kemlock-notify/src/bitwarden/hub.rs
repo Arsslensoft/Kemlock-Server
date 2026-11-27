@@ -62,8 +62,32 @@ pub struct HubIdentity {
 /// Checks a Bitwarden access token for the hub. The server implements it over `kemlock-api-bw`'s
 /// token keys, so a token the API would refuse the hub refuses too (a changed security stamp, a
 /// signed-out device).
+/// What a second look at an open socket's token finds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Recheck {
+    /// The token still holds for this account.
+    Valid,
+    /// The token was refused for certain (expired, a new security stamp, a disabled account, a
+    /// device that is gone).
+    Refused,
+    /// The store couldn't say (a transient failure): the socket stays as it is.
+    Unknown,
+}
+
 pub trait HubAuth: Send + Sync + 'static {
     fn authenticate(&self, token: &str) -> BoxFuture<'_, Option<HubIdentity>>;
+
+    /// Looks at the token again for a socket that is open. The default takes a refusal of
+    /// [`HubAuth::authenticate`] as definite; a server whose lookups can fail says `Unknown` then.
+    fn recheck(&self, token: &str, user: UserId) -> BoxFuture<'_, Recheck> {
+        let first = self.authenticate(token);
+        Box::pin(async move {
+            match first.await {
+                Some(identity) if identity.user == user => Recheck::Valid,
+                _ => Recheck::Refused,
+            }
+        })
+    }
 }
 
 /// Timings and the address header of the hub.
@@ -422,9 +446,8 @@ async fn serve_user(
                 // may have changed its password or been disabled since the socket opened.
                 if rechecked.elapsed() >= config.recheck_every {
                     rechecked = Instant::now();
-                    match auth.authenticate(&token).await {
-                        Some(still) if still.user == identity.user => {}
-                        _ => break,
+                    if auth.recheck(&token, identity.user).await == Recheck::Refused {
+                        break;
                     }
                 }
                 if socket.send(ws_ping()).await.is_err() {

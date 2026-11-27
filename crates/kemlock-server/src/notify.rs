@@ -32,7 +32,7 @@ use kemlock_notify::Notify;
 use kemlock_notify::audience::{Audience, SpaceMembers};
 use kemlock_notify::bitwarden::{
     BitwardenPush, BitwardenPushConfig, BwHub, BwNotifier, BwPushSwitch, BwPushing, HubAuth,
-    HubConfig, HubIdentity,
+    HubConfig, HubIdentity, Recheck,
 };
 use kemlock_notify::fanout::{Fanout, FanoutOptions, Sink};
 use kemlock_notify::mail::{
@@ -113,6 +113,47 @@ impl HubAuth for BwHubAuth {
                 user,
                 device: Some(device),
             })
+        })
+    }
+
+    /// A second look at an open socket's token. A token or a row that says no closes the socket; a
+    /// store that fails (a lost connection, a timeout) says nothing, and the socket stays.
+    fn recheck(&self, token: &str, user: UserId) -> BoxFuture<'_, Recheck> {
+        let token = token.to_owned();
+        Box::pin(async move {
+            let now = OffsetDateTime::now_utc().unix_timestamp();
+            let Ok(claims) = self.keys.decode::<LoginClaims>(&token, &self.issuer, now) else {
+                return Recheck::Refused;
+            };
+            let (Some(sub), Some(device)) = (
+                Uuid::parse_str(&claims.sub).ok().map(UserId),
+                Uuid::parse_str(&claims.device).ok().map(DeviceId),
+            ) else {
+                return Recheck::Refused;
+            };
+            if sub != user {
+                return Recheck::Refused;
+            }
+            let Ok(stored) = DeviceRepo::get(&self.store, device).await else {
+                return Recheck::Unknown;
+            };
+            if stored.is_none_or(|d| d.user != user) {
+                return Recheck::Refused;
+            }
+            let Ok(account) = UserRepo::by_id(&self.store, user).await else {
+                return Recheck::Unknown;
+            };
+            let Some(account) = account else {
+                return Recheck::Refused;
+            };
+            if account.security_stamp.to_string() != claims.sstamp {
+                return Recheck::Refused;
+            }
+            match UserRepo::account_disabled(&self.store, user).await {
+                Ok(true) => Recheck::Refused,
+                Ok(false) => Recheck::Valid,
+                Err(_) => Recheck::Unknown,
+            }
         })
     }
 }

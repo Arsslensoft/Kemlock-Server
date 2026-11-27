@@ -803,3 +803,41 @@ async fn the_address_the_server_settled_beats_a_header_the_client_wrote() {
         Err(tungstenite::Error::Http(r)) if r.status() == 429
     ));
 }
+
+/// A store that fails now and then: a refusal it cannot make is `Unknown`, and the socket stays.
+struct Flaky(UserId);
+
+impl HubAuth for Flaky {
+    fn authenticate(&self, _token: &str) -> BoxFuture<'_, Option<HubIdentity>> {
+        let user = self.0;
+        Box::pin(async move { Some(HubIdentity { user, device: None }) })
+    }
+
+    fn recheck(&self, _token: &str, _user: UserId) -> BoxFuture<'_, Recheck> {
+        Box::pin(async { Recheck::Unknown })
+    }
+}
+
+#[tokio::test]
+async fn a_transient_failure_of_the_recheck_does_not_close_the_socket() {
+    let user = UserId::random();
+    let hub = BwHub::new(
+        Arc::new(UserOnly),
+        HubConfig {
+            ping_every: Duration::from_millis(30),
+            recheck_every: Duration::from_millis(30),
+            ..HubConfig::default()
+        },
+    );
+    let address = serve_with_peers(router(hub.clone(), Arc::new(Flaky(user)))).await;
+    let rig = Rig {
+        hub: hub.clone(),
+        address,
+        ada: user,
+        grace: user,
+    };
+    let _client = rig.open("any", MSGPACK_HANDSHAKE).await;
+    eventually(|| hub.connections() == 1).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(hub.connections(), 1, "several rechecks said Unknown");
+}
