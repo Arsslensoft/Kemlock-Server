@@ -617,10 +617,13 @@ made yourself before archives carried a code, check it with the drill and restor
 archive. A server with no `server.key` at hand writes archives with no code and logs a warning.
 
 A restore also limits what an archive can do. It refuses an archive that names `server.key` or a
-database file, and installs only the sealed secrets (`*.sealed`), `rsa_key.pem` and `config.json`
-from the data folder, and a `config/<name>.toml` (put beside an existing configuration file as
+database file, and installs only the sealed secrets (`*.sealed`) and `config.json` from the data
+folder, and a `config/<name>.toml` (put beside an existing configuration file as
 `.from-backup`, never over it); it says what it skipped. Every file it writes is readable by its
-owner only. It unpacks at most 16 GiB for one file, 50 times the archive's own size in total
+owner only. A backup leaves out the Bitwarden token key (`rsa_key.pem`), which is a plain file, and a
+restore removes the data folder's copy: the server writes a new one at its next start, so Bitwarden
+apps sign in again once their access token runs out and "remember this device" is asked again. It
+unpacks at most 16 GiB for one file, 50 times the archive's own size in total
 (between 1 GiB and 4 TiB) and 2 million files.
 
 The manifest, and with it the authentication code, is the last entry of an archive, so a restore

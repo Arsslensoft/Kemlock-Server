@@ -19,8 +19,8 @@ use axum::response::IntoResponse;
 use axum::response::Response;
 use kemlock_backup::{
     AgeIdentity, Attachments, BACKUP_PREFIX, MacKey, Manifest, archive_time, check_manifest_mac,
-    is_never_restored, is_restorable_config_name, is_restorable_data_file, parse_identity,
-    read_archive, verify_unpacked,
+    is_never_restored, is_restorable_config_name, is_restorable_data_file, is_token_key_file,
+    parse_identity, read_archive, verify_unpacked,
 };
 use kemlock_store_sql::{SnapshotTable, SqlStore};
 use std::net::SocketAddr;
@@ -224,6 +224,11 @@ fn data_name(path: &str) -> Option<&str> {
 fn skipped_data_file_note(name: &str) -> String {
     if is_never_restored(name) {
         format!("data/{name} is a key or a database file, which a restore never installs: skipped")
+    } else if is_token_key_file(name) {
+        format!(
+            "data/{name} is the Bitwarden token key of an older archive: skipped, and the server \
+             makes a new one at its next start"
+        )
     } else {
         format!("data/{name} isn't a file a restore installs, so it was skipped")
     }
@@ -466,6 +471,21 @@ pub async fn restore(config: &Config, options: &RestoreOptions) -> Result<Restor
                 copy_file(&from, &target)?;
             }
             files += 1;
+        }
+    }
+    // The Bitwarden token key is in no archive now, and an old archive's copy is not installed. The
+    // folder's own is removed, so the server writes a new one at its next start: a key that was in
+    // a backup is not trusted again. Bitwarden access tokens signed by the old key stop working
+    // (apps refresh them), and "remember this device" tokens are asked for again.
+    for name in [kemlock_backup::TOKEN_KEY_FILE, "rsa_key.pub.pem"] {
+        let path = config.data_folder.join(name);
+        match std::fs::remove_file(&path) {
+            Ok(()) => notes.push(format!(
+                "{name} was removed: the server makes a new Bitwarden token key at its next start, \
+                 so Bitwarden apps sign in again when their access token runs out"
+            )),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("can't remove {}: {e}", path.display())),
         }
     }
     if manifest.attachments == Attachments::External {
@@ -837,7 +857,10 @@ mod tests {
         }
         let other = skipped_data_file_note("notes.txt");
         assert!(other.contains("isn't a file a restore installs"), "{other}");
-        assert!(is_restorable_data_file("rsa_key.pem"));
+        // The Bitwarden token key is in no archive, and one in an old archive is skipped.
+        assert!(!is_restorable_data_file("rsa_key.pem"));
+        let key = skipped_data_file_note("rsa_key.pem");
+        assert!(key.contains("token key") && key.contains("skipped"), "{key}");
     }
 
     #[test]

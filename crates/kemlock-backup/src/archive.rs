@@ -40,6 +40,12 @@ use time::format_description::well_known::Rfc3339;
 /// The data folder's file that never goes into an archive.
 pub const SERVER_KEY_FILE: &str = "server.key";
 
+/// The Bitwarden API's token key. It is a plain PEM file (Vaultwarden's format), so it is never in
+/// an archive: whoever holds a decrypted backup would hold the key that signs access tokens,
+/// "remember this device" tokens and invitation tokens of the live server. A restore makes the
+/// server write a new one at its next start.
+pub const TOKEN_KEY_FILE: &str = "rsa_key.pem";
+
 /// What goes into an archive.
 #[derive(Debug)]
 pub struct ArchiveSpec<'a> {
@@ -111,9 +117,10 @@ pub fn create_private_file(path: &Path) -> std::io::Result<File> {
 }
 
 /// Whether a restore puts `data/<name>` back into the data folder. A backup writes the sealed
-/// secrets (`*.sealed`), the Bitwarden token key (`rsa_key.pem`) and the Vaultwarden settings file
-/// (`config.json`) there; any other name is not something a restore installs, so an archive
-/// can't use it to replace the configuration, the database or the next start's files.
+/// secrets (`*.sealed`) and the Vaultwarden settings file (`config.json`) there; any other name is
+/// not something a restore installs, so an archive can't use it to replace the configuration, the
+/// database or the next start's files. The Bitwarden token key ([`TOKEN_KEY_FILE`]) is no longer
+/// written, and one in an older archive is not installed either: the server makes a new one.
 pub fn is_restorable_data_file(name: &str) -> bool {
     let sealed_name = |stem: &str| {
         !stem.is_empty()
@@ -121,8 +128,13 @@ pub fn is_restorable_data_file(name: &str) -> bool {
                 b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'_' | b'.')
             })
     };
-    matches!(name, "rsa_key.pem" | "config.json")
-        || name.strip_suffix(".sealed").is_some_and(sealed_name)
+    name == "config.json" || name.strip_suffix(".sealed").is_some_and(sealed_name)
+}
+
+/// Whether `name` is the Bitwarden token key or its public half, which a backup leaves out: a
+/// restore into a new data folder has none, and the server writes a new key at its next start.
+pub fn is_token_key_file(name: &str) -> bool {
+    name == TOKEN_KEY_FILE || name == "rsa_key.pub.pem"
 }
 
 /// Whether `name` is a file that never goes in an archive and a restore refuses outright: the
@@ -202,7 +214,8 @@ fn data_files(spec: &ArchiveSpec<'_>) -> Result<Vec<PathBuf>, BackupError> {
         // A database file (SQLite beside a PostgreSQL server, a stray .db) is never restored, so it is
         // not written: the database goes in as rows.
         let database = is_never_restored(&name.to_string_lossy());
-        if is_file && name != SERVER_KEY_FILE && !skipped && !temporary && !database {
+        let token_key = is_token_key_file(&name.to_string_lossy());
+        if is_file && name != SERVER_KEY_FILE && !skipped && !temporary && !database && !token_key {
             out.push(path);
         }
     }
@@ -599,6 +612,8 @@ mod tests {
         std::fs::write(data.join("opaque-setup.sealed"), b"sealed-opaque").expect("sealed");
         std::fs::write(data.join("db.sqlite3"), b"the database").expect("db");
         std::fs::write(data.join("db.sqlite3-wal"), b"wal").expect("wal");
+        std::fs::write(data.join("rsa_key.pem"), b"the Bitwarden token key").expect("rsa key");
+        std::fs::write(data.join("rsa_key.pub.pem"), b"its public half").expect("rsa pub");
         std::fs::write(data.join("half.tmp"), b"tmp").expect("tmp");
         std::fs::write(data.join("legacy.db"), b"a stray database").expect("a db");
         std::fs::write(data.join("db.sqlite3-shm"), b"shm").expect("shm");
@@ -674,7 +689,8 @@ mod tests {
         assert!(paths.contains(&"data/opaque-setup.sealed"));
         assert!(paths.contains(&"attachments/ab/abcdef"));
         assert!(paths.contains(&"config/kemlock.toml"));
-        // Never the key, the database itself, its WAL, a temporary file or earlier backups.
+        // Never the key, the database itself, its WAL, a temporary file or earlier backups, nor the
+        // Bitwarden token key: it is a plain file, and a restore makes a new one.
         for left_out in [
             "data/server.key",
             "data/db.sqlite3",
@@ -683,6 +699,8 @@ mod tests {
             "data/old.age",
             "data/legacy.db",
             "data/db.sqlite3-shm",
+            "data/rsa_key.pem",
+            "data/rsa_key.pub.pem",
         ] {
             assert!(!paths.contains(&left_out), "{left_out}");
         }
@@ -1019,7 +1037,6 @@ mod tests {
             "opaque-setup.sealed",
             "token-signing-key.sealed",
             "federation-identity.sealed",
-            "rsa_key.pem",
             "config.json",
         ] {
             assert!(is_restorable_data_file(ok), "{ok}");
@@ -1034,6 +1051,8 @@ mod tests {
             "UPPER.sealed",
             "a b.sealed",
             "rsa_key.pem.bak",
+            "rsa_key.pem",
+            "rsa_key.pub.pem",
         ] {
             assert!(!is_restorable_data_file(other), "{other}");
         }

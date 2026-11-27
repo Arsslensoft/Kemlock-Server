@@ -259,12 +259,7 @@ async fn a_restore_leaves_the_key_files_private() {
     .expect("the restore works");
 
     let mut checked = 0;
-    for name in [
-        "server.key",
-        "opaque-setup.sealed",
-        "token-signing-key.sealed",
-        "rsa_key.pem",
-    ] {
+    for name in ["server.key", "opaque-setup.sealed", "token-signing-key.sealed"] {
         let path = target.data_folder.join(name);
         if let Ok(meta) = std::fs::metadata(&path) {
             let mode = meta.permissions().mode() & 0o777;

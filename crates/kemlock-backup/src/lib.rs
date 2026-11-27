@@ -22,9 +22,10 @@ pub mod manifest;
 
 pub use age::x25519::Identity as AgeIdentity;
 pub use archive::{
-    ArchiveSpec, SERVER_KEY_FILE, UnpackLimits, create_private_file, is_never_restored,
-    is_restorable_config_name, is_restorable_data_file, parse_identity, parse_recipient,
-    read_archive, read_archive_within, verify_unpacked, write_archive,
+    ArchiveSpec, SERVER_KEY_FILE, TOKEN_KEY_FILE, UnpackLimits, create_private_file,
+    is_never_restored, is_restorable_config_name, is_restorable_data_file, is_token_key_file,
+    parse_identity, parse_recipient, read_archive, read_archive_within, verify_unpacked,
+    write_archive,
 };
 pub use destination::{ArchiveInfo, Destination, DestinationConfig, S3Destination};
 pub use error::BackupError;
