@@ -874,7 +874,11 @@ fn the_chains_byte_limit_and_its_end_are_rules_of_the_state() {
     kit.attempt::<Gen>(&admin, remove.clone())
         .1
         .expect("an Admin's removal in the byte reserve");
-    kit.attempt::<Gen>(&owner, policy.clone())
+    // `policy` is already the state's: a record that changes nothing is refused as invalid.
+    let reset = Body::Policies {
+        policies: Policies::default(),
+    };
+    kit.attempt::<Gen>(&owner, reset)
         .1
         .expect("an Owner's record in the byte reserve");
 
