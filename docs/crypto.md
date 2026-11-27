@@ -1327,7 +1327,9 @@ signature covers those), and `bw` items, which have no `kem1` envelope.
   signed-in account. The items a key replacement writes again (the `writes` of the chain append
   route and of `POST /kem/v1/spaces/{id}/key-replacement`) and those a reseal writes through the
   batch route are writes like any other: signed by the account that makes them, with the item's
-  collection bound, and checked the same way. A signed-only space refuses them unsigned.
+  collection bound, and checked the same way. A signed-only space refuses them unsigned on the chain
+  append route and the batch route; the route that replaces keys without a chain still accepts an
+  unsigned re-write from an owner or an admin ("Accepting records").
 - **Stored** with the item's change, as one value `writer (16) ‖ u32be(key version) ‖ signature
   (3373)`, 3393 bytes, and **served back** on sync (`GET /kem/v1/sync`, siblings included) in the
   same three members, so any device can check it.
@@ -2371,12 +2373,26 @@ item's collection, the new envelope (key version, ciphertext and wrapped item ke
 and the item carries `writer`, `writerKeyVersion` and `writeSignature`. The server checks each one
 as it checks any write (the writer is the signed-in account at its current key version, the signature
 verifies under its registered bundle, `invalid-signature` otherwise), before anything is stored, and
-refuses an unsigned `kem1` re-write for a space that takes signed writes only (`422`
+this route refuses an unsigned `kem1` re-write for a space that takes signed writes only (`422`
 `signature-required`). The web vault signs them in the worker, as it does the items its reseal
 writes again (`POST /kem/v1/items:batch`), so a signed-only space is not stuck behind its own key
-replacement and a client that holds an item at its floor takes the re-written revision in. The route
-that replaces keys without a chain (`POST /kem/v1/spaces/{id}/key-replacement`) applies the same rules. The server
-refuses a record unless all of these hold:
+replacement and a client that holds an item at its floor takes the re-written revision in. Only this
+route requires it: the route that replaces keys without a chain
+(`POST /kem/v1/spaces/{id}/key-replacement`) still accepts an unsigned re-write from an owner or
+an admin in a signed-only space, so that no client is left at `423 space-keys-pending` for want of
+one that signs; a re-write there that carries a signature is checked like any other.
+
+**The size of the request.** The signatures make a key replacement about four times larger than
+it was: each re-written item adds a signature of 4.5 KiB in base64url to its envelope, and the whole
+replacement is one request. The route reads 8 MiB from any signed-in caller. Above that it reads up
+to **32 MiB**, and only from a confirmed member of the space who is an owner or an admin, or has
+edit on a collection; anyone else gets `413` as soon as the body passes 8 MiB, and nothing past
+8 MiB is held. A body above 8 MiB also takes a place among the large bodies, of which the server
+handles two at once and one for each account (`429` otherwise: ask again in a moment). 32 MiB is
+room for about 5,000 items of ordinary size (about 6 KiB each with their signatures); a space with
+more live items in the replaced collections can't have its keys replaced from the web vault, which
+says so and sends nothing. The pending-answer route (`POST .../chain/pending/{pending}`) reads its
+body the same way. The server refuses a record unless all of these hold:
 
 - A1. Its bytes are canonical and within "Limits", and its body has its kind's exact shape.
 - A2. `space` is the route's space.
