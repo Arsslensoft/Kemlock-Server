@@ -571,6 +571,18 @@ async fn accept_claims<S: BwStore>(
     let Some(mut doc) = org.member(user).cloned() else {
         return Err(BwError::msg("Error accepting the invitation"));
     };
+    // Accepted already (by this token at registration, or by an earlier call of the client): the
+    // answer is success, and a key for account recovery that came with the password proof is kept.
+    if doc.status == ACCEPTED {
+        if let Some(key) = reset_key.filter(|k| !k.is_empty())
+            && super::recovery::auto_enroll(&org)
+        {
+            doc.reset_password_key = Some(key);
+            app.put_member(&org, user, &doc, user).await?;
+            app.touch_quiet(user).await?;
+        }
+        return Ok(());
+    }
     if doc.status != INVITED {
         return Err(BwError::msg("User already accepted the invitation"));
     }

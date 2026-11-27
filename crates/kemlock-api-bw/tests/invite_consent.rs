@@ -410,9 +410,11 @@ async fn the_mailed_link_accepts_for_the_account_that_signs_in_with_it() {
     let (status, body) = accept_as(&h, Some(&bob), &org, bob_id, &bob_token).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(status_of(&h, &ada, &org, "bob@example.com").await, Some(1));
+    // Accepted already: a second call (a client that retries, or sends its recovery key after) is a
+    // success and changes nothing.
     let (status, body) = accept_as(&h, Some(&bob), &org, bob_id, &bob_token).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    assert_eq!(body["message"], "User already accepted the invitation");
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(status_of(&h, &ada, &org, "bob@example.com").await, Some(1));
     assert_eq!(status_of(&h, &ada, &org, "cat@example.com").await, Some(0));
 
     // A link runs out in five days.
@@ -660,6 +662,21 @@ async fn an_address_that_registers_with_the_invitation_token_is_accepted_with_it
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body["resetPasswordKey"].is_null(), "{body}");
+
+    // The client then accepts with the id the invitation had (the pending one, which the account
+    // replaced) and the password: success, and now the key is kept.
+    let pending_id: UserId = pending.parse().expect("an id");
+    let (status, body) = accept_hashed(&h, None, &org, pending_id, &token, HASH).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, body) = h
+        .json(
+            "GET",
+            &format!("/api/organizations/{org}/users/{member}/reset-password-details"),
+            Some(&eve),
+            None,
+        )
+        .await;
+    assert_eq!(body["resetPasswordKey"], "4.thekeyofwhoeversent");
 }
 
 /// Require SSO is kept in `space_policy_settings`: the Bitwarden route writes it there, what the

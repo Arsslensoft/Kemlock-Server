@@ -451,7 +451,8 @@ pub(crate) fn parse_registration(body: &Value) -> BwResult<Registration> {
         hint: text(body, &["masterPasswordHint"]),
         verification_token: text(body, &["emailVerificationToken"]),
         invite_token: text(body, &["inviteToken"]),
-        org_invite_token: text(body, &["orgInviteToken"]),
+        // Older clients send the token of an organization invitation as `token`.
+        org_invite_token: text(body, &["orgInviteToken", "token"]),
     })
 }
 
