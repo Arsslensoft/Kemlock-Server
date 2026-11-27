@@ -38,7 +38,7 @@ variables
 color
 catch_errors
 
-# Downloads the latest release and checks its SHA-256 against that release's SHA256SUMS, with the
+# Downloads the latest release and checks its SHA-256 and cosign signature, with the
 # helper the install script wrote (kemlock-fetch-release). Nothing is stopped or replaced until it
 # passes; if it fails, the running version stays.
 kemlock_stage_release() {
@@ -46,10 +46,10 @@ kemlock_stage_release() {
   msg_info "Downloading and verifying the release"
   if ! KEMLOCK_VERSION="$(/usr/local/bin/kemlock-fetch-release "$KEMLOCK_STAGE")"; then
     rm -rf "$KEMLOCK_STAGE"
-    msg_error "The release could not be downloaded or did not match SHA256SUMS; the running version is unchanged"
+    msg_error "The release could not be downloaded or did not verify (SHA-256 or cosign signature); the running version is unchanged"
     exit 1
   fi
-  msg_ok "Verified ${APP} ${KEMLOCK_VERSION} (SHA-256 checked)"
+  msg_ok "Verified ${APP} ${KEMLOCK_VERSION} (SHA-256 and cosign signature checked)"
 }
 
 # With the service stopped: puts the verified binaries in place.

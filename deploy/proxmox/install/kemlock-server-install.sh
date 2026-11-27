@@ -34,20 +34,33 @@ container_ip() {
 # latest release archive for this machine and SHA256SUMS, checks the SHA-256, unpacks into the
 # directory it is given and prints the version. It exits non-zero, touching nothing else, if
 # anything fails. The release assets are kemlock-<version>-<target>.tar.gz and SHA256SUMS
-# (.github/workflows/release.yml), each with a cosign bundle (<file>.sigstore.json). When cosign
-# happens to be installed it also checks the archive's signature against the release workflow's
-# identity and fails if that does not verify; cosign is in no Debian 13 package, so otherwise only
-# the SHA-256 is checked. docs/self-hosting.md has the command for checking the signature by hand.
+# (.github/workflows/release.yml), each with a cosign bundle (<file>.sigstore.json). It always
+# checks the archive's cosign signature against the release workflow's identity too, and fails if
+# that does not verify: SHA256SUMS sits in the same release as the archive, so the SHA-256 alone
+# proves nothing about who built it. cosign is in no Debian 13 package, so the helper fetches a
+# pinned cosign release from Sigstore (COSIGN_VERSION below), checks it against that release's
+# cosign_checksums.txt and keeps it in /usr/local/lib/kemlock. docs/self-hosting.md has the command
+# for checking the signature by hand.
 write_fetch_helper() {
   cat <<'EOT' >/usr/local/bin/kemlock-fetch-release
 #!/bin/sh
 # Usage: kemlock-fetch-release STAGE_DIR   (prints the version; Kemlock Server's release verifier)
 set -eu
 REPO="Arsslensoft/Kemlock-Server"
+# The cosign that checks the release signature. Keep it at a release of the cosign major the
+# release workflow signs with (sigstore/cosign-installer in .github/workflows/release.yml).
+COSIGN_VERSION="v3.0.2"
+COSIGN_DIR="/usr/local/lib/kemlock"
 stage="${1:?usage: kemlock-fetch-release STAGE_DIR}"
 case "$(uname -m)" in
-x86_64 | amd64) target="x86_64-unknown-linux-musl" ;;
-aarch64 | arm64) target="aarch64-unknown-linux-musl" ;;
+x86_64 | amd64)
+  target="x86_64-unknown-linux-musl"
+  cosign_arch="amd64"
+  ;;
+aarch64 | arm64)
+  target="aarch64-unknown-linux-musl"
+  cosign_arch="arm64"
+  ;;
 *)
   echo "no Kemlock Server release binary for $(uname -m)" >&2
   exit 1
@@ -76,19 +89,38 @@ if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
   echo "SHA-256 of ${asset} does not match SHA256SUMS" >&2
   exit 1
 fi
-# The signature, when cosign is here to check it: the archive must be signed by this repository's
-# release workflow at this tag (a short-lived Fulcio certificate, logged in Rekor).
-if command -v cosign >/dev/null 2>&1; then
-  curl -fsSL -o "${tmp}/${asset}.sigstore.json" "${base}/${asset}.sigstore.json"
-  repo_re="$(printf '%s' "$REPO" | sed 's/\./\\./g')"
-  tag_re="$(printf '%s' "$tag" | sed 's/\./\\./g')"
-  if ! cosign verify-blob "${tmp}/${asset}" \
-    --bundle "${tmp}/${asset}.sigstore.json" \
-    --certificate-identity-regexp "^https://github\\.com/${repo_re}/\\.github/workflows/release\\.yml@refs/tags/${tag_re}\$" \
-    --certificate-oidc-issuer https://token.actions.githubusercontent.com >/dev/null 2>&1; then
-    echo "the cosign signature of ${asset} does not verify" >&2
+# cosign, from Sigstore's pinned release, checked against that release's checksum file. It is kept
+# (by version) so an update does not download it again.
+cosign="${COSIGN_DIR}/cosign-${COSIGN_VERSION}"
+if [ ! -x "$cosign" ]; then
+  cosign_base="https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}"
+  cosign_asset="cosign-linux-${cosign_arch}"
+  curl -fsSL -o "${tmp}/${cosign_asset}" "${cosign_base}/${cosign_asset}"
+  curl -fsSL -o "${tmp}/cosign_checksums.txt" "${cosign_base}/cosign_checksums.txt"
+  cosign_expected="$(awk -v a="$cosign_asset" '$2 == a || $2 == "*" a {print $1; exit}' "${tmp}/cosign_checksums.txt")"
+  cosign_actual="$(sha256sum "${tmp}/${cosign_asset}" | awk '{print $1}')"
+  if [ -z "$cosign_expected" ] || [ "$cosign_expected" != "$cosign_actual" ]; then
+    echo "SHA-256 of ${cosign_asset} ${COSIGN_VERSION} does not match its release's checksums" >&2
     exit 1
   fi
+  mkdir -p "$COSIGN_DIR"
+  chmod 0755 "$COSIGN_DIR"
+  cp "${tmp}/${cosign_asset}" "${cosign}.new"
+  chmod 0755 "${cosign}.new"
+  mv "${cosign}.new" "$cosign"
+fi
+# The signature: the archive must be signed by this repository's release workflow at this tag (a
+# short-lived Fulcio certificate, logged in Rekor). No bundle, or one that does not verify, stops
+# the install or update.
+curl -fsSL -o "${tmp}/${asset}.sigstore.json" "${base}/${asset}.sigstore.json"
+repo_re="$(printf '%s' "$REPO" | sed 's/\./\\./g')"
+tag_re="$(printf '%s' "$tag" | sed 's/\./\\./g')"
+if ! "$cosign" verify-blob "${tmp}/${asset}" \
+  --bundle "${tmp}/${asset}.sigstore.json" \
+  --certificate-identity-regexp "^https://github\\.com/${repo_re}/\\.github/workflows/release\\.yml@refs/tags/${tag_re}\$" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com >/dev/null 2>&1; then
+  echo "the cosign signature of ${asset} does not verify" >&2
+  exit 1
 fi
 mkdir -p "${tmp}/unpacked"
 tar -xzf "${tmp}/${asset}" -C "${tmp}/unpacked"
@@ -108,7 +140,7 @@ install_release() {
     msg_error "Could not download and verify Kemlock Server"
     exit 1
   fi
-  msg_ok "Downloaded Kemlock Server ${version} (SHA-256 checked)"
+  msg_ok "Downloaded Kemlock Server ${version} (SHA-256 and cosign signature checked)"
 
   msg_info "Installing Kemlock Server"
   install -d -m 0755 "${APP_DIR}/bin"
