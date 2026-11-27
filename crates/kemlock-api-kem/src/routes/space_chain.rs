@@ -344,6 +344,7 @@ impl From<AppendError> for Problem {
                 detail.map_or_else(|| error.reason.as_str().to_owned(), str::to_owned),
             ),
             AppendError::Invalid(why) => bad(why),
+            AppendError::JoinRefused(refusal) => Problem::from(refusal),
             AppendError::Quota(why) => Problem::new(
                 StatusCode::TOO_MANY_REQUESTS,
                 "space-chain-quota",

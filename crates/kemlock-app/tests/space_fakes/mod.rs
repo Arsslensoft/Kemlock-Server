@@ -45,6 +45,7 @@ struct Inner {
     done: BTreeSet<uuid::Uuid>,
     held: BTreeSet<ItemId>,
     recovery: BTreeMap<(SpaceId, UserId), RecoveryBox>,
+    policies: BTreeMap<SpaceId, kemlock_domain::policies::SpacePolicies>,
 }
 
 /// `SpaceRepo` over maps. Items live in `I`, the item store of the test's world, so a space item
@@ -119,6 +120,9 @@ fn apply_in(g: &mut Inner, c: SpaceChanges) {
     for copy in c.key_copies {
         g.copies.insert((copy.collection, copy.user), copy);
     }
+    if let Some((policies, _by)) = c.policies {
+        g.policies.insert(space, policies);
+    }
 }
 
 /// Whether `c` names a collection or group of another space, or a row that says it is another
@@ -172,6 +176,16 @@ impl<I> FakeSpaces<I> {
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().expect("the spaces lock isn't poisoned")
+    }
+
+    /// Sets the policies the join check of the use cases reads for `space`.
+    pub(crate) fn set_policies(&self, space: SpaceId, policies: kemlock_domain::policies::SpacePolicies) {
+        self.lock().policies.insert(space, policies);
+    }
+
+    /// The policies stored for `space`, as a chain append or `set_policies` left them.
+    pub(crate) fn policies_of(&self, space: SpaceId) -> Option<kemlock_domain::policies::SpacePolicies> {
+        self.lock().policies.get(&space).cloned()
     }
 
     fn state_of(g: &Inner, id: SpaceId) -> Option<SpaceState> {
@@ -351,6 +365,17 @@ impl<I: ItemStore> SpaceRepo for FakeSpaces<I> {
         g.item_collections.insert(item.id, collection);
         release_written(&mut g, &item, Some(collection));
         Ok(item)
+    }
+
+    async fn join_policies_of(
+        &self,
+        spaces: &[SpaceId],
+    ) -> Result<kemlock_domain::policies::PoliciesBySpace, StoreError> {
+        let g = self.lock();
+        Ok(spaces
+            .iter()
+            .filter_map(|s| g.policies.get(s).map(|p| (*s, p.clone())))
+            .collect())
     }
 
     async fn require_sso_of(&self, spaces: &[SpaceId]) -> Result<Vec<SpaceId>, StoreError> {

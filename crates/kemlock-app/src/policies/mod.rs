@@ -24,7 +24,7 @@ pub mod rules;
 pub mod view;
 
 pub use error::PoliciesError;
-pub use guard::JoinGuard;
+pub use guard::{JoinGuard, check_join, refusal_in_spaces};
 pub use ports::{PolicyRepo, StoredPolicies};
 pub use rules::MemberSendRules;
 pub use view::{GetPolicies, MyPolicies, SetPolicies};

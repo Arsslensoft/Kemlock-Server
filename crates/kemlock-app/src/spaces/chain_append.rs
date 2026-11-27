@@ -22,7 +22,8 @@ use super::ports::{SpaceItemInfo, SpaceRepo};
 use super::support::record;
 use crate::authenticate::Actor;
 use crate::dedup::TagStore;
-use crate::ports::{Clock, EventLog, ItemStore, Notifier, StoreError, UserRepo};
+use crate::policies::{PoliciesError, check_join};
+use crate::ports::{Clock, EventLog, ItemStore, Notifier, StoreError, TwoFactorRepo, UserRepo};
 use kemlock_crypto::space_chain::{
     self as sc, Body, ChainError, KeyRef, Limits, NameTarget, Reason, Record, SignedRecord,
 };
@@ -85,6 +86,9 @@ pub enum AppendError {
     Invalid(&'static str),
     /// The member has signed as many records lately as one member may (`429`).
     Quota(&'static str),
+    /// A `confirm` would bring in a member the space's policies (or those of a space they are in)
+    /// refuse: two-step login, one space per member (`403`).
+    JoinRefused(PoliciesError),
     /// The records are fine but aren't the queued change they were sent to answer (`422`).
     Mismatch(&'static str),
     /// The request holds an item that isn't in a collection whose key one of its `keys` records
@@ -151,7 +155,7 @@ pub struct AppendChain<R, U, V, C, I, T, N> {
 impl<R, U, V, C, I, T, N> AppendChain<R, U, V, C, I, T, N>
 where
     R: SpaceRepo + SpaceChainRepo,
-    U: UserRepo,
+    U: UserRepo + TwoFactorRepo,
     V: EventLog,
     C: Clock,
     I: ItemStore,
@@ -388,6 +392,19 @@ where
                             Reason::NotAllowed,
                             "a member is confirmed only after they accepted the invitation",
                         ));
+                    }
+                    // The join policies, which the route's guard can't see in a record: a member
+                    // the chain brings in (not a new key version of a confirmed one) is checked
+                    // as the confirm route checks one.
+                    if state.confirmed(member).is_none() {
+                        let role = applied
+                            .state
+                            .members
+                            .get(member)
+                            .map_or(SpaceRole::Member, |m| role_of(m.role));
+                        check_join(&self.spaces, &self.users, user_of(member), space, role)
+                            .await
+                            .map_err(AppendError::JoinRefused)?;
                     }
                 }
                 _ => {}

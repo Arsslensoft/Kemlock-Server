@@ -311,6 +311,13 @@ impl SpaceRepo for SqlStore {
         finish(txn, outcome, "a failed batch of items").await
     }
 
+    async fn join_policies_of(
+        &self,
+        spaces: &[SpaceId],
+    ) -> Result<kemlock_domain::policies::PoliciesBySpace, StoreError> {
+        kemlock_app::policies::PolicyRepo::policies_of_spaces(self, spaces).await
+    }
+
     async fn is_chained(&self, space: SpaceId) -> Result<bool, StoreError> {
         self.space_has_chain(space).await
     }

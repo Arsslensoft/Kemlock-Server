@@ -600,3 +600,55 @@ async fn a_chained_space_takes_its_policies_from_its_chain_only() {
         .await
         .expect("an unchained space takes the route");
 }
+
+#[tokio::test]
+async fn a_restore_and_a_demotion_meet_the_join_policies_again() {
+    use kemlock_domain::spaces::{CustomPermissions, SpaceError};
+    use kemlock_app::spaces::SpacesError;
+
+    let p = Policies::new();
+    let (space, sam) = p.space("sam@example.org").await;
+    let ana = p.w.user("ana@example.org").await;
+    let lee = p.w.user("lee@example.org").await;
+    p.join(space, sam, ana, SpaceRole::Member).await;
+    p.join(space, sam, lee, SpaceRole::Admin).await;
+
+    // Ana is revoked; the space then asks for two-step login, which she has not set up.
+    p.w.offboard()
+        .revoke(&actor(sam), space, ana)
+        .await
+        .expect("revoked");
+    p.w.spaces.set_policies(
+        space,
+        SpacePolicies {
+            two_step: true,
+            ..SpacePolicies::default()
+        },
+    );
+    let refused = p.w.offboard().restore(&actor(sam), space, ana).await;
+    assert!(
+        matches!(refused, Err(SpacesError::Rule(SpaceError::Forbidden(_)))),
+        "{refused:?}"
+    );
+    p.enrol_two_step(ana, true).await;
+    p.w.offboard()
+        .restore(&actor(sam), space, ana)
+        .await
+        .expect("restored once she has two-step login");
+
+    // An admin is exempt; taking the role away makes them a member the policy binds.
+    let demoted = p
+        .w
+        .change_role()
+        .execute(&actor(sam), space, lee, SpaceRole::Member, CustomPermissions::NONE)
+        .await;
+    assert!(
+        matches!(demoted, Err(SpacesError::Rule(SpaceError::Forbidden(_)))),
+        "{demoted:?}"
+    );
+    p.enrol_two_step(lee, true).await;
+    p.w.change_role()
+        .execute(&actor(sam), space, lee, SpaceRole::Member, CustomPermissions::NONE)
+        .await
+        .expect("demoted once they have two-step login");
+}

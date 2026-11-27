@@ -4,7 +4,7 @@
 
 use super::chain::{ExternalChangeMode, PendingExternal};
 use crate::ports::StoreError;
-use kemlock_domain::policies::SpacePolicies;
+use kemlock_domain::policies::{PoliciesBySpace, SpacePolicies};
 use kemlock_domain::spaces::{
     Collection, CollectionGrant, CollectionId, Grantee, Group, GroupId, KeyCopy, Member, Space,
     SpaceState,
@@ -196,6 +196,16 @@ pub trait SpaceRepo: Send + Sync {
         &self,
         replacement: KeyReplacement,
     ) -> impl Future<Output = Result<Vec<Item>, StoreError>> + Send;
+
+    /// The policy settings of these spaces, from `space_policy_settings`, for the join check of a
+    /// use case that holds no policy store. A space with none set is not in the map, which reads as
+    /// everything off. A store without policies keeps this default.
+    fn join_policies_of(
+        &self,
+        _spaces: &[SpaceId],
+    ) -> impl Future<Output = Result<PoliciesBySpace, StoreError>> + Send {
+        async { Ok(PoliciesBySpace::new()) }
+    }
 
     /// Whether the space has a chain: its members, roles, keys and policies then change only by
     /// signed records (docs/crypto.md, "Space chain"). A store without chains keeps this default.
