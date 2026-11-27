@@ -18,6 +18,11 @@ use crate::publish::entity_key;
 use crate::replicate::{Channel, FedStore, Replica};
 use kemlock_domain::{Owner, ServerId, UserId};
 
+/// The most offers (not yet accepted) this server keeps from one peer. A paired peer can offer any
+/// vault id it likes; past this its offers are answered as before and not kept, so it can't fill the
+/// table, or the admin's list, with them.
+pub const MAX_OFFERS_PER_PEER: usize = 256;
+
 /// Whether the account's bundle parses and carries a valid signature of its own `sig1` key.
 fn bundle_is_signed(account: &MemberAccount) -> bool {
     kemlock_crypto::bundle::Bundle::from_bytes(&account.public_bundle)
@@ -127,6 +132,17 @@ impl<S: FedStore> Replica<S> {
                 Ok(existing.state)
             }
             _ => {
+                let kept = self
+                    .store
+                    .list_offers()
+                    .await?
+                    .iter()
+                    .filter(|o| o.home == home && o.state != OfferState::Accepted)
+                    .count();
+                if kept >= MAX_OFFERS_PER_PEER {
+                    tracing::warn!(%peer, "a peer has more offers waiting than this server keeps: not kept");
+                    return Ok(OfferState::Pending);
+                }
                 self.store
                     .put_offer(&StoredOffer {
                         vault,
@@ -724,6 +740,43 @@ mod tests {
             .expect("a peer");
         assert_eq!(a.publish_members(space).await.expect("published"), 1);
         assert_eq!(published(&a).await, 1);
+    }
+
+    #[tokio::test]
+    async fn a_peer_cannot_fill_the_list_of_offers() {
+        use crate::extra::FedAdminRepo as _;
+        let ia = identity(1, NOW, &Suite::IMPLEMENTED);
+        let ib = identity(2, NOW, &Suite::IMPLEMENTED);
+        let (home, me) = (ia.server, ib.server);
+        let replica = Replica::new(MemoryStore::new(me), Arc::new(ib));
+        replica.pin_peer(&ia.descriptor, NOW).await.expect("pin");
+        replica.store.set_owned(Owner::User(UserId::random()), false);
+        for _ in 0..MAX_OFFERS_PER_PEER {
+            let vault = Owner::User(UserId::random());
+            replica.store.set_owned(vault, false);
+            assert_eq!(
+                replica.receive_offer(home, vault, home, 1, &[me], NOW).await,
+                Ok(OfferState::Pending)
+            );
+        }
+        assert_eq!(
+            replica.store.list_offers().await.expect("list").len(),
+            MAX_OFFERS_PER_PEER
+        );
+        // One more is answered the same way and not kept.
+        let one_more = Owner::User(UserId::random());
+        replica.store.set_owned(one_more, false);
+        assert_eq!(
+            replica
+                .receive_offer(home, one_more, home, 1, &[me], NOW)
+                .await,
+            Ok(OfferState::Pending)
+        );
+        assert_eq!(replica.store.offer(one_more).await, Ok(None));
+        assert_eq!(
+            replica.store.list_offers().await.expect("list").len(),
+            MAX_OFFERS_PER_PEER
+        );
     }
 
     #[tokio::test]
