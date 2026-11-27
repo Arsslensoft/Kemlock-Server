@@ -1177,6 +1177,28 @@ pub struct Anchor {
     pub seq: u64,
     pub epoch: u32,
     pub links: Vec<Hash>,
+    /// The Owners of the state the device accepted at `seq`, when it keeps that state. A `fence`
+    /// that parts the served chain from the anchor is taken only when its signer is one of them, or
+    /// the device holds the promotion it names: an Owner the device's own records removed or
+    /// demoted can't sign a fence that drops those records.
+    pub owners: Option<BTreeSet<Id>>,
+    /// `(home, promotion)` of each federation promotion record the device holds and verified: the
+    /// `home` a `fence` names and `SHA-256` of the promotion record's envelope.
+    pub promotions: Vec<(Id, Hash)>,
+}
+
+impl Anchor {
+    /// Whether the device lets this `fence` part the chain from its anchor.
+    fn vouches_for(&self, fence: &Record) -> bool {
+        let Body::Fence { home, promotion } = &fence.body else {
+            return false;
+        };
+        self.promotions.contains(&(*home, *promotion))
+            || self
+                .owners
+                .as_ref()
+                .is_some_and(|owners| owners.contains(&fence.by))
+    }
 }
 
 /// A chain that verified.
@@ -1244,7 +1266,8 @@ pub(crate) fn verify_chain_in<B: Backend>(
                 .and_then(|i| anchor.links.get(i))
             && *kept != link_in::<B>(&signed.entry)
         {
-            if record.kind() != Kind::Fence {
+            // A divergence is allowed only at a `fence` the device vouches for (M17).
+            if record.kind() != Kind::Fence || !anchor.vouches_for(record) {
                 return Err(ChainError {
                     seq: Some(record.seq),
                     reason: Reason::Forked,

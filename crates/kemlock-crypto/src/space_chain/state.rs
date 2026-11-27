@@ -164,6 +164,15 @@ impl State {
             .filter(|m| m.status == Status::Confirmed)
     }
 
+    /// Every member who is an Owner now.
+    pub fn owners(&self) -> BTreeSet<Id> {
+        self.members
+            .iter()
+            .filter(|(_, m)| m.status != Status::Removed && m.role == Role::Owner)
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
     pub fn is_owner(&self, id: &Id) -> bool {
         self.members
             .get(id)

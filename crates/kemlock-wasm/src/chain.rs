@@ -19,7 +19,7 @@
 //!   operations (`open_space`, `seal_space_key_to` and the rest in `spaces.rs`): a page that
 //!   skipped the chain can't open or seal a key the chain doesn't vouch for.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use kemlock_crypto::{
     bundle::{Bundle, fingerprint_groups},
@@ -54,6 +54,24 @@ pub(crate) struct AnchorIn {
     seq: u64,
     epoch: u32,
     links: Vec<String>,
+    /// The Owners of the state the page accepted at `seq` (uuid text), when the page kept them: a
+    /// `fence` that parts the chain from the anchor is taken only when an Owner of these signed it,
+    /// or the page holds the promotion it names. The view of a verified chain gives them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    owners: Option<Vec<String>>,
+    /// Promotion records the page holds and verified: the new home's id and the hash of the record.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    promotions: Vec<PromotionIn>,
+}
+
+/// A promotion record the page holds and verified.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PromotionIn {
+    /// The new home's server id (uuid text).
+    home: String,
+    /// `SHA-256` of the promotion record's envelope (base64url).
+    promotion: String,
 }
 
 impl AnchorIn {
@@ -67,10 +85,34 @@ impl AnchorIn {
                     .map_err(|_: Vec<u8>| Error::Invalid)
             })
             .collect::<Result<Vec<Hash>, Error>>()?;
+        let owners = self
+            .owners
+            .as_ref()
+            .map(|owners| {
+                owners
+                    .iter()
+                    .map(|owner| ids::parse_uuid(owner))
+                    .collect::<Result<BTreeSet<Id>, Error>>()
+            })
+            .transpose()?;
+        let promotions = self
+            .promotions
+            .iter()
+            .map(|p| -> Result<(Id, Hash), Error> {
+                Ok((
+                    ids::parse_uuid(&p.home)?,
+                    b64::decode(&p.promotion)?
+                        .try_into()
+                        .map_err(|_: Vec<u8>| Error::Invalid)?,
+                ))
+            })
+            .collect::<Result<Vec<(Id, Hash)>, Error>>()?;
         Ok(Anchor {
             seq: self.seq,
             epoch: self.epoch,
             links,
+            owners,
+            promotions,
         })
     }
 }
@@ -254,6 +296,9 @@ pub(crate) struct ChainView {
     epoch: u32,
     /// The link of every record, base64url: what the page stores as its anchor.
     links: Vec<String>,
+    /// The Owners of the state, uuid text: stored with the anchor, so a later unlock can tell a
+    /// `fence` signed by an Owner it removed from one signed by an Owner it still has.
+    owners: Vec<String>,
     /// Whether first contact is done, so keys may be opened.
     trusted: bool,
     /// What to compare, while `trusted` is false.
@@ -329,6 +374,7 @@ fn view_of(held: &HeldChain, me: &Id) -> ChainView {
         }),
         epoch: state.epoch,
         links: held.links.iter().map(text_of).collect(),
+        owners: state.owners().iter().map(uuid).collect(),
         trusted: held.trusted,
         first_contact: (!held.trusted).then(|| held.contact.clone()),
         divergence: held.divergence,
@@ -382,6 +428,7 @@ fn unchained() -> ChainView {
         head: None,
         epoch: 0,
         links: Vec::new(),
+        owners: Vec::new(),
         trusted: true,
         first_contact: None,
         divergence: None,
@@ -620,13 +667,24 @@ impl Session {
                 seq: head.seq,
                 epoch: held.state.epoch,
                 links: held.links.clone(),
+                owners: Some(held.state.owners()),
+                promotions: Vec::new(),
             })
         });
-        let effective = match (given.as_ref(), held_anchor) {
+        let mut effective = match (given.as_ref(), held_anchor) {
             (Some(a), Some(h)) if h.seq > a.seq => Some(h),
             (Some(a), _) => Some(a.clone()),
             (None, h) => h,
         };
+        // An anchor the page kept without its Owners takes them from the state this unlock holds at
+        // the same record, when it holds one.
+        if let (Some(anchor), Some(held)) = (effective.as_mut(), before)
+            && anchor.owners.is_none()
+            && held.state.head.is_some_and(|head| head.seq == anchor.seq)
+            && held.links == anchor.links
+        {
+            anchor.owners = Some(held.state.owners());
+        }
         let previously_trusted = before.is_some_and(|held| held.trusted);
 
         let verified = match verify_chain(space, &chain, effective.as_ref()) {
@@ -786,6 +844,8 @@ mod tests {
             seq: 1,
             epoch: 1,
             links: vec![b64::encode(&[7u8; 32]), b64::encode(&[8u8; 32])],
+            owners: None,
+            promotions: Vec::new(),
         };
         let anchor = good.to_anchor().expect("an anchor");
         assert_eq!(anchor.seq, 1);
@@ -794,12 +854,16 @@ mod tests {
             seq: 0,
             epoch: 1,
             links: vec![b64::encode(&[7u8; 31])],
+            owners: None,
+            promotions: Vec::new(),
         };
         assert_eq!(short.to_anchor().map(|_| ()), Err(Error::Invalid));
         let junk = AnchorIn {
             seq: 0,
             epoch: 1,
             links: vec!["not base64!".to_owned()],
+            owners: None,
+            promotions: Vec::new(),
         };
         assert_eq!(junk.to_anchor().map(|_| ()), Err(Error::Invalid));
     }

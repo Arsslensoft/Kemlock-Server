@@ -1593,7 +1593,9 @@ give the same link. The **head** of a chain is `(seq, link)` of its last record.
 
 **The anchor.** For each space, a device keeps, sealed in its vault's encrypted store, the
 **anchor**: the `seq` and `epoch` of the last record it accepted, and the link of every record it
-accepted, from `seq` 0 to that one (32 bytes each, at most 2 MiB). The anchor never goes back,
+accepted, from `seq` 0 to that one (32 bytes each, at most 2 MiB), and the Owners of the state it
+accepted there (the wasm module's view of a verified chain lists them as `owners`; "Epochs" says what
+they are for). The anchor never goes back,
 except by a fence ("Epochs"). A device that lost its anchor can't rebuild it from the server: it
 starts again from "First contact".
 
@@ -2064,8 +2066,16 @@ after the promotion, under the old epoch, never become part of the new chain: a 
 accepted them drops them when it meets the fence ("Verification", step 1).
 
 A client that holds the promotion record for the fence's epoch, through the sync plan, checks that
-its hash is `promotion` and its new home is `home`, and refuses the chain as **bad epoch** if not. A
-client that doesn't hold it accepts the Owner's fence.
+its hash is `promotion` and its new home is `home`, and refuses the chain as **bad epoch** if not.
+
+A fence that parts the served chain from the chain a device accepted (a **divergence**, "Verification",
+step 1) is not taken on an Owner's signature alone: the Owner could be one the device's own records
+removed or demoted, and a server that is not the home could serve the chain up to that removal and
+then a fence the removed Owner signed, followed by records of the Owner's choosing. Removing an
+Owner is final. So a divergence is taken only when the device holds and verified the promotion
+record the fence names (its `home` and `promotion` are a pair the device holds), or when the fence's
+signer is an Owner in the state the device accepted at its anchor (the device keeps its Owners with
+the anchor). A device that has neither refuses the chain as **forked**.
 
 ### Removal and replacement
 
@@ -2164,8 +2174,10 @@ follow the same order and names.
 1. **For each record**, in the order served, starting from the empty state `S`:
    1. *Anchor.* If the anchor has a link at this `seq` and it differs from this record's link, and no
       earlier record differed, this `seq` is the **divergence**. A divergence is allowed only at a
-      `fence`; at any other kind the chain is refused as **forked**. After a divergence, the anchor
-      isn't compared again.
+      `fence` the device vouches for (it holds the promotion the fence names, or the fence's signer is an
+      Owner of the state it accepted at its anchor; "Epochs"); at any other kind, or at a fence it
+      doesn't vouch for, the chain is refused as **forked**. After a divergence, the anchor isn't
+      compared again.
    2. *Position.* `space` is the space being verified (wrong space). `seq` is `S`'s head `seq` plus
       one, or `0` when `S` has no head (bad sequence). `prev` is `S`'s head link, or 32 zero bytes
       (bad link). `epoch` follows "Epochs" (bad epoch). The kind is `create` exactly when `seq` is `0`
@@ -2557,7 +2569,11 @@ no chain there. In words:
 9. **Fence and dropped records.** A device anchored at `seq` 12, epoch 1, served a chain whose `seq`
    10 is a `fence` to epoch 2 and whose `seq` 0 to 9 match its anchor: accepted, and 10 to 12 of its
    own are dropped. If its link at 9 differs: forked. A device anchored at epoch 2 served the old
-   home's epoch-1 records past the fence: forked.
+   home's epoch-1 records past the fence: forked. The fence's signer is an Owner in the device's
+   own state (or the device holds the promotion): accepted. The device's records 10 to 12 removed the
+   signer as an Owner and it holds no promotion, or it keeps no Owners with its anchor and holds no
+   promotion: forked. In the vectors, an `anchor` may also carry `owners` (uuids) and `promotions`
+   (`home` and `promotion` hash pairs).
 10. **The only Owner replaces their keys.** A `rekey` with a valid cosignature is accepted; the next
     record signed with the new key is accepted, and one signed with the old key is a bad signature. A
     `rekey` without a cosignature is malformed; with a cosignature by another key, a bad signature; to

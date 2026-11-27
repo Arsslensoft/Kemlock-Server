@@ -319,14 +319,37 @@ fn chain_case(case: &Case, valid: &Case) -> Value {
         Value::Array(case.chain[prefix..].iter().map(wire).collect()),
     );
     if let Some(anchor) = &case.anchor {
-        m.insert(
-            "anchor".into(),
-            json!({
-                "seq": anchor.seq,
-                "epoch": anchor.epoch,
-                "links": anchor.links.iter().map(|l| hx(l)).collect::<Vec<_>>(),
-            }),
+        let mut a = Map::new();
+        a.insert("seq".into(), json!(anchor.seq));
+        a.insert("epoch".into(), json!(anchor.epoch));
+        a.insert(
+            "links".into(),
+            json!(anchor.links.iter().map(|l| hx(l)).collect::<Vec<_>>()),
         );
+        // The Owners the device kept with its anchor, when it kept them.
+        if let Some(owners) = &anchor.owners {
+            a.insert(
+                "owners".into(),
+                json!(owners.iter().map(uuid_text).collect::<Vec<_>>()),
+            );
+        }
+        // The promotion records the device holds and verified.
+        if !anchor.promotions.is_empty() {
+            a.insert(
+                "promotions".into(),
+                json!(
+                    anchor
+                        .promotions
+                        .iter()
+                        .map(|(home, promotion)| json!({
+                            "home": uuid_text(home),
+                            "promotion": hx(promotion),
+                        }))
+                        .collect::<Vec<_>>()
+                ),
+            );
+        }
+        m.insert("anchor".into(), Value::Object(a));
     }
     let expect = match case.expect {
         Expect::Accepted {
@@ -591,6 +614,32 @@ mod check {
                         .expect("32 bytes")
                 })
                 .collect(),
+            owners: a.get("owners").map(|owners| {
+                owners
+                    .as_array()
+                    .expect("owners")
+                    .iter()
+                    .map(|o| parse_uuid(o.as_str().expect("a uuid")).expect("a uuid"))
+                    .collect()
+            }),
+            promotions: a
+                .get("promotions")
+                .map(|list| {
+                    list.as_array()
+                        .expect("promotions")
+                        .iter()
+                        .map(|p| {
+                            (
+                                parse_uuid(s(p, "home")).expect("a uuid"),
+                                hex::decode(s(p, "promotion"))
+                                    .expect("hex")
+                                    .try_into()
+                                    .expect("32 bytes"),
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
         });
         let verdict = verify_chain_in::<B>(&space, &chain, anchor.as_ref());
         let expect = &case["expect"];
