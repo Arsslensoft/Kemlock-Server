@@ -428,6 +428,12 @@ async fn step_up_codes_and_the_second_step_at_sign_in_keep_separate_counts() {
     let step_up =
         SecondStepGuard::reserve_step_up(&rig.app.store, root.id, rig.app.now(), 5, 900).await;
     assert_eq!(step_up, Ok(Reservation::Granted));
+    // The sign-in count is untouched: its one-second wait ran out with the clock above, so the
+    // next try is granted (the sixth, which arms the next wait), and the one after waits. A
+    // cleared count would grant both.
+    let sign_in =
+        SecondStepGuard::reserve_second_step(&rig.app.store, root.id, rig.app.now(), 5, 900).await;
+    assert_eq!(sign_in, Ok(Reservation::Granted));
     let sign_in =
         SecondStepGuard::reserve_second_step(&rig.app.store, root.id, rig.app.now(), 5, 900).await;
     assert!(matches!(sign_in, Ok(Reservation::Wait(_))), "{sign_in:?}");
