@@ -37,6 +37,7 @@ impl From<StoreError> for SpacesError {
             StoreError::Conflict { item, current } => SpacesError::StaleItem { item, current },
             StoreError::Duplicate => SpacesError::Duplicate,
             StoreError::NotFound => SpacesError::NotFound,
+            stale @ StoreError::StaleKeyVersion { .. } => SpacesError::Store(stale.to_string()),
             StoreError::Backend(message) if message == super::ports::OWNER_REQUIRED => {
                 SpacesError::Rule(SpaceError::LastOwner)
             }

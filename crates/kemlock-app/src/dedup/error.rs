@@ -40,6 +40,9 @@ impl From<StoreError> for DedupError {
             StoreError::Conflict { item, current } => DedupError::StaleItem { item, current },
             StoreError::NotFound => DedupError::NotFound,
             StoreError::Duplicate => DedupError::Invalid("that already exists"),
+            StoreError::StaleKeyVersion { .. } => {
+                DedupError::Invalid("the account's keys changed: unlock again")
+            }
             StoreError::Backend(message) => DedupError::Store(message),
         }
     }

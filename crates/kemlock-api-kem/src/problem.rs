@@ -182,6 +182,12 @@ impl From<AppError> for Problem {
                 "already-exists",
                 "That already exists",
             ),
+            AppError::StaleKeyVersion { current } => Problem::new(
+                StatusCode::CONFLICT,
+                "key-version-stale",
+                "The account's keys changed since this device unlocked",
+            )
+            .with("currentKeyVersion", json!(current)),
             AppError::FullSyncRequired => Problem::new(
                 StatusCode::GONE,
                 "full-sync-required",
