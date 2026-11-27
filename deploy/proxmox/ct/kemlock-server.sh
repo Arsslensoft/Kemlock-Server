@@ -4,14 +4,19 @@
 export COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/Arsslensoft/Kemlock-Server/main/deploy/proxmox}"
 # build.func runs as root on the Proxmox host. Once both pin values below are set, it is fetched
 # from that one commit of community-scripts/core and checked against its SHA-256, never from a
-# moving branch, and the script stops if it cannot be fetched or does not match. While either is
+# moving branch, and the script stops if it cannot be fetched or does not match. A pin with only one
+# value, or a malformed one, stops the script. While both are
 # empty, the script takes build.func from community-scripts/core `main` as it did before, and says
 # loudly that it is not pinned. To pin: pick a commit of community-scripts/core, read its
 # core/build.func, and set both values (`sha256sum build.func`). Dropped when submitting upstream,
 # like the line above (see deploy/proxmox/README.md).
 _cs_core_commit=""
 _cs_core_sha256=""
-if [[ "$_cs_core_commit" =~ ^[0-9a-f]{40}$ && "$_cs_core_sha256" =~ ^[0-9a-f]{64}$ ]]; then
+if [[ -n "$_cs_core_commit" || -n "$_cs_core_sha256" ]] && [[ ! "$_cs_core_commit" =~ ^[0-9a-f]{40}$ || ! "$_cs_core_sha256" =~ ^[0-9a-f]{64}$ ]]; then
+  # Half a pin, or a mistyped one, is an error, never a silent fall back to the unpinned branch.
+  echo "kemlock-server: the build.func pin is malformed: _cs_core_commit must be 40 lowercase hex digits and _cs_core_sha256 64, and both must be set (or both left empty); stopping" >&2
+  exit 1
+elif [[ -n "$_cs_core_commit" ]]; then
   # Pinned: a local checkout is used only when COMMUNITY_SCRIPTS_CORE_DIR names it.
   _cs_boot="${COMMUNITY_SCRIPTS_CORE_DIR:+${COMMUNITY_SCRIPTS_CORE_DIR}/core/build.func}"
   if [[ -n "$_cs_boot" && -r "$_cs_boot" ]]; then
