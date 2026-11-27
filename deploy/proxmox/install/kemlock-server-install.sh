@@ -51,6 +51,11 @@ REPO="Arsslensoft/Kemlock-Server"
 # release workflow signs with (sigstore/cosign-installer in .github/workflows/release.yml).
 COSIGN_VERSION="v3.0.2"
 COSIGN_DIR="/usr/local/lib/kemlock"
+# TODO(owner): the SHA-256 of cosign-linux-amd64 and cosign-linux-arm64 for COSIGN_VERSION. Set
+# them and they replace the checksum file that sits beside the binary on the same release page;
+# while one is empty, the run warns. No network was available to read them when this was written.
+COSIGN_SHA256_AMD64=""
+COSIGN_SHA256_ARM64=""
 stage="${1:?usage: kemlock-fetch-release STAGE_DIR}"
 case "$(uname -m)" in
 x86_64 | amd64)
@@ -92,14 +97,19 @@ fi
 # cosign, from Sigstore's pinned release. Its checksum file is fetched on every run, and the kept
 # copy (by version, so an update does not download it again) is hashed and compared with it each
 # time, so a binary that was swapped on disk is replaced or the run stops.
-# TODO(owner): hard-code the SHA-256 of cosign-linux-amd64 and cosign-linux-arm64 for
-# COSIGN_VERSION here and compare against those instead of the checksum file that sits beside the
-# binary on the same release page; no network was available to read them when this was written.
+# COSIGN_SHA256_AMD64 and COSIGN_SHA256_ARM64 (above) replace that checksum file once they are set.
 cosign="${COSIGN_DIR}/cosign-${COSIGN_VERSION}"
 cosign_base="https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}"
 cosign_asset="cosign-linux-${cosign_arch}"
-curl -fsSL -o "${tmp}/cosign_checksums.txt" "${cosign_base}/cosign_checksums.txt"
-cosign_expected="$(awk -v a="$cosign_asset" '$2 == a || $2 == "*" a {print $1; exit}' "${tmp}/cosign_checksums.txt")"
+case "$cosign_arch" in
+amd64) cosign_expected="$COSIGN_SHA256_AMD64" ;;
+arm64) cosign_expected="$COSIGN_SHA256_ARM64" ;;
+esac
+if [ -z "$cosign_expected" ]; then
+  echo "WARNING: the SHA-256 of ${cosign_asset} ${COSIGN_VERSION} is not pinned in this script; it is checked only against the checksum file of the same Sigstore release page" >&2
+  curl -fsSL -o "${tmp}/cosign_checksums.txt" "${cosign_base}/cosign_checksums.txt"
+  cosign_expected="$(awk -v a="$cosign_asset" '$2 == a || $2 == "*" a {print $1; exit}' "${tmp}/cosign_checksums.txt")"
+fi
 if [ -z "$cosign_expected" ]; then
   echo "no checksum for ${cosign_asset} ${COSIGN_VERSION}" >&2
   exit 1

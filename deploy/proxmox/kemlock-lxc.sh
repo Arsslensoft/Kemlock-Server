@@ -100,10 +100,13 @@ curl -fsSL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS"
 # at this tag (a short-lived Fulcio certificate, logged in Rekor), or the install stops. cosign is
 # in no Debian package: a pinned release is fetched from Sigstore, kept in /usr/local/lib/kemlock,
 # and its SHA-256 is checked against that release's cosign_checksums.txt on every use.
-# TODO(owner): hard-code the SHA-256 of cosign-linux-{amd64,arm64,arm} for this version below
-# instead of trusting the checksum file that sits beside the binary; no network was available to
-# read them when this was written.
 cosign_version="v3.0.2"
+# TODO(owner): the SHA-256 of cosign-linux-amd64, -arm64 and -arm for this version. Set them and they
+# replace the checksum file that sits beside the binary on the same release page; while the one for
+# this machine is empty, the install warns. No network was available to read them when this was written.
+cosign_sha256_amd64=""
+cosign_sha256_arm64=""
+cosign_sha256_arm=""
 # The repository's name in the signing certificate, in the case GitHub has it (the URLs here are
 # lower case, the identity is compared exactly).
 cert_repo="Arsslensoft/Kemlock-Server"
@@ -115,8 +118,16 @@ esac
 cosign_asset="cosign-linux-${cosign_arch}"
 cosign="/usr/local/lib/kemlock/cosign-${cosign_version}"
 cosign_base="https://github.com/sigstore/cosign/releases/download/${cosign_version}"
-curl -fsSL -o "$tmp/cosign_checksums.txt" "$cosign_base/cosign_checksums.txt"
-cosign_sha="$(awk -v a="$cosign_asset" '$2 == a || $2 == "*" a {print $1; exit}' "$tmp/cosign_checksums.txt")"
+case "$cosign_arch" in
+  amd64) cosign_sha="$cosign_sha256_amd64" ;;
+  arm64) cosign_sha="$cosign_sha256_arm64" ;;
+  arm) cosign_sha="$cosign_sha256_arm" ;;
+esac
+if [ -z "$cosign_sha" ]; then
+  echo "WARNING: the SHA-256 of $cosign_asset $cosign_version is not pinned in this script; it is checked only against the checksum file of the same Sigstore release page" >&2
+  curl -fsSL -o "$tmp/cosign_checksums.txt" "$cosign_base/cosign_checksums.txt"
+  cosign_sha="$(awk -v a="$cosign_asset" '$2 == a || $2 == "*" a {print $1; exit}' "$tmp/cosign_checksums.txt")"
+fi
 [ -n "$cosign_sha" ] || { echo "no checksum for $cosign_asset $cosign_version" >&2; exit 1; }
 if [ ! -x "$cosign" ] || [ "$(sha256sum "$cosign" | awk '{print $1}')" != "$cosign_sha" ]; then
   curl -fsSL -o "$tmp/$cosign_asset" "$cosign_base/$cosign_asset"
