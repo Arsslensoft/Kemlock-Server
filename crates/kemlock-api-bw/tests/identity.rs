@@ -873,6 +873,24 @@ async fn an_authenticator_account_gets_the_second_step_and_can_be_remembered() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["TwoFactorProviders"], json!(["0"]));
 
+    // A token signed with the server's RSA key but with no proof under `server.key` (what anyone
+    // holding an old `rsa_key.pem` can make) is no token: the second step is asked again.
+    let now = h.env.time().unix_timestamp();
+    let mut claims: Value = common::keys()
+        .decode(&remember, &format!("{DOMAIN}|2faremember"), now)
+        .expect("the genuine token's claims");
+    assert!(claims["proof"].as_str().is_some_and(|p| !p.is_empty()));
+    claims.as_object_mut().expect("an object").remove("proof");
+    let forged = common::keys().encode(&claims).expect("signed");
+    let (status, body) = with("5", forged, "0").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["TwoFactorProviders"], json!(["0"]));
+    // And so is one whose proof is another token's.
+    claims["proof"] = json!("AAAA");
+    let wrong = common::keys().encode(&claims).expect("signed");
+    let (status, _) = with("5", wrong, "0").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
     // A recovery code is taken though never offered; this account (enrolled straight in the store)
     // has none, so any is refused, as Vaultwarden words it.
     let (_, body) = with("8", "abcd".to_owned(), "0").await;

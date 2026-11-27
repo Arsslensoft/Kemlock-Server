@@ -704,6 +704,7 @@ impl<S: BwStore> App<S> {
                         c.sub == device.id.to_string()
                             && c.user_uuid == user.id.to_string()
                             && c.two_step_version == version
+                            && c.is_bound(&self.seal)
                     });
                 if !valid {
                     return Err(self.two_factor_challenge(user, &usable, data).await?);
@@ -754,7 +755,9 @@ impl<S: BwStore> App<S> {
                 sub: device.id.to_string(),
                 user_uuid: user.id.to_string(),
                 two_step_version: TwoFactorRepo::two_step_version(&self.store, user.id).await?,
-            };
+                proof: String::new(),
+            }
+            .bound(&self.seal);
             let token = self
                 .keys
                 .encode(&claims)
