@@ -367,15 +367,20 @@ mod tests {
             .expect("pull");
         assert!(t.b.store.get(item).is_some());
 
-        // C has no key for A, so it can't take A's change from B.
+        // C has no key for A, so it can't take A's change from B. The record is left out and
+        // counted (and asked for again, since A's key may still arrive), and the pull goes on:
+        // one record nobody can check must not hold the cursor.
         let mut from_b = Direct {
             remote: &t.b,
             caller: t.c.server_id(),
         };
-        assert!(
+        let first =
             t.c.pull(&mut from_b, t.b.server_id(), t.vault)
                 .await
-                .is_err()
+                .expect("pull");
+        assert_eq!(
+            (first.counts.applied, first.counts.refused, first.counts.retry),
+            (0, 1, 1)
         );
         assert!(t.c.store.get(item).is_none());
 
@@ -391,11 +396,13 @@ mod tests {
             Ok(0),
             "once"
         );
+        // The first pull moved the cursor past the record, so the comparison (which a pull that
+        // asked for a retry triggers at once) fetches it again.
         let report =
-            t.c.pull(&mut from_b, t.b.server_id(), t.vault)
+            t.c.reconcile(&mut from_b, t.b.server_id(), t.vault)
                 .await
-                .expect("pull");
-        assert_eq!(report.counts.applied, 1);
+                .expect("reconcile");
+        assert_eq!(report.fetched.applied, 1);
         assert!(t.c.store.get(item).is_some());
         // The change is still A's: signed by A, with A as its origin.
         assert_eq!(
