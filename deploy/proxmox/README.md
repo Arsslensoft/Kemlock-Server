@@ -33,11 +33,13 @@ The container is unprivileged. Every `var_*` setting of community-scripts works,
 The script sets `COMMUNITY_SCRIPTS_URL` to this directory when it is unset, so the engine fetches
 `install/kemlock-server-install.sh` from this repository and not from community-scripts/ProxmoxVE.
 The engine itself (`build.func` and the rest) comes from community-scripts/core. `build.func` runs
-as root on the Proxmox host, so `ct/kemlock-server.sh` downloads it from one pinned commit
-(`_cs_core_commit`) and checks its SHA-256 (`_cs_core_sha256`) before it sources it, and stops if
-either is unset or the file differs. To move the pin, pick a commit, read the diff of
-`core/build.func` against the pinned one, and set both values (`sha256sum build.func`).
-`COMMUNITY_SCRIPTS_CORE_DIR` still points the script at a local checkout for development.
+as root on the Proxmox host, so `ct/kemlock-server.sh` can pin it: with `_cs_core_commit` and
+`_cs_core_sha256` both set, it downloads `build.func` from that commit and checks the SHA-256
+before it sources it, and stops if the file cannot be fetched or differs. **Both are empty in the
+repository, so the script warns that `build.func` is not pinned and uses the `main` branch of
+community-scripts/core.** The owner must set them: pick a commit, read its `core/build.func`, and
+put the commit and `sha256sum build.func` in the script. `COMMUNITY_SCRIPTS_CORE_DIR` points the
+script at a local checkout (once pinned, only when it is set explicitly).
 
 ## What it installs
 
