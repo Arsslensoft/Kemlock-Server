@@ -249,6 +249,13 @@ pub fn describe(report: &ApplyReport) -> String {
             settings.join(", ")
         ));
     }
+    // The source's token key is never put over the key of a server that has Bitwarden accounts.
+    if refused.remove("rsa_key").is_some() {
+        text.push_str(
+            ". Vaultwarden's rsa_key.pem was not carried over: this server has Bitwarden accounts \
+             of its own, and its token key stays as it is",
+        );
+    }
     let refused = refused_text(&refused);
     if !refused.is_empty() {
         text.push_str(&format!(
@@ -504,6 +511,18 @@ mod tests {
             with_key.ends_with("restart Kemlock Server so it loads it"),
             "{with_key}"
         );
+    }
+
+    #[test]
+    fn a_report_says_when_the_sources_token_key_was_not_carried() {
+        let report = ApplyReport {
+            refused: BTreeMap::from([("rsa_key", vec!["rsa_key.pem".to_owned()])]),
+            ..ApplyReport::default()
+        };
+        let text = describe(&report);
+        assert!(text.contains("rsa_key.pem was not carried over"), "{text}");
+        assert!(!text.contains("restart Kemlock Server"), "{text}");
+        assert!(!text.contains("Left alone"), "{text}");
     }
 
     #[test]

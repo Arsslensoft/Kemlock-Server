@@ -8,7 +8,7 @@ mod common;
 use common::{draft, kind, memory, unique_email, user};
 use kemlock_app::Actor;
 use kemlock_app::b64url;
-use kemlock_app::bitwarden::BwAccountRepo;
+use kemlock_app::bitwarden::{BwAccount, BwAccountRepo};
 use kemlock_app::ports::{Clock, DeviceRepo, ItemStore, TwoFactorRepo, UserRepo};
 use kemlock_app::spaces::{CreateSpace, CreateSpaceInput, NewCollection, SpaceRepo};
 use kemlock_crypto::seal::ServerSeal;
@@ -206,6 +206,100 @@ async fn pass_with(
     apply(mapped, &[], &mut sink)
         .await
         .expect("the pass applies")
+}
+
+/// A pass over `mapped` that writes into `dest`.
+async fn pass_into(store: &SqlStore, mapped: &MappedImport, dest: &std::path::Path) -> ApplyReport {
+    let options = ImportOptions::new(dest, Arc::new(Files::default()), NOW);
+    let mut sink = SqlImportSink::begin(store, ServerSeal::new(&[7u8; 32]), options)
+        .await
+        .expect("a pass opens");
+    apply(mapped, &[], &mut sink)
+        .await
+        .expect("the pass applies")
+}
+
+/// The Bitwarden record of an account of this server.
+fn bw_record(user: UserId) -> BwAccount {
+    BwAccount {
+        user,
+        password_hash: vec![7; 32],
+        salt: vec![8; 64],
+        password_iterations: 600_000,
+        kdf_type: 0,
+        kdf_iterations: 600_000,
+        kdf_memory: None,
+        kdf_parallelism: None,
+        akey: "2.iv|data|mac".to_owned(),
+        private_key: None,
+        public_key: None,
+        password_hint: None,
+        api_key: None,
+        avatar_color: None,
+        revision_ms: 1_000,
+    }
+}
+
+fn token_key() -> kemlock_vaultwarden::mapping::MappedRsaKey {
+    kemlock_vaultwarden::mapping::MappedRsaKey {
+        private_pem: b"the source's key".to_vec(),
+        public_pem: None,
+    }
+}
+
+#[tokio::test]
+async fn the_sources_token_key_is_kept_only_when_the_server_has_no_bitwarden_accounts_of_its_own() {
+    // A server with an account of its own that has a Bitwarden record: its key stays.
+    let store = memory().await;
+    let own = native(&store, "own-bitwarden").await;
+    BwAccountRepo::insert(&store, &bw_record(own))
+        .await
+        .expect("a Bitwarden record");
+    let dest = tempfile::tempdir().expect("a temp dir");
+    let mapped = MappedImport {
+        rsa_key: Some(token_key()),
+        ..Default::default()
+    };
+    let report = pass_into(&store, &mapped, dest.path()).await;
+    assert!(!report.rsa_key);
+    assert_eq!(refused(&report, "rsa_key"), vec!["rsa_key.pem".to_owned()]);
+    assert!(!dest.path().join("rsa_key.pem").exists());
+
+    // A server with only the accounts the move made takes the key, once the pass has committed.
+    let store = memory().await;
+    let dest = tempfile::tempdir().expect("a temp dir");
+    let mapped = MappedImport {
+        accounts: vec![account(UserId::random(), "moved@example.org", "Moved")],
+        rsa_key: Some(token_key()),
+        ..Default::default()
+    };
+    let report = pass_into(&store, &mapped, dest.path()).await;
+    assert!(report.rsa_key, "{:?}", report.refused);
+    assert_eq!(
+        std::fs::read(dest.path().join("rsa_key.pem")).expect("the key"),
+        b"the source's key"
+    );
+}
+
+#[tokio::test]
+async fn a_pass_that_is_never_finished_leaves_the_token_key_alone() {
+    let store = memory().await;
+    let dest = tempfile::tempdir().expect("a temp dir");
+    let options = ImportOptions::new(dest.path(), Arc::new(Files::default()), NOW);
+    let mut sink = SqlImportSink::begin(&store, ServerSeal::new(&[7u8; 32]), options)
+        .await
+        .expect("a pass opens");
+    let mapped = MappedImport {
+        rsa_key: Some(token_key()),
+        ..Default::default()
+    };
+    // `apply` puts the key and then finishes; put it alone and drop the sink, as a failed pass does.
+    use kemlock_vaultwarden::ImportSink;
+    sink.put_rsa_key(mapped.rsa_key.as_ref().expect("a key"))
+        .await
+        .expect("taken");
+    drop(sink);
+    assert!(!dest.path().join("rsa_key.pem").exists());
 }
 
 async fn native(store: &SqlStore, prefix: &str) -> UserId {

@@ -190,7 +190,7 @@ async fn write_pass<S: SinkSource>(
 /// Says which ids a pass left alone because no import made them, and how to overwrite them.
 fn report_left_alone(report: &ApplyReport) {
     for (kind, ids) in &report.refused {
-        if ids.is_empty() || *kind == "setting" {
+        if ids.is_empty() || *kind == "setting" || *kind == "rsa_key" {
             continue;
         }
         eprintln!(
@@ -198,7 +198,17 @@ fn report_left_alone(report: &ApplyReport) {
             ids.join(", ")
         );
     }
-    if report.refused.keys().any(|kind| *kind != "setting") {
+    if report.refused.contains_key("rsa_key") {
+        eprintln!(
+            "kemlock-cli: rsa_key.pem was not carried: this server has Bitwarden accounts of its \
+             own, and the source's token key must not replace the key that signs their tokens"
+        );
+    }
+    if report
+        .refused
+        .keys()
+        .any(|kind| *kind != "setting" && *kind != "rsa_key")
+    {
         eprintln!(
             "kemlock-cli: add --adopt-existing to overwrite them on purpose (it replaces what \
              this server holds for those ids)"

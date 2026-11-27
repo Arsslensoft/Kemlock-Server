@@ -167,7 +167,8 @@ pub async fn apply<S: ImportSink>(
     }
     if let Some(key) = &mapped.rsa_key {
         sink.put_rsa_key(key).await?;
-        report.rsa_key = true;
+        // A sink may leave the key alone (the server has Bitwarden accounts of its own).
+        report.rsa_key = refused_of(&*sink, "rsa_key") == 0;
     }
     for file in &mapped.files {
         sink.copy_file(file).await?;
