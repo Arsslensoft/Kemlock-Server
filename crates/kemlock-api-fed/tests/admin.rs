@@ -793,3 +793,109 @@ async fn a_contested_peer_shows_as_such_and_is_trusted_again_only_with_a_step_up
     let (status, _) = admin(&e.app, Method::DELETE, &uri, None).await;
     assert_eq!(status, StatusCode::CONFLICT);
 }
+
+/// A gate that lets every request in with a step-up token and remembers what was audited.
+struct Recording {
+    seen: std::sync::Mutex<Vec<(&'static str, Option<String>)>>,
+}
+
+impl AdminGate for Recording {
+    fn authorize<'a>(&'a self, parts: &'a Parts) -> BoxFut<'a, Result<AdminActor, GateRefusal>> {
+        Box::pin(async move {
+            if !parts.headers.contains_key("x-admin") {
+                return Err(GateRefusal {
+                    status: StatusCode::UNAUTHORIZED,
+                    detail: "send x-admin",
+                });
+            }
+            Ok(AdminActor {
+                user: UserId::random(),
+                fresh: false,
+                step_up: parts.headers.contains_key("x-step-up"),
+            })
+        })
+    }
+
+    fn audit<'a>(
+        &'a self,
+        _actor: &'a AdminActor,
+        action: &'static str,
+        target: Option<String>,
+    ) -> BoxFut<'a, ()> {
+        Box::pin(async move {
+            self.seen
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((action, target));
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_federation_write_that_got_past_the_step_up_check_is_audited() {
+    let id = identity(1, unix_now(), &Suite::IMPLEMENTED);
+    let replica = Arc::new(Replica::new(MemoryStore::new(id.server), Arc::new(id)));
+    let pairings = Arc::new(Pairings::new(replica.clone(), Arc::new(Dead)));
+    let runner = Arc::new(PeerRunner::new(
+        replica.clone(),
+        NoConnector,
+        "audit".to_owned(),
+    ));
+    let gate = Arc::new(Recording {
+        seen: std::sync::Mutex::new(Vec::new()),
+    });
+    let app = admin_router(AdminState {
+        federation: Federation::new(replica, runner, pairings),
+        gate: gate.clone(),
+    });
+    let peer = uuid::Uuid::new_v4();
+    let owner = format!("user:{}", uuid::Uuid::new_v4());
+    let base = "/admin/v1/federation";
+
+    // Turned away for lack of a step-up token: nothing happened, nothing is logged.
+    let (status, _, _) = call(
+        &app,
+        Method::POST,
+        &format!("{base}/peers/{peer}/revoke"),
+        None,
+        &[("x-admin", "1")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        gate.seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty()
+    );
+
+    // With one, the write is logged, naming the peer and never the vault.
+    for (method, uri) in [
+        (Method::POST, format!("{base}/peers/{peer}/revoke")),
+        (Method::POST, format!("{base}/offers/{owner}/decline")),
+    ] {
+        let _ = call(
+            &app,
+            method,
+            &uri,
+            None,
+            &[("x-admin", "1"), ("x-step-up", "1")],
+        )
+        .await;
+    }
+    let seen = gate
+        .seen
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    assert_eq!(
+        seen,
+        vec![
+            (
+                "federation.admin.peer_revoke",
+                Some(format!("peer:{peer}"))
+            ),
+            ("federation.admin.offer_decline", None),
+        ]
+    );
+}

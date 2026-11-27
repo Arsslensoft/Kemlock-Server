@@ -945,7 +945,9 @@ The federation screens of the web vault read more than the peer and vault rows. 
 `/admin/v1/federation`, behind the admin gate; every write (`POST`, `PUT`, `DELETE`) also needs a step-up
 token (`Step-Up-Token`, the one `/admin/v1/step-up` issues). That includes promotion, accepting or
 refusing a demotion, and rotating or revoking the identity key: a sign-in in the last five minutes no
-longer stands in for the token. The routes added for the screens are in the OpenAPI
+longer stands in for the token. Each write that gets past that check is recorded in the audit log (the
+events list) as `federation.admin.<what>`, by the admin, naming the peer when the request is about
+one and never whose vault. The routes added for the screens are in the OpenAPI
 document at `/admin/v1/federation/openapi.json`.
 
 - **Identity keys.** Each peer and each waiting pairing carries `identityKey` (hex): the key pinned
