@@ -10,6 +10,10 @@ const devicesApi = createDevicesApi(api);
 /** How long signing out waits for the server before it ends the session here regardless. */
 export const SERVER_SIGN_OUT_MS = 3000;
 
+/** How many times the sign-out request is sent when it fails, and the pause between them. */
+const SIGN_OUT_ATTEMPTS = 3;
+const SIGN_OUT_RETRY_MS = 800;
+
 /** Cached answers that hold no secret and that routing needs before anyone is signed in. */
 const KEPT_QUERIES = new Set(['config', 'placement']);
 
@@ -52,15 +56,28 @@ export function forgetEndedSession(): void {
  */
 async function endOnServer(): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  // A request that fails early (a dropped connection) is sent again while the wait lasts, and one
+  // that is only slow is left running when the wait ends, so it still reaches the server after
+  // the tokens are gone here. The refresh token is revoked by whichever gets there.
+  const attempts = (async () => {
+    for (let attempt = 0; attempt < SIGN_OUT_ATTEMPTS; attempt += 1) {
+      try {
+        await devicesApi.endSession();
+        return;
+      } catch {
+        if (attempt + 1 < SIGN_OUT_ATTEMPTS) {
+          await new Promise<void>((resolve) => setTimeout(resolve, SIGN_OUT_RETRY_MS));
+        }
+      }
+    }
+  })();
   try {
     await Promise.race([
-      devicesApi.endSession(),
+      attempts,
       new Promise<void>((resolve) => {
         timer = setTimeout(resolve, SERVER_SIGN_OUT_MS);
       }),
     ]);
-  } catch {
-    // The tokens are forgotten here either way.
   } finally {
     clearTimeout(timer);
   }

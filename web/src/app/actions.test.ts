@@ -91,6 +91,25 @@ describe('signing out', () => {
       }
     });
 
+    it('sends the sign-out again when it fails early, and leaves a slow one running', async () => {
+      vi.useFakeTimers();
+      try {
+        session.signedIn({ email: 'sam@example.co', userId: 'u', deviceId: 'device-1', admin: false });
+        const send = vi
+          .spyOn(api, 'send')
+          .mockRejectedValueOnce(new Error('dropped'))
+          .mockResolvedValue(undefined as never);
+        const done = signOut();
+        await vi.advanceTimersByTimeAsync(2000);
+        await done;
+        expect(send).toHaveBeenCalledTimes(2);
+        expect(session.getState().status).toBe('signed-out');
+        send.mockRestore();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('does not ask when the server has just ended the session, or nobody is signed in', async () => {
       const send = vi.spyOn(api, 'send').mockResolvedValue(undefined as never);
       session.signedIn({ email: 'sam@example.co', userId: 'u', deviceId: 'device-1', admin: false });
