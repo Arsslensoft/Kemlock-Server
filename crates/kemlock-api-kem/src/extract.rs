@@ -3,7 +3,7 @@
 
 use crate::dpop::{DpopError, Pending};
 use crate::problem::{Problem, rate_limited};
-use crate::ratelimit::{client_ip, ip_key, joined_header};
+use crate::ratelimit::{client_ip, ip_key, ip_key_48, joined_header};
 use crate::state::{Api, Crypto, Store};
 use axum::body::{Body as HttpBody, Bytes};
 use axum::extract::{ConnectInfo, FromRequest, FromRequestParts, Request};
@@ -240,7 +240,8 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> FromRequestParts<Api
             .proof
             .check(&ip_key(ip), api.now())
             .map_err(rate_limited)?;
-        let jkt = verify_proof(parts, api, None, Some(&ip_key(ip)))?;
+        // The open set's share is per /48, not per /56: a free /48 holds 256 of the /56s.
+        let jkt = verify_proof(parts, api, None, Some(&ip_key_48(ip)))?;
         Ok(Proof { jkt, ip })
     }
 }

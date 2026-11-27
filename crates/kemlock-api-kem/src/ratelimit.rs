@@ -268,6 +268,23 @@ pub fn ip_key(ip: IpAddr) -> String {
     }
 }
 
+/// The key a client counts under for what it may take of a shared pool (the replay set of DPoP
+/// proofs nobody is signed in for): its IPv4 address, or its IPv6 /48, the size of the block a
+/// free tunnel broker hands to anyone. A /48 holds 65,536 /64s and 256 /56s, so counting by /56
+/// would let one host take 256 shares.
+pub fn ip_key_48(ip: IpAddr) -> String {
+    match ip.to_canonical() {
+        IpAddr::V4(v4) => format!("ip:{v4}"),
+        IpAddr::V6(v6) => {
+            let mut segments = v6.segments();
+            for s in &mut segments[3..] {
+                *s = 0;
+            }
+            format!("ip:{}/48", Ipv6Addr::from(segments))
+        }
+    }
+}
+
 /// The key a client counts under for a hard limit on one account (wrong passwords): its IPv4
 /// address, or its IPv6 /64, so a neighbour in the same /56 isn't locked out by someone else's
 /// guesses.
@@ -570,6 +587,18 @@ mod tests {
         assert_eq!(ip_key_64("192.0.2.7".parse().expect("ip")), "ip:192.0.2.7");
         let mapped: IpAddr = "::ffff:192.0.2.7".parse().expect("ip");
         assert_eq!(ip_key_64(mapped), "ip:192.0.2.7");
+    }
+
+    #[test]
+    fn a_shared_pool_share_is_counted_by_the_slash_48() {
+        let a: IpAddr = "2001:db8:1:2::1".parse().expect("ip");
+        let other_56: IpAddr = "2001:db8:1:ff00::1".parse().expect("ip");
+        let other_48: IpAddr = "2001:db8:2::1".parse().expect("ip");
+        assert_eq!(ip_key_48(a), ip_key_48(other_56));
+        assert_ne!(ip_key_48(a), ip_key_48(other_48));
+        assert_eq!(ip_key_48(a), "ip:2001:db8:1::/48");
+        let mapped: IpAddr = "::ffff:192.0.2.7".parse().expect("ip");
+        assert_eq!(ip_key_48(mapped), "ip:192.0.2.7");
     }
 
     #[test]
