@@ -7,9 +7,10 @@
 //! flight waits its turn (in order), so the right password is only ever later, never refused.
 //!
 //! So that the owner is not queued behind an unbounded line, at most [`MAX_WAITING`] finishes wait
-//! per account; one that arrives past that skips the queue and is held back by the caller instead
-//! (see `attempts::begin_password_attempt`). That keeps the rate for the account bounded by the
-//! queue's own pace, not by how many requests arrive.
+//! per account; one that arrives past that gets no turn, and the caller answers it 429 with a
+//! `Retry-After` without running it (see `attempts::begin_password_attempt`). That keeps both
+//! the rate and the number of checks in flight for the account bounded by the queue, not by how
+//! many requests arrive.
 
 use kemlock_crypto::hash;
 use std::collections::HashMap;
@@ -96,8 +97,8 @@ impl PasswordGate {
     }
 
     /// Waits for the account's turn: until no other finish is in flight and the interval since the
-    /// last one has passed. `None` when [`MAX_WAITING`] others already wait (the caller holds the
-    /// request back instead of queueing it).
+    /// last one has passed. `None` when [`MAX_WAITING`] others already wait (the caller refuses the
+    /// request with a 429 instead of queueing it or running it beside the others).
     pub async fn enter(&self, account: &str) -> Option<GateGuard> {
         let (last, waiting) = self.slot(account);
         if waiting.fetch_add(1, Ordering::SeqCst) >= self.max_waiting {
@@ -167,7 +168,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn past_the_waiting_line_a_finish_skips_it_and_is_not_queued() {
+    async fn past_the_waiting_line_a_finish_gets_no_turn_and_is_not_queued() {
         let gate = Arc::new(PasswordGate::new(Duration::ZERO, 2));
         let first = gate.enter("acct:a").await.expect("a turn");
         let mut waiting = Vec::new();

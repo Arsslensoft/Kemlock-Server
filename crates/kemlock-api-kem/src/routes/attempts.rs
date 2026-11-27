@@ -130,7 +130,7 @@ pub(crate) struct PasswordAttempt {
     /// Whether the soft cap counted this attempt. It doesn't while the account is over the cap:
     /// the attempt is held back instead, and so has nothing to give back.
     counted: bool,
-    /// The attempt's turn at the account's gate, until it ends. `None` when the line was full.
+    /// The attempt's turn at the account's gate, until it ends (`None` once it has).
     turn: std::sync::Mutex<Option<GateGuard>>,
 }
 
@@ -163,9 +163,10 @@ impl PasswordAttempt {
 ///
 /// However many addresses the guesses come from, one account has at most one password check in
 /// flight and a second between two of them ([`PasswordGate`](crate::finish_gate::PasswordGate)): the others wait their turn, in
-/// order, and a right password is only later. Past [`MAX_WAITING`](crate::finish_gate::MAX_WAITING) waiting, a request skips the
-/// line and is held back the full few seconds instead, so the owner is never queued behind an
-/// unbounded line and never refused.
+/// order, and a right password is only later. Past [`MAX_WAITING`](crate::finish_gate::MAX_WAITING) waiting, a request is
+/// answered 429 with a `Retry-After` of a few seconds, without running, so the number of password
+/// checks for one account stays bounded however many requests arrive, and the owner is never
+/// queued behind an unbounded line. It asks again and takes its turn once the line has shortened.
 ///
 /// Whoever calls this must end the attempt with [`end_password_attempt`], or give it back with
 /// [`abandon_password_attempt`] when the password is never looked at.
@@ -202,15 +203,21 @@ where
         tokio::time::sleep(std::time::Duration::from_secs(hold)).await;
     }
     // Then the account's turn: one at a time, a second apart.
-    let turn = api.limits.finish_gate.enter(&account).await;
-    if turn.is_none() {
-        tokio::time::sleep(std::time::Duration::from_secs(MAX_SLOWDOWN_SECS)).await;
-    }
+    let Some(turn) = api.limits.finish_gate.enter(&account).await else {
+        // The line is full: the request is refused, not run beside the others, so the number of
+        // password checks for one account stays bounded. It guessed nothing, so what it reserved
+        // goes back.
+        api.limits.account.refund(&source, now);
+        if counted {
+            api.limits.account_cap.refund(&account, now);
+        }
+        return Err(rate_limited(MAX_SLOWDOWN_SECS));
+    };
     Ok(PasswordAttempt {
         source,
         account,
         counted,
-        turn: std::sync::Mutex::new(turn),
+        turn: std::sync::Mutex::new(Some(turn)),
     })
 }
 
