@@ -379,7 +379,11 @@ mod tests {
                 .await
                 .expect("pull");
         assert_eq!(
-            (first.counts.applied, first.counts.refused, first.counts.retry),
+            (
+                first.counts.applied,
+                first.counts.refused,
+                first.counts.retry
+            ),
             (0, 1, 1)
         );
         assert!(t.c.store.get(item).is_none());

@@ -303,7 +303,10 @@ mod tests {
         assert!(!queued.is_finished(), "the second waits for the prefix");
         release.send(()).expect("released");
         task.await.expect("joined").expect("the first finished");
-        assert_eq!(queued.await.expect("joined").expect("runs after the first"), 5);
+        assert_eq!(
+            queued.await.expect("joined").expect("runs after the first"),
+            5
+        );
     }
 
     #[tokio::test]
