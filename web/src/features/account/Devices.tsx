@@ -107,7 +107,8 @@ export default function Devices() {
         const device = state.deviceId;
         if (!account || !device) return;
         void change(async () => {
-          const keyVersion = (await api.accountKeys()).keyVersion;
+          // The version of the keys the worker holds, which is the one the copy wraps.
+          const keyVersion = await vaultCrypto.ownKeyVersion();
           const wrapped = await sharingCrypto.wrapForThisDevice({
             accountId: uuidBytes(account),
             deviceId: uuidBytes(device),
