@@ -324,7 +324,9 @@ Vaultwarden data, password hashes and keys included); a later pass is the comman
 
 **From the command line**, on the server (`kemlock-cli import-vaultwarden --from <folder|url>
 [--files <folder>] [--twice] [--apply] [--adopt-existing]`): `--from` is a data folder or a
-`mysql://` or `postgres://` URL, and without `--apply` it only prints the plan.
+`mysql://` or `postgres://` URL, and without `--apply` it only prints the plan. A URL with a password
+in it goes in an environment variable, `--from-env VW_DATABASE_URL`: an argument is visible to every
+user of the machine in the process list, so `--from` refuses a URL that carries a password.
 
 Both write only what an import made. An account or space whose id already exists on this server is
 the import's only when the import created it (the server keeps a record of each id a move created,

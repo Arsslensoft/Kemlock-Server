@@ -1,5 +1,5 @@
-//! `kemlock-cli import-vaultwarden --from <folder|url> [--files <folder>] [--twice] [--apply]
-//! [--adopt-existing]`.
+//! `kemlock-cli import-vaultwarden (--from <folder|url> | --from-env <NAME>) [--files <folder>] [--twice]
+//! [--apply] [--adopt-existing]`.
 //!
 //! Without `--apply` it prints the dry-run plan and writes nothing. It never writes to
 //! Vaultwarden's data in any mode: the folder's `db.sqlite3` is opened read-only, a MySQL or
@@ -65,7 +65,31 @@ fn take_value(
 
 /// Parses the arguments after `import-vaultwarden`.
 pub(crate) fn parse_args(args: &[String]) -> Result<ImportArgs, String> {
+    parse_args_with(args, &|name| std::env::var(name).ok())
+}
+
+/// Whether a `--from` value is a database URL that carries a password: `scheme://user:secret@host`.
+fn url_has_password(from: &str) -> bool {
+    let Some((_, rest)) = from.split_once("://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    authority
+        .rsplit_once('@')
+        .is_some_and(|(userinfo, _)| userinfo.contains(':'))
+}
+
+/// [`parse_args`] with the environment given, for the tests.
+///
+/// A database URL carries its password, and an argument is visible to every user of the machine in
+/// the process list (and kept in the shell's history), so `--from-env <NAME>` takes the URL from an
+/// environment variable instead; `--from` with a password in it is refused for the same reason.
+fn parse_args_with(
+    args: &[String],
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<ImportArgs, String> {
     let mut from = None;
+    let mut from_env = None;
     let mut files = None;
     let mut twice = false;
     let mut apply = false;
@@ -78,6 +102,7 @@ pub(crate) fn parse_args(args: &[String]) -> Result<ImportArgs, String> {
         };
         match name {
             "--from" => from = Some(take_value(name, inline, &mut rest)?),
+            "--from-env" => from_env = Some(take_value(name, inline, &mut rest)?),
             "--files" => files = Some(take_value(name, inline, &mut rest)?),
             "--twice" => twice = true,
             "--apply" => apply = true,
@@ -85,7 +110,29 @@ pub(crate) fn parse_args(args: &[String]) -> Result<ImportArgs, String> {
             other => return Err(format!("import-vaultwarden doesn't take {other:?}")),
         }
     }
-    let from = from.ok_or_else(|| "import-vaultwarden needs --from <folder|url>".to_owned())?;
+    let from = match (from, from_env) {
+        (Some(_), Some(_)) => {
+            return Err("import-vaultwarden takes --from or --from-env, not both".to_owned());
+        }
+        (Some(from), None) => {
+            if url_has_password(&from) {
+                return Err(
+                    "--from has a password in it, which every user of this machine can read in \
+                     the process list: put the URL in an environment variable and give \
+                     --from-env <NAME>"
+                        .to_owned(),
+                );
+            }
+            from
+        }
+        (None, Some(name)) => env(&name)
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| format!("--from-env {name}: that environment variable isn't set"))?,
+        (None, None) => {
+            return Err("import-vaultwarden needs --from <folder|url> or --from-env <NAME>".to_owned());
+        }
+    };
     Ok(ImportArgs {
         from,
         files,
@@ -452,18 +499,49 @@ mod tests {
         );
         assert_eq!(
             parse_args(&args(&[
-                "--from=mysql://u:p@db/vw",
+                "--from=mysql://u@db/vw",
                 "--files=/vw-data",
                 "--apply"
             ])),
             Ok(ImportArgs {
-                from: "mysql://u:p@db/vw".into(),
+                from: "mysql://u@db/vw".into(),
                 files: Some("/vw-data".into()),
                 twice: false,
                 apply: true,
                 adopt_existing: false
             })
         );
+    }
+
+    #[test]
+    fn a_database_url_with_a_password_comes_from_the_environment_not_the_command_line() {
+        let env = |name: &str| (name == "VW_URL").then(|| " mysql://u:secret@db/vw ".to_owned());
+        // The URL is read from the variable, trimmed.
+        let parsed = parse_args_with(&args(&["--from-env", "VW_URL", "--files=/vw-data"]), &env)
+            .expect("parses");
+        assert_eq!(parsed.from, "mysql://u:secret@db/vw");
+        assert_eq!(parsed.files.as_deref(), Some("/vw-data"));
+        let inline = parse_args_with(&args(&["--from-env=VW_URL"]), &env).expect("parses");
+        assert_eq!(inline.from, "mysql://u:secret@db/vw");
+        // A password on the command line is refused, with the way to do it instead.
+        let refused = parse_args_with(&args(&["--from", "postgres://u:secret@db/vw"]), &env)
+            .expect_err("refused");
+        assert!(refused.contains("--from-env"), "{refused}");
+        assert!(!refused.contains("secret"), "{refused}");
+        // No password, a folder and a bare user are fine.
+        for fine in ["/data", "mysql://u@db/vw", "postgres://db/vw", "C:\vw\data"] {
+            assert!(
+                parse_args_with(&args(&["--from", fine]), &env).is_ok(),
+                "{fine}"
+            );
+        }
+        // Not both, and the variable must be set.
+        assert!(parse_args_with(&args(&["--from", "/data", "--from-env", "VW_URL"]), &env).is_err());
+        assert!(parse_args_with(&args(&["--from-env", "NOPE"]), &env).is_err());
+        assert!(parse_args_with(&args(&["--from-env"]), &env).is_err());
+        // A query string's `@` is not userinfo.
+        assert!(!url_has_password("postgres://db/vw?options=a:b@c"));
+        assert!(url_has_password("mysql://root:pw@localhost:3306/vw"));
     }
 
     #[test]
