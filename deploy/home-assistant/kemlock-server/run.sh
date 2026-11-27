@@ -13,6 +13,12 @@ export LOG_LEVEL="$(bashio::config 'log_level')"
 export DATA_FOLDER=/data/kemlock
 export ROCKET_PORT=8080
 mkdir -p "${DATA_FOLDER}"
+# Hand the data folder to the unprivileged user (the Dockerfile makes it, uid 10001). Only a folder
+# that it does not own yet is changed in full (an earlier version ran the server as root).
+if [ "$(stat -c %u "${DATA_FOLDER}")" != "10001" ]; then
+  chown -R kemlock:kemlock "${DATA_FOLDER}"
+fi
+chmod 0700 "${DATA_FOLDER}"
 
 if bashio::config.has_value 'ip_header'; then
   export IP_HEADER="$(bashio::config 'ip_header')"
@@ -25,4 +31,5 @@ if bashio::config.has_value 'database_url'; then
 fi
 
 bashio::log.info "Starting Kemlock Server for ${DOMAIN}"
-exec /usr/local/bin/kemlock-server
+# Not as root: su-exec drops to the kemlock user and replaces this shell, so signals reach the server.
+exec su-exec kemlock:kemlock /usr/local/bin/kemlock-server
