@@ -429,14 +429,6 @@ pub trait TokenRepo: Send + Sync {
         &self,
         device: DeviceId,
     ) -> impl Future<Output = Result<Vec<RefreshToken>, StoreError>> + Send;
-    /// Binds every refresh token of the device to `stamp`, the account's new security stamp. The
-    /// device that changed the stamp (a change of the KDF) keeps its way back in, by refreshing,
-    /// while every other token is still bound to the old stamp and is dead.
-    fn restamp_device(
-        &self,
-        device: DeviceId,
-        stamp: Uuid,
-    ) -> impl Future<Output = Result<(), StoreError>> + Send;
 }
 
 /// One page of a delta sync.

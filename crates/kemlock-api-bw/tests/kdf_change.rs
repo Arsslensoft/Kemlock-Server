@@ -38,7 +38,7 @@ async fn refresh(h: &Harness, token: &str) -> StatusCode {
 }
 
 #[tokio::test]
-async fn the_kdf_moves_to_the_new_settings_and_only_the_calling_device_refreshes_back_in() {
+async fn the_kdf_moves_to_the_new_settings_and_only_the_calling_device_stays_signed_in() {
     let h = Harness::new().await;
     let (cli, _) = h.signed_in(EMAIL).await;
     let cli_refresh = h.login(EMAIL, HASH).await["refresh_token"]
@@ -54,6 +54,11 @@ async fn the_kdf_moves_to_the_new_settings_and_only_the_calling_device_refreshes
         .as_str()
         .expect("a refresh token")
         .to_owned();
+    let phone_access = body["access_token"]
+        .as_str()
+        .expect("an access token")
+        .to_owned();
+    let (_, before) = h.json("GET", "/api/sync", Some(&cli), None).await;
 
     let (status, body) = h
         .json(
@@ -76,9 +81,17 @@ async fn the_kdf_moves_to_the_new_settings_and_only_the_calling_device_refreshes
         .await;
     assert_eq!(prelogin["kdf"], 0);
     assert_eq!(prelogin["kdfIterations"], 600_000);
-    // The security stamp moved, as in Vaultwarden: no access token the account had works any more,
-    // the calling app's included, and the other devices are told their sessions ended.
-    let (status, _) = h.json("GET", "/api/sync", Some(&cli), None).await;
+    // The calling app keeps its session, and the security stamp stays: a Bitwarden client signs
+    // itself out when the stamp of a sync is not the one it had.
+    let (status, synced) = h.json("GET", "/api/sync", Some(&cli), None).await;
+    assert_eq!(status, StatusCode::OK, "the calling app keeps its session");
+    assert_eq!(synced["profile"]["key"], NEW_KEY);
+    assert_eq!(
+        synced["profile"]["securityStamp"],
+        before["profile"]["securityStamp"]
+    );
+    // Every other device's session ends at once: its access token, and its live connections.
+    let (status, _) = h.json("GET", "/api/sync", Some(&phone_access), None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     let told = h.events.take();
     assert!(
@@ -94,19 +107,8 @@ async fn the_kdf_moves_to_the_new_settings_and_only_the_calling_device_refreshes
     );
     h.login(EMAIL, NEW_HASH).await;
 
-    // The calling device refreshes its way back in; every other one signs in again.
-    let (status, back) = h
-        .token(&[
-            ("grant_type", "refresh_token"),
-            ("client_id", "mobile"),
-            ("refresh_token", cli_refresh.as_str()),
-        ])
-        .await;
-    assert_eq!(status, StatusCode::OK, "{back}");
-    let fresh = back["access_token"].as_str().expect("a token");
-    let (status, synced) = h.json("GET", "/api/sync", Some(fresh), None).await;
-    assert_eq!(status, StatusCode::OK, "the new access token works");
-    assert_eq!(synced["profile"]["key"], NEW_KEY);
+    // The calling device refreshes; every other one signs in again.
+    assert_eq!(refresh(&h, &cli_refresh).await, StatusCode::OK);
     assert_eq!(refresh(&h, &phone_refresh).await, StatusCode::BAD_REQUEST);
 }
 
@@ -170,7 +172,7 @@ async fn an_unlock_for_another_user_key_is_refused() {
 }
 
 #[tokio::test]
-async fn a_kdf_change_moves_the_stamp_and_nothing_else_of_the_account() {
+async fn a_kdf_change_leaves_the_account_and_its_stamp_as_they_were() {
     use kemlock_app::ports::UserRepo;
     let h = Harness::new().await;
     let (cli, user) = h.signed_in(EMAIL).await;
@@ -191,9 +193,6 @@ async fn a_kdf_change_moves_the_stamp_and_nothing_else_of_the_account() {
         .await
         .expect("reads")
         .expect("the account");
-    assert_ne!(after.security_stamp, before.security_stamp);
-    let mut same = after.clone();
-    same.security_stamp = before.security_stamp;
-    same.updated_at = before.updated_at;
-    assert_eq!(same, before);
+    // The stamp stays: a Bitwarden client signs itself out when its sync shows a new one.
+    assert_eq!(after, before);
 }
