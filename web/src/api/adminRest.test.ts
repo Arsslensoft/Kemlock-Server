@@ -151,3 +151,13 @@ describe('the Bitwarden invitation link', () => {
     });
   });
 });
+
+describe('changing the owner of a space', () => {
+  it('passes on whether the change was only queued, as the chained space answers it', async () => {
+    const queued = { id: 's1', owners: [], ownerChangeQueued: true };
+    const { admin, calls } = transport({ [`PUT ${BASE}/spaces/s1/owner`]: queued });
+    const answer = await admin.changeOwner('s1', { newOwner: 'u2' }, 'tok');
+    expect(answer.ownerChangeQueued).toBe(true);
+    expect(calls[0]?.body).toEqual({ newOwner: 'u2' });
+  });
+});

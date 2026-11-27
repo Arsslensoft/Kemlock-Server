@@ -398,6 +398,7 @@
   "admin.users.owner.title": "Change owner",
   "admin.users.owner.new": "New owner of {space}",
   "admin.users.owner.confirm": "Make owner",
+  "admin.users.owner.queued": "The change of owner of {space} is queued: the space's owners must sign it before it takes effect.",
   "admin.users.inviteLink.open": "Invitation link",
   "admin.users.inviteLink.openFor": "Copy a Bitwarden invitation link for space {space}",
   "admin.users.inviteLink.title": "Bitwarden invitation link",

@@ -311,3 +311,16 @@ describe('the Bitwarden invitation link', () => {
     expect(screen.getByRole('group', { name: 'Bitwarden invitation link' })).toBeInTheDocument();
   });
 });
+
+describe('UsersView, a change of owner on a chained space', () => {
+  it('says it is queued for the space’s owners to sign, and says nothing when it was not', () => {
+    view({ ownerQueuedFor: 's1aaaaaaaa' });
+    expect(screen.getByText(/change of owner of s1aaaaaa is queued/)).toBeInTheDocument();
+    expect(screen.getByText(/owners must sign it before it takes effect/)).toBeInTheDocument();
+  });
+
+  it('shows no such notice by default', () => {
+    view();
+    expect(screen.queryByText(/is queued/)).not.toBeInTheDocument();
+  });
+});

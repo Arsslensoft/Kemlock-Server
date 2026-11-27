@@ -243,6 +243,11 @@ export interface AdminSpace {
   bitwardenOrganization: boolean;
   /** The invited members of an organization who have a Bitwarden invitation, whose link can be copied. */
   bitwardenInvitations: SpaceOwner[];
+  /**
+   * Only on the answer to a change of owner: true on a chained space, where the change is queued and
+   * takes effect when the space's owners have signed it, not now.
+   */
+  ownerChangeQueued?: boolean;
 }
 
 /**
