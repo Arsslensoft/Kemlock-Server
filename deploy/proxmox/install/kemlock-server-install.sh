@@ -113,11 +113,9 @@ fi
 # short-lived Fulcio certificate, logged in Rekor). No bundle, or one that does not verify, stops
 # the install or update.
 curl -fsSL -o "${tmp}/${asset}.sigstore.json" "${base}/${asset}.sigstore.json"
-repo_re="$(printf '%s' "$REPO" | sed 's/\./\\./g')"
-tag_re="$(printf '%s' "$tag" | sed 's/\./\\./g')"
 if ! "$cosign" verify-blob "${tmp}/${asset}" \
   --bundle "${tmp}/${asset}.sigstore.json" \
-  --certificate-identity-regexp "^https://github\\.com/${repo_re}/\\.github/workflows/release\\.yml@refs/tags/${tag_re}\$" \
+  --certificate-identity "https://github.com/${REPO}/.github/workflows/release.yml@refs/tags/${tag}" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com >/dev/null 2>&1; then
   echo "the cosign signature of ${asset} does not verify" >&2
   exit 1
