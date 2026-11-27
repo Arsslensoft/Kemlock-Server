@@ -112,7 +112,7 @@ describe('the link of an invitation to an organization', () => {
   });
 
   it('says a wrong password is not right, and leaves the form for another press without trying again by itself', async () => {
-    api.organization.mockResolvedValueOnce({ ok: false, reason: 'password', message: 'Invalid password' });
+    api.organization.mockResolvedValueOnce({ ok: false, reason: 'password', message: 'Username or password is incorrect. Try again' });
     open(<AcceptOrganization />, '/accept-organization', link);
     const user = userEvent.setup();
     await user.type(field(), 'wrong');

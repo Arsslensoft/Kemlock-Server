@@ -76,14 +76,22 @@ describe('accepting with the master password hash', () => {
     expect(fetched.mock.calls[0]?.[0]).toBe('/api/emergency-access/grant-1/accept');
   });
 
-  it('says a 400 is the password, which a wrong one and an unknown account share', async () => {
+  it('says a 400 with the bad-login text is the password, which a wrong one and an unknown account share', async () => {
     stub();
-    reply(400, { message: 'Invalid password' });
+    reply(400, { message: 'Username or password is incorrect. Try again' });
     expect(await bwInvitations.acceptOrganization('o', 'u', 't', 'h')).toEqual({
       ok: false,
       reason: 'password',
-      message: 'Invalid password',
+      message: 'Username or password is incorrect. Try again',
     });
+  });
+
+  it('shows any other 400 as a refusal with the server’s message, not as a wrong password', async () => {
+    stub();
+    for (const message of ['User already accepted the invitation', 'Invalid token', 'User not valid', 'Account is disabled']) {
+      reply(400, { message });
+      expect(await bwInvitations.acceptOrganization('o', 'u', 't', 'h')).toEqual({ ok: false, reason: 'other', message });
+    }
   });
 
   it('says a 429 is a limit, with the wait the server gives', async () => {
@@ -101,7 +109,7 @@ describe('accepting with the master password hash', () => {
 
   it('says anything else, or no answer, is some other trouble', async () => {
     stub();
-    reply(404, { message: 'gone' });
+    reply(500, { message: 'gone' });
     expect(await bwInvitations.acceptOrganization('o', 'u', 't', 'h')).toMatchObject({ reason: 'other', message: 'gone' });
     fetched.mockRejectedValueOnce(new Error('offline'));
     expect(await bwInvitations.acceptOrganization('o', 'u', 't', 'h')).toEqual({

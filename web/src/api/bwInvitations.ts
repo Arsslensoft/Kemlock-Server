@@ -8,11 +8,14 @@ import type { BitwardenKdf } from '@/crypto/types';
 /** Why an accept did not go through, as far as the person can act on it. */
 export type Accepted =
   | { ok: true }
-  /** The server said 400 to the hash: a wrong password and an unknown account look the same. */
+  /** The server said 400 with the Bitwarden bad-login text: a wrong password and an unknown account look the same. */
   | { ok: false; reason: 'password'; message: string }
   /** `429`: too many tries; `retryAfter` is the wait in seconds when the server says it. */
   | { ok: false; reason: 'limited'; message: string; retryAfter?: number }
   | { ok: false; reason: 'other'; message: string };
+
+/** What the server says to a wrong master password hash (crates/kemlock-api-bw/src/identity.rs, `BAD_LOGIN`). */
+export const BAD_LOGIN = 'Username or password is incorrect. Try again';
 
 async function messageOf(response: Response): Promise<string> {
   try {
@@ -51,7 +54,9 @@ async function post(path: string, token: string, masterPasswordHash: string): Pr
     const retryAfter = waitOf(response);
     return { ok: false, reason: 'limited', message, ...(retryAfter === undefined ? {} : { retryAfter }) };
   }
-  if (response.status === 400) return { ok: false, reason: 'password', message };
+  // Only the bad-login text is a wrong password. Any other 400 (an expired or bad token, an invitation
+  // already accepted, a user not valid, a disabled account) is a refusal, shown with its message.
+  if (response.status === 400 && message === BAD_LOGIN) return { ok: false, reason: 'password', message };
   return { ok: false, reason: 'other', message };
 }
 
