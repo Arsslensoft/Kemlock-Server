@@ -1,11 +1,15 @@
-//! Vaultwarden's login rate limiter, for the unauthenticated routes it guards: a token bucket per
+//! Vaultwarden's login rate limiter, for the unauthenticated routes it guards: a token         let mut seen: Vec<(i64, IpAddr)> = buckets.iter().map(|(ip, b)| (b.last_used, *ip)).collect();
+        seen.sort_unstable();
+        for (_, ip) in seen.into_iter().take(MAX_ADDRESSES / 10) {
+            buckets.remove(&ip);
+        }ucket per
 //! client address, `LOGIN_RATELIMIT_MAX_BURST` requests at once (10) and one more every
 //! `LOGIN_RATELIMIT_SECONDS` (60). A refusal is a 429; its message is the route's to choose.
 //!
 //! Kept in memory (a restart forgets it, which only lets a client have a few more tries). The map
-//! is bounded: when it is full, buckets that have refilled are dropped first, then the ones with the
-//! most tokens left. A bucket that is drained is the one that matters, so it is never dropped to
-//! make room: with no room left, a new address is refused until one of them refills.
+//! is bounded: when it is full, buckets that have refilled are dropped first, then the least
+//! recently used tenth. A bucket keeps its state (drained or partly) until then, so an address that
+//! keeps asking is the last to go, and a flood of new addresses can't push out a busy one.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv6Addr};
@@ -28,8 +32,6 @@ pub(crate) fn bucket_key(ip: IpAddr) -> IpAddr {
 
 /// The most addresses followed at once before the map makes room.
 const MAX_ADDRESSES: usize = 10_000;
-/// The most it holds even when every bucket in it is drained.
-const HARD_MAX_ADDRESSES: usize = 2 * MAX_ADDRESSES;
 
 #[derive(Debug)]
 pub(crate) struct IpLimit {
@@ -44,6 +46,8 @@ struct Bucket {
     tokens: u32,
     /// When the last token was given back (or the bucket was last full).
     refilled: i64,
+    /// When the address last asked, which says what to drop first when the map is full.
+    last_used: i64,
 }
 
 impl IpLimit {
@@ -57,36 +61,23 @@ impl IpLimit {
         }
     }
 
-    /// The tokens a bucket holds at `now`, the refill not yet written back.
-    fn tokens_at(&self, bucket: &Bucket, now: i64) -> i64 {
-        let given = (now - bucket.refilled).max(0) / self.period;
-        i64::from(bucket.tokens)
-            .saturating_add(given)
-            .min(i64::from(self.burst))
-    }
-
-    /// Drops buckets that are full again, then half of the rest that hold the most tokens. A
-    /// drained bucket (no token left) is a client being limited and is kept.
+    /// Drops the buckets that are full again, and, when that is not enough, the least recently used
+    /// ones, a bucket with some tokens spent as well as a drained one keeping its state until it is
+    /// the least recent. A busy address is the most recent, so it is the last to go.
     fn make_room(&self, buckets: &mut HashMap<IpAddr, Bucket>, now: i64) {
-        buckets.retain(|_, b| self.tokens_at(b, now) < i64::from(self.burst));
+        let full = i64::from(self.burst);
+        buckets.retain(|_, b| {
+            let given = (now - b.refilled).max(0) / self.period;
+            i64::from(b.tokens).saturating_add(given) < full
+        });
         if buckets.len() < MAX_ADDRESSES {
             return;
         }
-        let mut held: Vec<i64> = buckets
-            .values()
-            .map(|b| self.tokens_at(b, now))
-            .filter(|tokens| *tokens > 0)
-            .collect();
-        if held.is_empty() {
-            return;
-        }
-        held.sort_unstable();
-        // The most tokens go: everything above the median of what is left to spare.
-        let cut = held[held.len() / 2];
-        buckets.retain(|_, b| {
-            let tokens = self.tokens_at(b, now);
-            tokens == 0 || tokens < cut
-        });
+        // Down to nine tenths, the oldest use first.
+        let mut seen: Vec<i64> = buckets.values().map(|b| b.last_used).collect();
+        seen.sort_unstable();
+        let cut = seen[seen.len() / 10];
+        buckets.retain(|_, b| b.last_used > cut);
     }
 
     /// Takes one request of `ip` at `now` (Unix seconds). `Err(seconds)` is how long until one is
@@ -96,16 +87,13 @@ impl IpLimit {
         let mut buckets = self.buckets.lock().unwrap_or_else(PoisonError::into_inner);
         if buckets.len() >= MAX_ADDRESSES && !buckets.contains_key(&ip) {
             self.make_room(&mut buckets, now);
-            if buckets.len() >= HARD_MAX_ADDRESSES {
-                // Every address held is drained: none is dropped for a stranger.
-                let wait = self.period.min(60);
-                return Err(u64::try_from(wait).unwrap_or(1));
-            }
         }
         let bucket = buckets.entry(ip).or_insert(Bucket {
             tokens: self.burst,
             refilled: now,
+            last_used: now,
         });
+        bucket.last_used = now;
         let given = (now - bucket.refilled).max(0) / self.period;
         if given > 0 {
             let tokens = i64::from(bucket.tokens).saturating_add(given);
@@ -184,9 +172,10 @@ mod tests {
     }
 
     #[test]
-    fn making_room_keeps_the_drained_buckets() {
+    fn making_room_drops_the_least_recently_used_and_keeps_a_busy_drained_bucket() {
         let limit = IpLimit::new(2, 60);
-        // One address drained, then the map filled with addresses that used one token each.
+        // One address drains its bucket and keeps asking; the map then fills with addresses that
+        // each used a token once.
         for _ in 0..2 {
             assert_eq!(limit.check(ONE, 0), Ok(()));
         }
@@ -197,10 +186,17 @@ mod tests {
                 limit.check(IpAddr::V4(Ipv4Addr::new(a | 10, b, c, d)), 1),
                 Ok(())
             );
+            if n % 1_000 == 0 {
+                assert!(limit.check(ONE, 1).is_err());
+            }
         }
-        // A new address finds the map full, and the drained one is still limited after.
-        assert_eq!(limit.check(OTHER, 1), Ok(()));
-        assert!(limit.check(ONE, 1).is_err(), "the drained bucket stayed");
+        // A new address is let in (the oldest tenth went), and the busy drained one is still limited.
+        assert_eq!(limit.check(OTHER, 2), Ok(()));
+        assert!(limit.check(ONE, 2).is_err(), "the busy bucket stayed");
+        // An address that asked once, a while ago, was one of those dropped: it starts afresh.
+        let first = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0));
+        assert_eq!(limit.check(first, 3), Ok(()));
+        assert_eq!(limit.check(first, 3), Ok(()));
     }
 
     #[test]

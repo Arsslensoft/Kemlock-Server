@@ -83,11 +83,43 @@ impl RecipientLimit {
         if last.len() >= MAX_RECIPIENTS {
             last.retain(|_, at| now - *at < gap);
         }
-        // A map still full of recent ones leaves this one out rather than refusing it: the address
-        // limit is what stops a flood, and an honest asker is not turned away for it.
-        if last.len() < MAX_RECIPIENTS {
-            last.insert(key, now);
+        // A map still full of recent ones drops its oldest entry, so the limit never goes missing
+        // for the newest address (the address limit is what stops a flood of them).
+        if last.len() >= MAX_RECIPIENTS
+            && let Some(oldest) = last
+                .iter()
+                .min_by_key(|(_, at)| **at)
+                .map(|(k, _)| k.clone())
+        {
+            last.remove(&oldest);
         }
+        last.insert(key, now);
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_address_is_mailed_once_in_the_gap_and_a_full_map_drops_its_oldest() {
+        let limit = RecipientLimit::default();
+        assert!(limit.take("a@example.com", 1_000));
+        assert!(!limit.take(" A@Example.com ", 1_001));
+        assert!(limit.take("b@example.com", 1_001));
+        let gap = kemlock_app::signup_verify::RESEND_AFTER.whole_seconds();
+        assert!(limit.take("a@example.com", 1_000 + gap));
+
+        // A map full of recent addresses forgets the oldest, not the limit: the newest stays held.
+        let full = RecipientLimit::default();
+        for n in 0..MAX_RECIPIENTS {
+            let at = 5_000 + i64::try_from(n).expect("small");
+            assert!(full.take(&format!("p{n}@example.com"), at));
+        }
+        let now = 5_000 + i64::try_from(MAX_RECIPIENTS).expect("small");
+        assert!(full.take("new@example.com", now));
+        assert!(!full.take("new@example.com", now + 1));
+        assert!(full.take("p0@example.com", now + 2), "the oldest was dropped");
     }
 }
