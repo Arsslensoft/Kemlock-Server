@@ -647,8 +647,7 @@ async fn bulk_reinvite<S: BwStore>(
     for id in data.ids {
         let error = match members::reinvite(&app, &ctx, &id).await {
             Ok(()) => String::new(),
-            Err(BwError::Msg(text)) => text,
-            Err(other) => format!("{other:?}"),
+            Err(error) => error.bulk_line_text(),
         };
         lines.push(bulk_line(
             "OrganizationBulkConfirmResponseModel",
@@ -707,8 +706,7 @@ async fn bulk_confirm<S: BwStore>(
         let key = invite.key.unwrap_or_default();
         let error = match members::confirm(&app, &ctx, &member_id, &key).await {
             Ok(()) => String::new(),
-            Err(BwError::Msg(text)) => text,
-            Err(other) => format!("{other:?}"),
+            Err(error) => error.bulk_line_text(),
         };
         lines.push(bulk_line(
             "OrganizationBulkConfirmResponseModel",
@@ -758,8 +756,7 @@ async fn bulk_delete_members<S: BwStore>(
         };
         let error = match members::remove(&app, &fresh, &id).await {
             Ok(()) => String::new(),
-            Err(BwError::Msg(text)) => text,
-            Err(other) => format!("{other:?}"),
+            Err(error) => error.bulk_line_text(),
         };
         lines.push(bulk_line(
             "OrganizationBulkConfirmResponseModel",
@@ -797,8 +794,7 @@ async fn bulk_revoke<S: BwStore>(
         };
         let error = match members::revoke(&app, &fresh, &id).await {
             Ok(()) => String::new(),
-            Err(BwError::Msg(text)) => text,
-            Err(other) => format!("{other:?}"),
+            Err(error) => error.bulk_line_text(),
         };
         lines.push(bulk_line("OrganizationUserBulkResponseModel", &id, &error));
     }
@@ -832,8 +828,7 @@ async fn bulk_restore<S: BwStore>(
         };
         let error = match members::restore(&app, &fresh, &id).await {
             Ok(()) => String::new(),
-            Err(BwError::Msg(text)) => text,
-            Err(other) => format!("{other:?}"),
+            Err(error) => error.bulk_line_text(),
         };
         lines.push(bulk_line("OrganizationUserBulkResponseModel", &id, &error));
     }
