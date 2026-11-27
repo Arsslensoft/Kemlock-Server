@@ -36,7 +36,7 @@ pub mod state;
 
 pub use callback::{CallbackInput, SsoCallback};
 pub use config::SsoConfig;
-pub use domains::DomainProofs;
+pub use domains::{DomainProofs, Rechecked};
 pub use error::SsoError;
 pub use finish::{FinishInput, SsoFinish, SsoSignedIn};
 pub use logout::{LogoutOutcome, SsoLogout};

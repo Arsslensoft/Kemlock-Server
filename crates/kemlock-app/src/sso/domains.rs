@@ -69,6 +69,17 @@ fn hex(bytes: &[u8]) -> String {
     out
 }
 
+/// What [`DomainProofs::recheck_stale`] found.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Rechecked {
+    /// Claims whose record is still there.
+    pub kept: u64,
+    /// Claims whose record is gone: pending again.
+    pub dropped: u64,
+    /// Claims whose lookup failed: left as they were.
+    pub unreachable: u64,
+}
+
 #[derive(Debug)]
 pub struct DomainProofs<R, T, E> {
     pub repos: R,
@@ -123,6 +134,41 @@ impl<R: VerifiedDomainRepo, T: TxtLookup, E: Platform> DomainProofs<R, T, E> {
             .domain_claim(&domain)
             .await?
             .is_some_and(|c| c.is_verified()))
+    }
+
+    /// Looks again for the record of every claim verified `max_age` ago or longer. A claim whose
+    /// record is still there is verified afresh (so it is looked at again `max_age` later); one
+    /// whose record is gone goes back to pending, and the rules that need a verified domain stop
+    /// applying to it: a domain that was let go or changed hands must not stay proven for good. A
+    /// lookup that fails says nothing, so the claim is left as it is for the next run.
+    pub async fn recheck_stale(&self, max_age: time::Duration) -> Result<Rechecked, SsoError> {
+        let now = self.env.now();
+        let mut done = Rechecked::default();
+        for mut claim in self.repos.domain_claims().await? {
+            let Some(since) = claim.verified_at else {
+                continue;
+            };
+            if now < since + max_age {
+                continue;
+            }
+            match self.dns.txt_records(&claim.domain).await {
+                Ok(records) if records_prove(&records, &claim.token) => {
+                    claim.verified_at = Some(now);
+                    done.kept += 1;
+                }
+                Ok(_) => {
+                    claim.verified_at = None;
+                    done.dropped += 1;
+                }
+                Err(error) => {
+                    tracing::warn!(domain = %claim.domain, %error, "couldn't look up a domain's proof again");
+                    done.unreachable += 1;
+                    continue;
+                }
+            }
+            self.repos.put_domain_claim(&claim).await?;
+        }
+        Ok(done)
     }
 
     /// Drops a claim, proven or not.
