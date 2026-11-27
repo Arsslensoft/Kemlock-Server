@@ -1062,6 +1062,62 @@ fn signed_rewrite(by: &Who, space: Uuid, bound: Uuid, mut write: Value) -> Value
     write
 }
 
+/// An append body of `mib` MiB that is no append: whitespace, which the route reads before it
+/// parses anything.
+fn padding(mib: usize) -> Req<'static> {
+    Req {
+        raw_body: Some(vec![b' '; mib * 1024 * 1024]),
+        ..Req::default()
+    }
+}
+
+/// `request` posted to the chain of `space` as `who`.
+async fn post_as(who: &Who, space: Uuid, request: Req<'static>) -> Reply {
+    who.client
+        .send(
+            "POST",
+            &uri(space),
+            Req {
+                access_token: Some(who.session.access_token.as_str()),
+                ..request
+            },
+        )
+        .await
+}
+
+#[tokio::test]
+async fn a_body_over_8_mib_is_read_only_from_a_member_who_may_replace_keys() {
+    let rig = Rig::new();
+    let sam = rig.person("sam@example.org", 1).await;
+    let zed = rig.person("zed@example.org", 2).await;
+    let (space, _collection, _chain, _) = make(&rig, &sam).await;
+    // Nobody signed in is refused before the body is read.
+    let anon = Client::new(
+        rig.router.clone(),
+        rig.app.clock.clone(),
+        DpopSigner::es256(),
+    );
+    let reply = anon.send("POST", &uri(space), padding(9)).await;
+    assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
+
+    // Someone who is no member of the space gets the ordinary limit: 413 past 8 MiB, and nothing
+    // of the space.
+    let reply = post_as(&zed, space, padding(9)).await;
+    assert_eq!(reply.status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(reply.problem(), "payload-too-large");
+
+    // A member who may replace keys is read to 32 MiB: 9 MiB passes the size check and fails as
+    // the JSON it isn't, and 33 MiB is too large.
+    let reply = post_as(&sam, space, padding(9)).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+    let reply = post_as(&sam, space, padding(33)).await;
+    assert_eq!(reply.status, StatusCode::PAYLOAD_TOO_LARGE);
+
+    // Its place among the large bodies came back with each answer: one more still passes.
+    let reply = post_as(&sam, space, padding(9)).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+}
+
 #[tokio::test]
 async fn a_signed_rewrite_is_stored_with_its_signature_and_one_that_binds_another_collection_is_refused()
  {

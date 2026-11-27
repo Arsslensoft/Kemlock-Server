@@ -26,13 +26,15 @@ use crate::dto::decode;
 use crate::problem::Problem;
 use crate::routes::spaces::{Caller, Env, mail_invitations, nonce_header};
 use crate::state::{Api, Crypto, Store};
-use axum::body::Bytes;
-use axum::extract::{FromRequest, Path, Query, Request, State};
+use axum::body::{Body, Bytes};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::middleware;
 use axum::routing::get;
 use axum::routing::post;
 use axum::{Json, Router};
+use futures_util::StreamExt;
+use kemlock_app::authenticate::Actor;
 use kemlock_app::ports::TokenSigner;
 use kemlock_app::spaces::{
     AppendChain, AppendError, AppendRequest, ChainHead, ChainReadError, GetChain, GetChainSeals,
@@ -43,30 +45,135 @@ use kemlock_app::{AppError, b64url};
 use kemlock_crypto::space_chain::{KeyRef, NameTarget, Reason, SignedRecord};
 use kemlock_domain::spaces::CollectionId;
 use kemlock_domain::spaces::CustomPermissions;
+use kemlock_domain::spaces::SpaceRole;
 use kemlock_domain::{ItemError, ItemId, Revision, SpaceId, UserId};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::BTreeSet;
+use std::sync::{Mutex, PoisonError};
 use utoipa::{OpenApi, ToSchema};
 use uuid::Uuid;
 
-/// The most a request to the append route may weigh: 16 records of 192 KiB, base64url, with their
-/// signatures, boxes and names.
+/// The most a request to the append route may weigh, whoever sends it: 16 records of 192 KiB,
+/// base64url, with their signatures, boxes and names.
 const MAX_CHAIN_BODY_BYTES: usize = 8 * 1024 * 1024;
 
-/// The raw body of an append, read up to [`MAX_CHAIN_BODY_BYTES`]. The ordinary body limit is
-/// 2 MiB, which a request of large records exceeds.
+/// The most a request may weigh when it is sent by a confirmed member who may replace keys. A key
+/// replacement writes every live item of the replaced collections again in the same request, and
+/// each carries its signature ("Signed item writes", 3,373 bytes, 4.5 KiB in base64url), so the
+/// request grows with the items: this is room for about 5,000 items of ordinary size.
+const MAX_REPLACEMENT_BODY_BYTES: usize = 32 * 1024 * 1024;
+
+/// The most large bodies (above [`MAX_CHAIN_BODY_BYTES`]) this server reads and handles at once.
+const MAX_LARGE_BODIES: usize = 2;
+
+/// The accounts that have a large body being read or handled: at most [`MAX_LARGE_BODIES`] in all,
+/// and one for each account.
+static LARGE_BODIES: Mutex<BTreeSet<[u8; 16]>> = Mutex::new(BTreeSet::new());
+
+/// A place among the large bodies, held until the request is answered.
 #[derive(Debug)]
-struct ChainBody(Bytes);
+struct LargeBody {
+    account: [u8; 16],
+}
 
-impl<S: Send + Sync> FromRequest<S> for ChainBody {
-    type Rejection = Problem;
-
-    async fn from_request(req: Request, _state: &S) -> Result<Self, Problem> {
-        axum::body::to_bytes(req.into_body(), MAX_CHAIN_BODY_BYTES)
-            .await
-            .map(ChainBody)
-            .map_err(|_| Problem::payload_too_large())
+impl LargeBody {
+    /// Takes a place for `account`, or answers `429` when the server's places or the account's are
+    /// taken.
+    fn take(account: [u8; 16]) -> Result<LargeBody, Problem> {
+        let mut busy = LARGE_BODIES.lock().unwrap_or_else(PoisonError::into_inner);
+        if busy.len() >= MAX_LARGE_BODIES || !busy.insert(account) {
+            return Err(Problem::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                "busy",
+                "Another large request is being handled",
+            )
+            .detail("Try again in a moment"));
+        }
+        Ok(LargeBody { account })
     }
+}
+
+impl Drop for LargeBody {
+    fn drop(&mut self) {
+        LARGE_BODIES
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.account);
+    }
+}
+
+/// The raw body of an append. The ordinary body limit is 2 MiB, which a request of large records
+/// exceeds, so it is read here: up to [`MAX_CHAIN_BODY_BYTES`] from anyone who is signed in, and
+/// up to [`MAX_REPLACEMENT_BODY_BYTES`] once the caller is known to be a confirmed member who may
+/// replace keys, and has a place among the large bodies.
+#[derive(Debug)]
+struct ChainBody {
+    bytes: Bytes,
+    _large: Option<LargeBody>,
+}
+
+/// Whether `actor` is a confirmed member of `space` who may replace its keys or re-write items: an
+/// owner or an admin, or a member with edit on a collection. What the use case then decides is
+/// stricter; this only decides who may send more than the ordinary limit.
+async fn may_send_large<S, P, K, R>(env: &Env<S, P, K, R>, actor: &Actor, space: SpaceId) -> bool
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: SpaceRepo + SpaceChainRepo + Clone + 'static,
+{
+    let Ok(Some(state)) = env.spaces.load(space).await else {
+        return false;
+    };
+    let Ok(member) = state.confirmed_actor(actor.user) else {
+        return false;
+    };
+    matches!(member.role, SpaceRole::Owner | SpaceRole::Admin)
+        || state
+            .collections
+            .iter()
+            .any(|c| state.access(actor.user, c.id).is_some_and(|a| a.edit))
+}
+
+/// Reads an append's body after the caller is authenticated, as a stream, so a body over the
+/// ordinary limit is not buffered past it unless the caller may send more: the chunk that would
+/// cross it is held back until [`may_send_large`] and a place among the large bodies say so, and
+/// `413` answers otherwise (a stranger and a plain viewer alike).
+async fn read_chain_body<S, P, K, R>(
+    env: &Env<S, P, K, R>,
+    actor: &Actor,
+    space: SpaceId,
+    body: Body,
+) -> Result<ChainBody, Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: SpaceRepo + SpaceChainRepo + Clone + 'static,
+{
+    let mut stream = body.into_data_stream();
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut limit = MAX_CHAIN_BODY_BYTES;
+    let mut large = None;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| bad("the body couldn't be read"))?;
+        if bytes.len().saturating_add(chunk.len()) > limit {
+            if large.is_some() || !may_send_large(env, actor, space).await {
+                return Err(Problem::payload_too_large());
+            }
+            large = Some(LargeBody::take(*actor.user.as_bytes())?);
+            limit = MAX_REPLACEMENT_BODY_BYTES;
+            if bytes.len().saturating_add(chunk.len()) > limit {
+                return Err(Problem::payload_too_large());
+            }
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(ChainBody {
+        bytes: Bytes::from(bytes),
+        _large: large,
+    })
 }
 
 fn bad(why: &'static str) -> Problem {
@@ -405,7 +512,7 @@ where
 
 /// Reads an append request's JSON into what the use case takes.
 fn read_request(body: &ChainBody) -> Result<AppendRequest, Problem> {
-    let request: AppendRequestDto = serde_json::from_slice(&body.0)
+    let request: AppendRequestDto = serde_json::from_slice(&body.bytes)
         .map_err(|e| Problem::bad_request(format!("the body isn't the JSON expected: {e}")))?;
     let mut records = Vec::with_capacity(request.records.len());
     for (i, record) in request.records.iter().enumerate() {
@@ -488,7 +595,7 @@ async fn append_chain<S, P, K, R>(
     State(env): State<Env<S, P, K, R>>,
     caller: Caller,
     Path(id): Path<String>,
-    body: ChainBody,
+    body: Body,
 ) -> Result<(StatusCode, Json<HeadDto>), Problem>
 where
     S: Store,
@@ -497,8 +604,9 @@ where
     R: SpaceRepo + SpaceChainRepo + Clone + 'static,
 {
     let space = space_id(&id)?;
-    let request = read_request(&body)?;
     let actor = caller.actor();
+    let body = read_chain_body(&env, &actor, space, body).await?;
+    let request = read_request(&body)?;
     verify_rewrites(&env, actor.user, &request).await?;
     let invited = invitees(&request);
     let head = append_use_case(&env)
@@ -512,7 +620,7 @@ async fn answer_pending<S, P, K, R>(
     State(env): State<Env<S, P, K, R>>,
     caller: Caller,
     Path((id, pending)): Path<(String, String)>,
-    body: ChainBody,
+    body: Body,
 ) -> Result<(StatusCode, Json<HeadDto>), Problem>
 where
     S: Store,
@@ -522,8 +630,9 @@ where
 {
     let space = space_id(&id)?;
     let pending: Uuid = pending.parse().map_err(|_| bad("the id isn't a UUID"))?;
-    let request = read_request(&body)?;
     let actor = caller.actor();
+    let body = read_chain_body(&env, &actor, space, body).await?;
+    let request = read_request(&body)?;
     verify_rewrites(&env, actor.user, &request).await?;
     let invited = invitees(&request);
     let head = append_use_case(&env)
@@ -795,4 +904,27 @@ struct SpaceChainDoc;
 /// The OpenAPI document of the space chain routes alone.
 pub fn openapi() -> utoipa::openapi::OpenApi {
     SpaceChainDoc::openapi()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn large_bodies_are_two_at_once_and_one_for_each_account() {
+        let first = LargeBody::take([1; 16]).expect("a place");
+        // The same account may not have a second one in hand.
+        assert!(LargeBody::take([1; 16]).is_err());
+        let second = LargeBody::take([2; 16]).expect("a second place");
+        // The server has two places only.
+        assert!(LargeBody::take([3; 16]).is_err());
+        // A place comes back when its request is over, for that account and for another.
+        drop(first);
+        let third = LargeBody::take([3; 16]).expect("a place came back");
+        assert!(LargeBody::take([1; 16]).is_err());
+        drop(second);
+        drop(third);
+        let again = LargeBody::take([1; 16]).expect("all places came back");
+        drop(again);
+    }
 }
