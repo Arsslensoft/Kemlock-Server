@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { type AdminTransport, createAdminApi } from './admin';
+import { type AdminTransport, createAdminApi, isCopyFromAnotherServer } from './admin';
+import { ApiError } from './errors';
 import type { FeatureCall } from './client';
 
 // The admin calls added with the passkey step-up, the push relay, account erasure and the
@@ -159,5 +160,72 @@ describe('changing the owner of a space', () => {
     const answer = await admin.changeOwner('s1', { newOwner: 'u2' }, 'tok');
     expect(answer.ownerChangeQueued).toBe(true);
     expect(calls[0]?.body).toEqual({ newOwner: 'u2' });
+  });
+});
+
+describe('the federation writes that need a step-up token', () => {
+  it('send the token on promote, demotion and the rotation of this server’s identity', async () => {
+    const { admin, calls } = transport({
+      [`POST ${BASE}/federation/vaults/o1/promote`]: { record: 'r' },
+      [`POST ${BASE}/federation/vaults/o1/demotion`]: {},
+      [`POST ${BASE}/federation/self/identity-rotation`]: { identityKey: 'k' },
+    });
+    await admin.promote('o1', { homeIsDown: true }, 'tok');
+    await admin.acceptDemotion('o1', 'tok');
+    await admin.rotateIdentity('tok');
+    for (const call of calls) expect(call.headers).toEqual({ 'Step-Up-Token': 'tok' });
+  });
+
+  it('send none when they are given none, which the server answers with 403 step-up-required', async () => {
+    const { admin, calls } = transport({ [`POST ${BASE}/federation/vaults/o1/promote`]: { record: 'r' } });
+    await admin.promote('o1', { homeIsDown: false });
+    expect(calls[0]?.headers).toBeUndefined();
+  });
+});
+
+describe('held peer key rotations', () => {
+  it('are listed with the peer, when they were held and the new key’s fingerprint', async () => {
+    const { admin } = transport({
+      [`GET ${BASE}/federation/rotations`]: [{ peer: 'p1', heldAt: 5, fingerprint: 'ab12' }],
+    });
+    expect(await admin.rotations()).toEqual([{ peerId: 'p1', heldAt: 5, fingerprint: 'ab12' }]);
+  });
+
+  it('are accepted or refused with the step-up token, naming the fingerprint', async () => {
+    const { admin, calls } = transport({ [`POST ${BASE}/federation/peers/p1/rotation?fingerprint=ab12`]: {} });
+    await admin.acceptRotation('p1', 'tok', 'ab12');
+    await admin.refuseRotation('p1', 'tok', 'ab12');
+    expect(calls.map((call) => [call.method, call.path])).toEqual([
+      ['POST', `${BASE}/federation/peers/p1/rotation?fingerprint=ab12`],
+      ['DELETE', `${BASE}/federation/peers/p1/rotation?fingerprint=ab12`],
+    ]);
+    for (const call of calls) expect(call.headers).toEqual({ 'Step-Up-Token': 'tok' });
+  });
+
+  it('name no fingerprint when none is given', async () => {
+    const { admin, calls } = transport({});
+    await admin.acceptRotation('p1', 'tok');
+    expect(calls[0]?.path).toBe(`${BASE}/federation/peers/p1/rotation`);
+  });
+});
+
+describe('accepting an offer', () => {
+  it('is plain, or asks to move the vault’s home here with ?rehome=true', async () => {
+    const { admin, calls } = transport({});
+    await admin.federate('o1', 'tok');
+    await admin.federate('o1', 'tok', true);
+    expect(calls.map((call) => call.path)).toEqual([
+      `${BASE}/federation/offers/o1/accept`,
+      `${BASE}/federation/offers/o1/accept?rehome=true`,
+    ]);
+  });
+
+  it('is told apart when the plain accept is refused because the account is a copy', () => {
+    const problem = (slug: string, status: number) =>
+      new ApiError(status, { type: `urn:kemlock:problem:${slug}`, title: slug, status } as never);
+    expect(isCopyFromAnotherServer(problem('account-is-a-copy', 409))).toBe(true);
+    expect(isCopyFromAnotherServer(problem('account-is-a-copy', 403))).toBe(false);
+    expect(isCopyFromAnotherServer(problem('something-else', 409))).toBe(false);
+    expect(isCopyFromAnotherServer(new Error('copy'))).toBe(false);
   });
 });

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Fragment, useState } from 'react';
-import type { AddressChange, FedVault, FederationOverview, Peer, PeerState } from '@/api/admin';
+import { type AddressChange, type FedVault, type FederationOverview, type KeyRotation, type Peer, type PeerState, isCopyFromAnotherServer } from '@/api/admin';
 import { type MessageId, useT } from '@/i18n';
 import { Button } from '@/ui/Button';
 import { Notice } from '@/ui/Notice';
@@ -56,6 +56,16 @@ export interface FederationViewProps {
   onApproveAddresses?: (change: AddressChange) => void;
   /** Keeps the addresses this server knew. */
   onRefuseAddresses?: (change: AddressChange) => void;
+  /** Peer key rotations held for the admin: the new key's fingerprint, to compare before accepting. */
+  rotations?: KeyRotation[] | undefined;
+  /** Pins the held key of the peer (the one with this fingerprint). */
+  onAcceptRotation?: (rotation: KeyRotation) => void;
+  /** Drops the held key without pinning it. */
+  onRefuseRotation?: (rotation: KeyRotation) => void;
+  /** The vault whose plain accept was refused because the account is a copy from another server. */
+  rehomeFor?: string | undefined;
+  /** Accepts the offer and takes over as the vault's home. */
+  onAcceptRehome?: (vault: FedVault) => void;
   /** Trusts a contested peer again. */
   onClearContest?: (peer: Peer) => void;
   /** Unpairs a contested peer, to pair it again with a new code. */
@@ -80,6 +90,11 @@ export function FederationView({
   addressChanges,
   onApproveAddresses,
   onRefuseAddresses,
+  rotations,
+  onAcceptRotation,
+  onRefuseRotation,
+  rehomeFor,
+  onAcceptRehome,
   onClearContest,
   onUnpair,
   labelsOf,
@@ -429,6 +444,17 @@ export function FederationView({
                             >
                               {t('admin.fed.decline')}
                             </Button>
+                            {rehomeFor === vault.id && onAcceptRehome ? (
+                              <Button
+                                size="small"
+                                variant="primary"
+                                isDisabled={busy}
+                                aria-label={t('admin.fed.acceptRehome.of', { name })}
+                                onPress={() => onAcceptRehome(vault)}
+                              >
+                                {t('admin.fed.acceptRehome')}
+                              </Button>
+                            ) : null}
                           </>
                         ) : null}
                       </div>
@@ -528,6 +554,52 @@ export function FederationView({
                   </div>
                 </li>
               ))}
+          </ul>
+        </section>
+      ) : null}
+
+      {rotations && rotations.length > 0 ? (
+        <section className="card" aria-labelledby="h-rotations">
+          <div className="adm-head">
+            <h2 id="h-rotations">{t('admin.fed.rotations.title')}</h2>
+          </div>
+          <p className="hint adm-pad">{t('admin.fed.rotations.hint')}</p>
+          <ul className="adm-list">
+            {rotations.map((rotation) => (
+              <li key={`${rotation.peerId}:${rotation.fingerprint}`}>
+                <div>
+                  <b>{nameOf(rotation.peerId)}</b>
+                  <div className="adm-cell-sub">
+                    {t('admin.fed.rotations.held', { when: relative(rotation.heldAt, now) })}
+                  </div>
+                  <div className="mono" aria-label={t('admin.fed.rotations.fingerprint.of', { peer: nameOf(rotation.peerId) })}>
+                    {rotation.fingerprint}
+                  </div>
+                </div>
+                <div className="adm-row-actions">
+                  {onAcceptRotation ? (
+                    <Button
+                      size="small"
+                      isDisabled={busy}
+                      aria-label={t('admin.fed.rotations.accept.of', { peer: nameOf(rotation.peerId) })}
+                      onPress={() => onAcceptRotation(rotation)}
+                    >
+                      {t('admin.fed.rotations.accept')}
+                    </Button>
+                  ) : null}
+                  {onRefuseRotation ? (
+                    <Button
+                      size="small"
+                      isDisabled={busy}
+                      aria-label={t('admin.fed.rotations.refuse.of', { peer: nameOf(rotation.peerId) })}
+                      onPress={() => onRefuseRotation(rotation)}
+                    >
+                      {t('admin.fed.rotations.refuse')}
+                    </Button>
+                  ) : null}
+                </div>
+              </li>
+            ))}
           </ul>
         </section>
       ) : null}
@@ -637,8 +709,39 @@ export default function Federation() {
       guard((grant) => admin.promote(v.vault.id, { homeIsDown: v.homeIsDown }, grant)),
     onSuccess: refresh,
   });
+  // The vault whose plain accept was refused because the account is a copy from another server: the
+  // admin may then accept and move the vault's home here.
+  const [rehomeFor, setRehomeFor] = useState<string | undefined>(undefined);
   const accept = useMutation({
     mutationFn: (vault: FedVault) => guard((grant) => admin.federate(vault.id, grant)),
+    onSuccess: () => {
+      setRehomeFor(undefined);
+      return refresh();
+    },
+    onError: (error, vault) => {
+      if (isCopyFromAnotherServer(error)) setRehomeFor(vault.id);
+    },
+  });
+  const acceptRehome = useMutation({
+    mutationFn: (vault: FedVault) => guard((grant) => admin.federate(vault.id, grant, true)),
+    onSuccess: () => {
+      setRehomeFor(undefined);
+      return refresh();
+    },
+  });
+  const rotations = useQuery({
+    queryKey: ['admin', 'federation', 'rotations'],
+    queryFn: () => admin.rotations(),
+    refetchInterval: 15_000,
+  });
+  const acceptRotation = useMutation({
+    mutationFn: (rotation: KeyRotation) =>
+      guard((grant) => admin.acceptRotation(rotation.peerId, grant, rotation.fingerprint)),
+    onSuccess: refresh,
+  });
+  const refuseRotation = useMutation({
+    mutationFn: (rotation: KeyRotation) =>
+      guard((grant) => admin.refuseRotation(rotation.peerId, grant, rotation.fingerprint)),
     onSuccess: refresh,
   });
   const decline = useMutation({
@@ -688,6 +791,11 @@ export default function Federation() {
         onRunConsistency={() => consistency.mutate()}
         onPromote={(vault, homeIsDown) => promote.mutate({ vault, homeIsDown })}
         onAccept={(vault) => accept.mutate(vault)}
+        rehomeFor={rehomeFor}
+        onAcceptRehome={(vault) => acceptRehome.mutate(vault)}
+        rotations={rotations.data}
+        onAcceptRotation={(rotation) => acceptRotation.mutate(rotation)}
+        onRefuseRotation={(rotation) => refuseRotation.mutate(rotation)}
         onDecline={(vault) => decline.mutate(vault)}
         onAcceptDemotion={(vault, newHomeId) => demotion.mutate({ vault, newHomeId })}
         onRefuseDemotion={(vault, newHomeId) => refuseDemotion.mutate({ vault, newHomeId })}
@@ -702,6 +810,9 @@ export default function Federation() {
           consistency.isPending ||
           promote.isPending ||
           accept.isPending ||
+          acceptRehome.isPending ||
+          acceptRotation.isPending ||
+          refuseRotation.isPending ||
           demotion.isPending ||
           refuseDemotion.isPending ||
           approveAddresses.isPending ||
@@ -714,7 +825,10 @@ export default function Federation() {
           check.error ??
           consistency.error ??
           promote.error ??
-          accept.error ??
+          (isCopyFromAnotherServer(accept.error) ? undefined : accept.error) ??
+          acceptRehome.error ??
+          acceptRotation.error ??
+          refuseRotation.error ??
           decline.error ??
           demotion.error ??
           refuseDemotion.error ??

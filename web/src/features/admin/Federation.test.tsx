@@ -321,3 +321,72 @@ describe('FederationView', () => {
     expect(onRunConsistency).toHaveBeenCalled();
   });
 });
+
+describe('FederationView, held key rotations', () => {
+  const rotation = { peerId: 'a'.repeat(32), heldAt: NOW - 120, fingerprint: '3b9e71c4a05d2f86' };
+
+  function withRotations(props: Partial<Parameters<typeof FederationView>[0]> = {}) {
+    const handlers = { onAcceptRotation: vi.fn(), onRefuseRotation: vi.fn() };
+    renderWithIntl(
+      <FederationView
+        overview={OVERVIEW}
+        labelsOf={fakeLabels}
+        now={NOW}
+        onNavigate={vi.fn()}
+        onSetLogs={vi.fn()}
+        onCheckKeys={vi.fn()}
+        onRunConsistency={vi.fn()}
+        onPromote={vi.fn()}
+        onAccept={vi.fn()}
+        onDecline={vi.fn()}
+        rotations={[rotation]}
+        {...handlers}
+        {...props}
+      />,
+    );
+    return handlers;
+  }
+
+  it('lists the new key’s fingerprint and applies nothing until Accept or Refuse is pressed', async () => {
+    const { onAcceptRotation, onRefuseRotation } = withRotations();
+    const card = within(screen.getByRole('region', { name: 'Key changes waiting' }));
+    expect(card.getByText('3b9e71c4a05d2f86')).toBeInTheDocument();
+    expect(onAcceptRotation).not.toHaveBeenCalled();
+    const user = userEvent.setup();
+    await user.click(card.getByRole('button', { name: /^Refuse the new key of / }));
+    expect(onRefuseRotation).toHaveBeenCalledWith(rotation);
+    await user.click(card.getByRole('button', { name: /^Accept the new key of / }));
+    expect(onAcceptRotation).toHaveBeenCalledWith(rotation);
+  });
+
+  it('shows no card when nothing is held', () => {
+    withRotations({ rotations: [] });
+    expect(screen.queryByRole('region', { name: 'Key changes waiting' })).not.toBeInTheDocument();
+  });
+});
+
+describe('FederationView, an offer for an account that is a copy from another server', () => {
+  it('offers to accept and move the vault’s home here only after the plain accept said so', async () => {
+    const onAcceptRehome = vi.fn();
+    const props = {
+      overview: OVERVIEW,
+      labelsOf: fakeLabels,
+      now: NOW,
+      onNavigate: vi.fn(),
+      onSetLogs: vi.fn(),
+      onCheckKeys: vi.fn(),
+      onRunConsistency: vi.fn(),
+      onPromote: vi.fn(),
+      onAccept: vi.fn(),
+      onDecline: vi.fn(),
+      onAcceptRehome,
+    };
+    const { unmount } = renderWithIntl(<FederationView {...props} />);
+    expect(screen.queryByRole('button', { name: /move its home here/ })).not.toBeInTheDocument();
+    unmount();
+    renderWithIntl(<FederationView {...props} rehomeFor="v2" />);
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Accept Side projects and move its home here' }));
+    expect(onAcceptRehome).toHaveBeenCalledWith(expect.objectContaining({ id: 'v2' }));
+    expect(screen.getByRole('button', { name: 'Accept request to federate Side projects' })).toBeInTheDocument();
+  });
+});
