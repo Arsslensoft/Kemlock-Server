@@ -17,8 +17,9 @@
 #   2. merging: squash only, auto-merge allowed, branches deleted once merged;
 #   3. Actions: a read-only default token, and Actions may approve pull requests (Dependabot's
 #      auto-merge workflow needs that);
-#   4. a ruleset on the default branch: pull request, approval, the required checks `ci-ok` and
-#      `DCO`, linear history, no force push, no deletion;
+#   4. a ruleset on the default branch: pull request, approval (of the last push too), the required
+#      checks (`ci-ok`, `DCO`, the PR title, dependency review, gitleaks and CodeQL), linear history, no
+#      force push, no deletion;
 #   4b. a ruleset on version tags (v1.2.3 and 1.2.3): only admins may create, move or delete one,
 #      so a write token cannot cut a signed release from any commit;
 #   5. the labels .github/labeler.yml and dependabot.yml use.
@@ -120,6 +121,8 @@ JSON
 step "Ruleset \"main\" on the default branch"
 signature_rule=""
 if [ "$signed" = 1 ]; then signature_rule=', { "type": "required_signatures" }'; fi
+# integration_id 15368 is GitHub Actions: a status of the same name from anything else does not
+# count.
 ruleset="$(cat <<JSON
 {
   "name": "main",
@@ -139,7 +142,8 @@ ruleset="$(cat <<JSON
         "required_approving_review_count": $approvals,
         "dismiss_stale_reviews_on_push": true,
         "require_code_owner_review": false,
-        "require_last_push_approval": false,
+        "require_last_push_approval": true,
+        "require_extra_approval_for_unattributed_changes": true,
         "required_review_thread_resolution": true,
         "allowed_merge_methods": ["squash"]
       }
@@ -150,8 +154,14 @@ ruleset="$(cat <<JSON
         "strict_required_status_checks_policy": false,
         "do_not_enforce_on_create": false,
         "required_status_checks": [
-          { "context": "ci-ok" },
-          { "context": "DCO" }
+          { "context": "ci-ok", "integration_id": 15368 },
+          { "context": "DCO", "integration_id": 15368 },
+          { "context": "conventional title", "integration_id": 15368 },
+          { "context": "review", "integration_id": 15368 },
+          { "context": "scan", "integration_id": 15368 },
+          { "context": "analyze (actions)", "integration_id": 15368 },
+          { "context": "analyze (javascript-typescript)", "integration_id": 15368 },
+          { "context": "analyze (rust)", "integration_id": 15368 }
         ]
       }
     }$signature_rule
@@ -170,20 +180,20 @@ else
   echo "    creating the ruleset"
   printf '%s' "$ruleset" | api POST "repos/$repo/rulesets" && ok created || warn "ruleset creation"
 fi
-echo "    (checks: ci-ok, DCO; approvals: $approvals; signed commits: $([ "$signed" = 1 ] && echo required || echo optional))"
+echo "    (checks: ci-ok, DCO, conventional title, review, scan, analyze x3; approvals: $approvals, last push included; signed commits: $([ "$signed" = 1 ] && echo required || echo optional))"
 
 # --- 4b. The ruleset on release tags -----------------------------------------------------------
 # release.yml publishes a signed image on any version tag. Without this, anyone with write access
 # can push a tag on any commit (even an unreviewed branch) and cut a release. Only repository
 # admins (role 5) may create, move or delete a version tag; release.yml also refuses a tag that is
 # not on the default branch.
-step "Ruleset \"release-tags\" on version tags"
+step "Ruleset \"release tags\" on version tags"
 tag_ruleset="$(cat <<'JSON'
 {
-  "name": "release-tags",
+  "name": "release tags",
   "target": "tag",
   "enforcement": "active",
-  "conditions": { "ref_name": { "include": ["refs/tags/v[0-9]*", "refs/tags/[0-9]*"], "exclude": [] } },
+  "conditions": { "ref_name": { "include": ["refs/tags/v*", "refs/tags/[0-9]*"], "exclude": [] } },
   "bypass_actors": [
     { "actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always" }
   ],
@@ -198,7 +208,7 @@ JSON
 )"
 tag_existing=""
 if [ "$dry" = 0 ]; then
-  tag_existing="$(gh api "repos/$repo/rulesets" --jq '.[] | select(.name == "release-tags") | .id' | head -n 1)"
+  tag_existing="$(gh api "repos/$repo/rulesets" --jq '.[] | select(.name == "release tags") | .id' | head -n 1)"
 fi
 if [ -n "$tag_existing" ]; then
   echo "    updating ruleset $tag_existing"
