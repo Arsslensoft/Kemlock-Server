@@ -15,7 +15,7 @@ use super::ports::{
 use crate::error::AppError;
 use crate::notices::BoxFuture;
 use crate::platform::{Platform, random_uuid};
-use crate::ports::{Clock, Event, PasswordAuth, SecretSeal, UserRepo};
+use crate::ports::{Clock, Event, PasswordAuth, SecretSeal, StoreError, UserRepo};
 use crate::sealed::{LoginState, PURPOSE_LOGIN};
 use crate::sign_in::credential_id;
 use kemlock_domain::{User, UserId};
@@ -183,7 +183,16 @@ where
 
     async fn erase_now(&self, account: User, requested_by: Requester) -> Result<Erasure, AppError> {
         let sends = self.sends.erase_sends(account.id).await?;
-        let rows = self.eraser.erase_user(&account).await?;
+        let rows = self
+            .eraser
+            .erase_user(&account)
+            .await
+            .map_err(|error| match error {
+                StoreError::Backend(message) if message == super::LAST_ADMIN => {
+                    AppError::Invalid("the last admin can't be deleted")
+                }
+                other => AppError::from(other),
+            })?;
 
         let mut files_deleted = 0u64;
         let mut files_failed = 0u64;

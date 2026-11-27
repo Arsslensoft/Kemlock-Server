@@ -1134,3 +1134,40 @@ async fn a_pending_erasure_is_what_sign_in_asks_and_an_admin_can_cancel_it() {
         Ok(None)
     );
 }
+
+#[tokio::test]
+async fn the_last_admin_is_never_erased_and_one_of_two_admins_can_be() {
+    let store = memory().await;
+    let mut first = user(&unique_email("admin-one"));
+    first.role = kemlock_domain::Role::Admin;
+    let mut second = user(&unique_email("admin-two"));
+    second.role = kemlock_domain::Role::Admin;
+    let plain = user(&unique_email("plain"));
+    for account in [&first, &second, &plain] {
+        UserRepo::insert(&store, account).await.expect("insert");
+    }
+
+    // A person who is no admin goes whatever the admins are doing.
+    AccountEraser::erase_user(&store, &plain)
+        .await
+        .expect("an ordinary account can be erased");
+    // One of two admins goes...
+    AccountEraser::erase_user(&store, &first)
+        .await
+        .expect("one of two admins can be erased");
+    // ...and the one that is left is refused, inside the erasing transaction: nothing is erased.
+    let refused = AccountEraser::erase_user(&store, &second).await;
+    assert_eq!(
+        refused,
+        Err(StoreError::Backend(
+            kemlock_app::privacy::LAST_ADMIN.to_owned()
+        ))
+    );
+    assert!(
+        UserRepo::by_id(&store, second.id)
+            .await
+            .expect("lookup")
+            .is_some(),
+        "the last admin is still there"
+    );
+}

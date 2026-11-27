@@ -52,7 +52,8 @@ use kemlock_federation::home::Policy;
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{
-    ColumnTrait, Condition, DatabaseTransaction, EntityTrait, QueryFilter, QueryOrder, QuerySelect,
+    ColumnTrait, ConnectionTrait, Condition, DatabaseTransaction, EntityTrait, QueryFilter, QueryOrder,
+    QuerySelect,
     TransactionTrait,
 };
 use std::collections::HashMap;
@@ -582,6 +583,29 @@ async fn erase_in(
         .is_none()
     {
         return Err(StoreError::NotFound);
+    }
+    // The last admin can't go. Counted here, in the erasing transaction, with the admins' rows
+    // locked (PostgreSQL and MySQL; SQLite has one writer), so two admins erasing each other at
+    // the same moment can't both see the other still standing and leave none.
+    if user.is_admin() {
+        let mut admins = users::Entity::find()
+            .filter(users::Column::Role.eq(users::ROLE_ADMIN))
+            .order_by_asc(users::Column::Id);
+        if txn.get_database_backend() != sea_orm::DbBackend::Sqlite {
+            admins = admins.lock_exclusive();
+        }
+        let others = admins
+            .all(txn)
+            .await
+            .store()?
+            .into_iter()
+            .filter(|row| row.id != uid)
+            .count();
+        if others == 0 {
+            return Err(StoreError::Backend(
+                kemlock_app::privacy::LAST_ADMIN.to_owned(),
+            ));
+        }
     }
     let mut out = ErasedRows::default();
 
