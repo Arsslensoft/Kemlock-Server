@@ -574,3 +574,64 @@ async fn the_home_of_a_personal_vault_speaks_for_its_account_not_the_home_of_a_s
         Ok(MemberApply::Refused)
     );
 }
+
+#[tokio::test]
+async fn forgetting_a_peer_erases_a_space_it_homes_with_the_account_copy_that_owned_it() {
+    use kemlock_app::spaces::{SpaceChanges, SpaceRepo};
+    use kemlock_domain::SpaceId;
+    use kemlock_domain::spaces::{CustomPermissions, Member, MemberState, Space, SpaceRole};
+    use kemlock_federation::forget::Forgetting;
+
+    let store = memory().await;
+    let me = ServerInfo::server_id(&store);
+    let peer = ServerId::random();
+    // The peer's account lives here as a copy, and is the one confirmed owner of a space the peer
+    // homes that has a local member too: the owner check of an account's own erasure would refuse
+    // to erase the copy, and the clean-up of an unpaired peer must finish all the same.
+    let copy_id = UserId::random();
+    assert_eq!(
+        store
+            .apply_member_account(
+                Owner::User(copy_id),
+                peer,
+                &copy_of(copy_id, &unique_email("ada"))
+            )
+            .await,
+        Ok(MemberApply::Applied)
+    );
+    let (local, _) = account_with_items(&store, "bob", 1).await;
+    let space = SpaceId::random();
+    let now = datetime!(2026-06-01 12:00 UTC);
+    let mut changes = SpaceChanges::new(space);
+    changes.space = Some(Space {
+        id: space,
+        name: vec![1; 40],
+        key_version: 1,
+        keys_pending_since: None,
+        created_at: now,
+        updated_at: now,
+    });
+    for (user, role) in [(copy_id, SpaceRole::Owner), (local.id, SpaceRole::Member)] {
+        let mut member = Member::invited(space, user, role, CustomPermissions::NONE, copy_id, now);
+        member.state = MemberState::Confirmed;
+        changes.members.push(member);
+    }
+    SpaceRepo::create(&store, changes).await.expect("a space");
+    store
+        .put_vault(&VaultFederation::federated(
+            Owner::Space(space),
+            peer,
+            vec![me],
+        ))
+        .await
+        .expect("settings");
+
+    let forgotten = store.forget_peer(peer).await.expect("the peer is forgotten");
+
+    assert_eq!(forgotten.vaults, 1);
+    assert_eq!(forgotten.accounts, 1, "the copy went too");
+    assert_eq!(SpaceRepo::load(&store, space).await, Ok(None));
+    assert_eq!(UserRepo::by_id(&store, copy_id).await, Ok(None));
+    // The local account is untouched.
+    assert!(UserRepo::by_id(&store, local.id).await.expect("read").is_some());
+}

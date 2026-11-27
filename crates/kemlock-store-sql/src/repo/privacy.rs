@@ -536,10 +536,15 @@ pub(super) async fn delete_space(
     Ok(())
 }
 
-/// Spaces `user` owns alone while others (not revoked) are still in them.
+/// Spaces `user` owns alone while others (not revoked) are still in them. With `lock`, in a
+/// transaction, each space row is locked first (`FOR UPDATE`, on PostgreSQL and MySQL; SQLite has
+/// the one writer), as `write_changes_keeping_owner` does before it counts owners: an owner who
+/// steps down at the same moment waits for this transaction, or this one waits for theirs, so the two
+/// can't each see the other as the owner that stays.
 async fn blocking<C: sea_orm::ConnectionTrait>(
     db: &C,
     user: Uuid,
+    lock: bool,
 ) -> Result<Vec<SpaceId>, StoreError> {
     let owned = members::Entity::find()
         .filter(members::Column::UserId.eq(user))
@@ -550,6 +555,13 @@ async fn blocking<C: sea_orm::ConnectionTrait>(
         .store()?;
     let mut out = Vec::new();
     for mine in owned {
+        if lock && db.get_database_backend() != sea_orm::DbBackend::Sqlite {
+            spaces::Entity::find_by_id(mine.space_id)
+                .lock_exclusive()
+                .one(db)
+                .await
+                .store()?;
+        }
         let others = members::Entity::find()
             .filter(members::Column::SpaceId.eq(mine.space_id))
             .filter(members::Column::UserId.ne(user))
@@ -895,19 +907,27 @@ pub(crate) async fn erase_replica_vault(
     })
 }
 
-impl AccountEraser for SqlStore {
-    async fn blocking_spaces(&self, user: UserId) -> Result<Vec<SpaceId>, StoreError> {
-        blocking(self.reader(), user.0).await
-    }
-
-    async fn erase_user(&self, user: &User) -> Result<ErasedRows, StoreError> {
+impl SqlStore {
+    /// Erases an account in one transaction. With `check_owners` it refuses (`OWNER_REQUIRED`) while
+    /// the account is the only owner of a space that has other members: the retention job and the
+    /// account's own erasure. Forgetting a peer's account copies (federation) passes `false`: the
+    /// peer's spaces go with the peer, and a copy that was the owner of a space with local members
+    /// is the peer's to lose.
+    pub(super) async fn erase_account(
+        &self,
+        user: &User,
+        check_owners: bool,
+    ) -> Result<ErasedRows, StoreError> {
         let txn = self.writer().begin().await.store()?;
-        // The owners are checked again in the erasure's own transaction: the use case read them
-        // before, and a scheduled erasure runs long after it was asked for.
-        let checked = match blocking(&txn, user.id.0).await {
-            Ok(blocked) if blocked.is_empty() => erase_in(&txn, user, self.origin()).await,
-            Ok(_) => Err(StoreError::Backend(OWNER_REQUIRED.to_owned())),
-            Err(err) => Err(err),
+        let checked = if check_owners {
+            let lock = self.writer().get_database_backend() != sea_orm::DbBackend::Sqlite;
+            match blocking(&txn, user.id.0, lock).await {
+                Ok(blocked) if blocked.is_empty() => erase_in(&txn, user, self.origin()).await,
+                Ok(_) => Err(StoreError::Backend(OWNER_REQUIRED.to_owned())),
+                Err(err) => Err(err),
+            }
+        } else {
+            erase_in(&txn, user, self.origin()).await
         };
         match checked {
             Ok(rows) => {
@@ -921,6 +941,18 @@ impl AccountEraser for SqlStore {
                 Err(err)
             }
         }
+    }
+}
+
+impl AccountEraser for SqlStore {
+    async fn blocking_spaces(&self, user: UserId) -> Result<Vec<SpaceId>, StoreError> {
+        blocking(self.reader(), user.0, false).await
+    }
+
+    /// The owners are checked again in the erasure's own transaction, under the spaces' row locks:
+    /// the use case read them before, and a scheduled erasure runs long after it was asked for.
+    async fn erase_user(&self, user: &User) -> Result<ErasedRows, StoreError> {
+        self.erase_account(user, true).await
     }
 
     async fn schedule_erasure(
