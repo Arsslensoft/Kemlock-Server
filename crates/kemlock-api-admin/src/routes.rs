@@ -733,6 +733,25 @@ where
         Ok(response)
     }
 
+    /// The settings as the console shows them. `SIGNUPS_VERIFY=true` in the environment does
+    /// nothing while no mail server is set up (the server logs it and holds nobody back), so it is
+    /// shown as off: the value in effect, not the one asked for.
+    fn setting_dtos(&self, views: &[kemlock_app::admin::SettingView]) -> Vec<SettingDto> {
+        views
+            .iter()
+            .map(|view| {
+                let mut dto = SettingDto::from(view);
+                if view.definition.key == "signups_verify"
+                    && dto.value.as_deref() == Some("true")
+                    && !self.rt.mail.configured()
+                {
+                    dto.value = Some("false".to_owned());
+                }
+                dto
+            })
+            .collect()
+    }
+
     // ---- settings ----
 
     /// `GET /admin/v1/settings`.
@@ -742,7 +761,7 @@ where
     ) -> Result<Json<SettingsResponse>, ApiError> {
         let views = env.settings().list().await?;
         json_ok(SettingsResponse {
-            settings: views.iter().map(SettingDto::from).collect(),
+            settings: env.setting_dtos(&views),
         })
     }
 
@@ -813,7 +832,7 @@ where
             .await;
         let views = settings.list().await?;
         json_ok(SettingsResponse {
-            settings: views.iter().map(SettingDto::from).collect(),
+            settings: env.setting_dtos(&views),
         })
     }
 

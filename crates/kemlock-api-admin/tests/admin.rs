@@ -1622,6 +1622,23 @@ async fn verifying_new_accounts_can_only_be_turned_on_where_mail_can_be_sent() {
     assert_eq!(off.status, StatusCode::OK, "{:?}", off.json());
 }
 
+
+#[tokio::test]
+async fn verifying_signups_from_the_environment_shows_as_off_while_no_mail_can_be_sent() {
+    let env = [("SIGNUPS_VERIFY", "true")];
+    // No mail server: the server holds nobody back, so the console says off.
+    let rig = Rig::with(false, &env);
+    let root = rig.admin(ADMIN).await;
+    let list = root.get("/admin/v1/settings").await.json();
+    let verify = setting(&list, "signups_verify");
+    assert_eq!(verify["source"], "env");
+    assert_eq!(verify["value"], "false");
+    // With mail it is as asked.
+    let rig = Rig::with(true, &env);
+    let root = rig.admin(ADMIN).await;
+    let list = root.get("/admin/v1/settings").await.json();
+    assert_eq!(setting(&list, "signups_verify")["value"], "true");
+}
 #[tokio::test]
 async fn settings_refuse_what_is_out_of_bounds_all_or_none() {
     let rig = Rig::new();
