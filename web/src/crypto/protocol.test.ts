@@ -2,6 +2,7 @@
 // The worker's protocol, with the WebAssembly module mocked: what the dispatcher passes to the
 // vault, how it shapes the answers, how it fails, and that requests are served one at a time.
 
+import { pbkdf2Sync } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { Dpop } from './dpop';
@@ -15,6 +16,7 @@ const UUID = '00010203-0405-0607-0809-0a0b0c0d0e0f';
 function mockVault(overrides: Partial<WasmVault> = {}): WasmVault {
   return {
     masterKey: vi.fn(() => 7),
+    bitwardenArgonHash: vi.fn(() => 'YWJj'),
     release: vi.fn(),
     opaqueRegisterStart: vi.fn(() => JSON.stringify({ state: 8, request: 'cmVxdWVzdA' })),
     opaqueRegisterFinish: vi.fn(() => JSON.stringify({ upload: 'dXA', exportKey: 9 })),
@@ -209,6 +211,55 @@ describe('the dispatcher', () => {
     const handle = await dispatch('masterKey', ['café', KDF]);
     expect(handle).toBe(7);
     expect(vault.masterKey).toHaveBeenCalledWith('café', 65536, 3, 4, KDF.salt);
+  });
+
+  it('makes the Bitwarden hash of a PBKDF2 account as the server checks it, in the worker', async () => {
+    const { dispatch } = setup([mockVault()]);
+    // The master key is PBKDF2(password, lower-cased email, n); the hash is PBKDF2(master key, password, 1).
+    const master = pbkdf2Sync('pässword', 'sam@example.co', 5000, 32, 'sha256');
+    const expected = pbkdf2Sync(master, 'pässword', 1, 32, 'sha256').toString('base64');
+    const kdf = { type: 0 as const, iterations: 5000 };
+    expect(await dispatch('bitwardenPasswordHash', [{ password: 'pässword', email: ' Sam@Example.CO ', kdf }])).toBe(
+      expected,
+    );
+    // The password is not NFC-normalised here: it is hashed as typed, as Bitwarden's clients do.
+    const decomposed = 'pau0308ssword';
+    const other = pbkdf2Sync(pbkdf2Sync(decomposed, 'sam@example.co', 5000, 32, 'sha256'), decomposed, 1, 32, 'sha256');
+    expect(await dispatch('bitwardenPasswordHash', [{ password: decomposed, email: 'sam@example.co', kdf }])).toBe(
+      other.toString('base64'),
+    );
+  });
+
+  it('passes an Argon2id account to the module in KiB with the address lower-cased, and answers standard base64', async () => {
+    const vault = mockVault();
+    const { dispatch } = setup([vault]);
+    const kdf = { type: 1 as const, iterations: 3, memory: 64, parallelism: 4 };
+    expect(await dispatch('bitwardenPasswordHash', [{ password: 'pw', email: 'Sam@Example.CO', kdf }])).toBe('YWJj');
+    expect(vault.bitwardenArgonHash).toHaveBeenCalledWith('pw', 'sam@example.co', 65536, 3, 4);
+    vault.bitwardenArgonHash = vi.fn(() => '-_-_');
+    expect(await dispatch('bitwardenPasswordHash', [{ password: 'pw', email: 'a@b.c', kdf }])).toBe('+/+/');
+  });
+
+  it('refuses a KDF a hostile prelogin could ask for, before any work is done', async () => {
+    const vault = mockVault();
+    const { dispatch } = setup([vault]);
+    const bad = [
+      { type: 0 as const, iterations: 4999 },
+      { type: 0 as const, iterations: 2_000_001 },
+      { type: 0 as const, iterations: 1.5 },
+      { type: 2 as unknown as 0, iterations: 600000 },
+      { type: 1 as const, iterations: 3 },
+      { type: 1 as const, iterations: 3, memory: 64 },
+    ];
+    for (const kdf of bad) {
+      await expect(dispatch('bitwardenPasswordHash', [{ password: 'pw', email: 'a@b.c', kdf }])).rejects.toMatchObject({
+        code: 'invalid',
+      });
+    }
+    await expect(
+      dispatch('bitwardenPasswordHash', [{ password: 'pw', email: '  ', kdf: { type: 0, iterations: 600000 } }]),
+    ).rejects.toMatchObject({ code: 'invalid' });
+    expect(vault.bitwardenArgonHash).not.toHaveBeenCalled();
   });
 
   it('wipes a byte password after reading it', async () => {

@@ -86,6 +86,7 @@ export function createCryptoClient(factory: () => WorkerPort): CryptoApi {
   }
 
   return {
+    bitwardenPasswordHash: (input) => call('bitwardenPasswordHash', [input]),
     masterKey: (password, kdf) =>
       call('masterKey', [password, kdf], typeof password === 'string' ? [] : [password.buffer as ArrayBuffer]),
     opaqueRegisterStart: (masterKey) => call('opaqueRegisterStart', [masterKey]),

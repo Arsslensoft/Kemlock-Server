@@ -150,11 +150,13 @@ How the person accepts:
 
 - **With mail**, they get a link of the shape Vaultwarden mails
   (`/#/accept-organization/?organizationId=...&token=...`, `/#/accept-emergency/?id=...&token=...`).
-  Opening it shows who invited them and leads to the sign-in; it accepts nothing, and the server
-  accepts an invitation only from the invitee's own signed-in session, so a link, a mail scanner
-  or whoever holds the link can't accept for them. Once signed in, the organization is a space with
-  an invitation under Spaces (an emergency invitation shows under Emergency access), and the person
-  accepts it there. An account made in a Bitwarden app accepts in that app. The link works for five days.
+  Opening it shows who invited them and asks for their master password; nothing is sent until they
+  press the button. The page reads the account's key settings from the server's prelogin, makes the
+  master password hash in the browser's crypto worker (PBKDF2 or Argon2id, as the account has it) and
+  sends the token with that hash, never the password, and needs no sign-in, which an account made in a
+  Bitwarden app could not do in the web vault. A wrong password is limited by the server. A successful
+  accept starts no session: the page ends with a link to sign in. An administrator (or, for an
+  emergency contact, the grantor) then confirms. The link works for five days.
 - **Without mail**, the administrator who invited (and the grantor, for an emergency contact) can
   read the same link from the Bitwarden API, `GET /api/organizations/{org}/users/{member}/invite-link`
   or `GET /api/emergency-access/{id}/invite-link`, and hand it over. Treat it as a secret: whoever

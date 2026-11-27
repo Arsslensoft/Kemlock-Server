@@ -304,6 +304,30 @@ impl Vault {
         result.map_err(fail)
     }
 
+    /// The Bitwarden master password hash of an account whose KDF is Argon2id, base64url: the master
+    /// key is `Argon2id(password, SHA-256(email), m, t, p)` and the hash `PBKDF2-HMAC-SHA256(master
+    /// key, password, 1)`. `email` is trimmed and lower-cased by the caller. The password is wiped
+    /// here. No session is needed, and nothing is kept.
+    #[wasm_bindgen(js_name = bitwardenArgonHash)]
+    pub fn bitwarden_argon_hash(
+        &self,
+        mut password: String,
+        email: &str,
+        memory_kib: u32,
+        iterations: u32,
+        parallelism: u32,
+    ) -> Result<String, JsError> {
+        let hash = session::bitwarden_argon_hash(
+            password.as_bytes(),
+            email.as_bytes(),
+            memory_kib,
+            iterations,
+            parallelism,
+        );
+        password.zeroize();
+        hash.map(|hash| b64::encode(&hash)).map_err(fail)
+    }
+
     /// Drops a handle; unknown handles are ignored.
     pub fn release(&mut self, handle: u32) {
         self.session.release(handle);

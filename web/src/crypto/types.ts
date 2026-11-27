@@ -19,6 +19,24 @@ export type DeviceKeyHandle = Handle<'device-key'>;
 export type ApprovedKeyHandle = Handle<'approved-key'>;
 
 /** The account's Argon2id settings, as the server returns them (`KdfDto`). */
+/** A Bitwarden account's KDF as its prelogin gives it (`kdf` 0 is PBKDF2-SHA256, 1 is Argon2id). */
+export interface BitwardenKdf {
+  type: 0 | 1;
+  iterations: number;
+  /** Argon2id only: memory in MiB, as Bitwarden counts it. */
+  memory?: number;
+  /** Argon2id only. */
+  parallelism?: number;
+}
+
+/** What the Bitwarden master password hash is made from: the typed password and the account's address. */
+export interface BitwardenHashInput {
+  password: string;
+  /** The account's email; the worker trims and lower-cases it. */
+  email: string;
+  kdf: BitwardenKdf;
+}
+
 export interface KdfSettings {
   memoryKib: number;
   iterations: number;
@@ -621,6 +639,14 @@ export class CryptoError extends Error {
 export interface CryptoApi {
   /** `Argon2id(password, salt, m, t, p)`. A `Uint8Array` is transferred and wiped. */
   masterKey(password: string | Uint8Array, kdf: KdfSettings): Promise<MasterKeyHandle>;
+  /**
+   * The Bitwarden master password hash, standard base64: the master key is PBKDF2-SHA256(password,
+   * lower-cased email, iterations) or Argon2id(password, SHA-256(email), memory, iterations,
+   * parallelism), and the hash PBKDF2-SHA256(master key, password, 1). It is what a Bitwarden
+   * server checks in place of the password, which never leaves the worker. Nothing is kept. Settings
+   * outside the bounds a browser should honour are refused.
+   */
+  bitwardenPasswordHash(input: BitwardenHashInput): Promise<string>;
   opaqueRegisterStart(masterKey: MasterKeyHandle): Promise<OpaqueStart>;
   opaqueRegisterFinish(
     state: OpaqueStateHandle,
@@ -1056,6 +1082,7 @@ export interface CryptoApi {
 /** Every operation the worker answers, with its arguments and result. */
 export interface Ops {
   masterKey: { args: [password: string | Uint8Array, kdf: KdfSettings]; result: MasterKeyHandle };
+  bitwardenPasswordHash: { args: [input: BitwardenHashInput]; result: string };
   opaqueRegisterStart: { args: [masterKey: MasterKeyHandle]; result: OpaqueStart };
   opaqueRegisterFinish: {
     args: [state: OpaqueStateHandle, masterKey: MasterKeyHandle, response: string];

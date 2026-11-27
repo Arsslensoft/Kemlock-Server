@@ -1,26 +1,24 @@
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { StrictMode, type ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '@/i18n';
 
+const api = vi.hoisted(() => ({ prelogin: vi.fn(), organization: vi.fn(), emergency: vi.fn() }));
+const hash = vi.hoisted(() => vi.fn());
+
 vi.mock('@tanstack/react-router', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@tanstack/react-router')>()),
-  Link: ({
-    children,
-    to,
-    search,
-    className,
-  }: {
-    children: ReactNode;
-    to: string;
-    search?: Record<string, string>;
-    className?: string;
-  }) => (
-    <a href={`${to}${search ? `?${new URLSearchParams(search).toString()}` : ''}`} className={className}>
+  Link: ({ children, to, className }: { children: ReactNode; to: string; className?: string }) => (
+    <a href={to} className={className}>
       {children}
     </a>
   ),
 }));
+vi.mock('@/api/bwInvitations', () => ({
+  bwInvitations: { prelogin: api.prelogin, acceptOrganization: api.organization, acceptEmergency: api.emergency },
+}));
+vi.mock('@/crypto-port', () => ({ vaultCrypto: { bitwardenPasswordHash: hash } }));
 vi.mock('@/ui/AuthPage', () => ({ AuthPage: ({ children }: { children: ReactNode }) => <main>{children}</main> }));
 
 import AcceptEmergency from './AcceptEmergency';
@@ -44,76 +42,167 @@ function open(page: ReactNode, path: string, values: Record<string, string>) {
   );
 }
 
-const fetched = vi.fn();
+const KDF = { type: 0 as const, iterations: 600000 };
 
 beforeEach(() => {
-  fetched.mockReset();
-  vi.stubGlobal('fetch', fetched);
+  for (const fn of [api.prelogin, api.organization, api.emergency, hash]) fn.mockReset();
+  api.prelogin.mockResolvedValue(KDF);
+  hash.mockResolvedValue('aGFzaA==');
   window.history.replaceState(null, '', '/');
 });
+
+const field = () => screen.getByLabelText('Your master password');
 
 describe('the link of an invitation to an organization', () => {
   const link = {
     organizationId: 'org-1',
     organizationUserId: 'user-1',
     organizationName: 'Acme Corp',
-    email: 'bob@example.org',
-    token: token({ invited_by_email: 'alice@acme.example', email: 'bob@example.org' }),
+    email: 'Bob@Example.org',
+    token: token({ invited_by_email: 'alice@acme.example' }),
   };
 
-  it('shows the organization and the inviter, and says the person accepts it themselves once signed in', () => {
+  it('shows the organization and the inviter and asks for the master password, sending nothing yet', () => {
     open(<AcceptOrganization />, '/accept-organization', link);
     expect(screen.getByText('Acme Corp')).toBeInTheDocument();
     expect(screen.getByText('alice@acme.example')).toBeInTheDocument();
-    expect(screen.getByText('bob@example.org')).toBeInTheDocument();
-    expect(screen.getByText(/Nothing is accepted from this page/)).toBeInTheDocument();
-    expect(screen.getByText(/appears under Spaces as an invitation/)).toBeInTheDocument();
+    expect(field()).toHaveValue('');
+    expect(api.prelogin).not.toHaveBeenCalled();
+    expect(api.organization).not.toHaveBeenCalled();
+    expect(hash).not.toHaveBeenCalled();
   });
 
-  it('leads to the sign-in, which goes on to Spaces, and has no button that accepts', () => {
+  it('on the press asks the KDF of the invited address, makes the hash in the worker and sends the hash, not the password', async () => {
+    api.organization.mockResolvedValue({ ok: true });
     open(<AcceptOrganization />, '/accept-organization', link);
-    expect(screen.getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/sign-in?next=%2Fspaces');
-    expect(screen.queryByRole('button')).toBeNull();
+    const user = userEvent.setup();
+    await user.type(field(), 'correct horse');
+    await user.click(screen.getByRole('button', { name: 'Accept the invitation' }));
+    expect(await screen.findByText(/Invitation accepted/)).toBeInTheDocument();
+    expect(api.prelogin).toHaveBeenCalledWith('Bob@Example.org');
+    expect(hash).toHaveBeenCalledWith({ password: 'correct horse', email: 'Bob@Example.org', kdf: KDF });
+    expect(api.organization).toHaveBeenCalledOnce();
+    expect(api.organization).toHaveBeenCalledWith('org-1', 'user-1', link.token, 'aGFzaA==');
+    expect(JSON.stringify(api.organization.mock.calls)).not.toContain('correct horse');
   });
 
-  it('posts nothing, and takes the token out of the address', () => {
+  it('ends with a link to sign in, not a signed-in page, and no form left', async () => {
+    api.organization.mockResolvedValue({ ok: true });
     open(<AcceptOrganization />, '/accept-organization', link);
-    expect(fetched).not.toHaveBeenCalled();
+    const user = userEvent.setup();
+    await user.type(field(), 'pw');
+    await user.click(screen.getByRole('button', { name: 'Accept the invitation' }));
+    expect(await screen.findByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/sign-in');
+    expect(screen.getByText(/You are not signed in here/)).toBeInTheDocument();
+    expect(screen.queryByLabelText('Your master password')).toBeNull();
+  });
+
+  it('empties the field as it sends, and keeps the password nowhere on the page', async () => {
+    let finish: (value: { ok: true }) => void = () => undefined;
+    api.organization.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    open(<AcceptOrganization />, '/accept-organization', link);
+    const user = userEvent.setup();
+    await user.type(field(), 'secret-pw');
+    await user.click(screen.getByRole('button', { name: 'Accept the invitation' }));
+    expect(field()).toHaveValue('');
+    expect(document.body.innerHTML).not.toContain('secret-pw');
+    finish({ ok: true });
+    await screen.findByText(/Invitation accepted/);
+    expect(document.body.innerHTML).not.toContain('secret-pw');
+  });
+
+  it('says a wrong password is not right, and leaves the form for another press without trying again by itself', async () => {
+    api.organization.mockResolvedValueOnce({ ok: false, reason: 'password', message: 'Invalid password' });
+    open(<AcceptOrganization />, '/accept-organization', link);
+    const user = userEvent.setup();
+    await user.type(field(), 'wrong');
+    await user.click(screen.getByRole('button', { name: 'Accept the invitation' }));
+    expect(await screen.findByText(/That master password is not right/)).toBeInTheDocument();
+    expect(api.organization).toHaveBeenCalledOnce();
+    api.organization.mockResolvedValueOnce({ ok: true });
+    await user.type(field(), 'right');
+    await user.click(screen.getByRole('button', { name: 'Accept the invitation' }));
+    expect(await screen.findByText(/Invitation accepted/)).toBeInTheDocument();
+    expect(api.organization).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows the wait when the server limits the tries', async () => {
+    api.organization.mockResolvedValue({ ok: false, reason: 'limited', message: '', retryAfter: 90 });
+    open(<AcceptOrganization />, '/accept-organization', link);
+    const user = userEvent.setup();
+    await user.type(field(), 'pw');
+    await user.click(screen.getByRole('button', { name: 'Accept the invitation' }));
+    expect(await screen.findByText(/Wait 90 seconds before you try again/)).toBeInTheDocument();
+  });
+
+  it('says so when the key settings can not be read or the hash can not be made, and sends nothing', async () => {
+    api.prelogin.mockResolvedValueOnce(undefined);
+    open(<AcceptOrganization />, '/accept-organization', link);
+    const user = userEvent.setup();
+    await user.type(field(), 'pw');
+    await user.click(screen.getByRole('button', { name: 'Accept the invitation' }));
+    expect(await screen.findByText(/could not work out your master password's check/)).toBeInTheDocument();
+    hash.mockRejectedValueOnce(new Error('invalid'));
+    await user.type(field(), 'pw');
+    await user.click(screen.getByRole('button', { name: 'Accept the invitation' }));
+    await vi.waitFor(() => expect(hash).toHaveBeenCalledOnce());
+    expect(api.organization).not.toHaveBeenCalled();
+  });
+
+  it('says why when the server refuses for another reason', async () => {
+    api.organization.mockResolvedValue({ ok: false, reason: 'other', message: 'User already accepted the invitation' });
+    open(<AcceptOrganization />, '/accept-organization', link);
+    const user = userEvent.setup();
+    await user.type(field(), 'pw');
+    await user.click(screen.getByRole('button', { name: 'Accept the invitation' }));
+    expect(await screen.findByText(/couldn't be accepted/)).toBeInTheDocument();
+    expect(screen.getByText('User already accepted the invitation')).toBeInTheDocument();
+  });
+
+  it('asks for nothing when the link has no token or no address', () => {
+    open(<AcceptOrganization />, '/accept-organization', { organizationId: 'org-1', organizationUserId: 'u', email: 'a@b.c' });
+    expect(screen.getByText(/link is incomplete/)).toBeInTheDocument();
+    expect(screen.queryByLabelText('Your master password')).toBeNull();
+  });
+
+  it('takes the token out of the address as the page opens, and reads none from the query string', () => {
+    open(<AcceptOrganization />, '/accept-organization', link);
     expect(window.location.hash).toBe('');
-    expect(window.location.search).toBe('');
     expect(window.location.href).not.toContain(link.token);
   });
 
-  it('offers no sign-in when the link has no token', () => {
-    open(<AcceptOrganization />, '/accept-organization', { organizationId: 'org-1' });
-    expect(screen.getByText(/link is incomplete/)).toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: 'Sign in' })).toBeNull();
-  });
-
-  it('does not read a token from the query string', () => {
-    window.history.replaceState(null, '', '/accept-organization?organizationId=o&organizationUserId=u&token=a.b.c');
-    render(
-      <I18nProvider>
-        <AcceptOrganization />
-      </I18nProvider>,
-    );
-    expect(screen.getByText(/link is incomplete/)).toBeInTheDocument();
+  it('uses the address in the token when the link carries none', async () => {
+    api.organization.mockResolvedValue({ ok: true });
+    open(<AcceptOrganization />, '/accept-organization', {
+      organizationId: 'org-1',
+      organizationUserId: 'user-1',
+      token: token({ email: 'claimed@example.org' }),
+    });
+    const user = userEvent.setup();
+    await user.type(field(), 'pw');
+    await user.click(screen.getByRole('button', { name: 'Accept the invitation' }));
+    await screen.findByText(/Invitation accepted/);
+    expect(api.prelogin).toHaveBeenCalledWith('claimed@example.org');
   });
 });
 
 describe('the link of an emergency-contact invitation', () => {
-  it('shows who named the person and leads to the sign-in, which goes on to the Security page', () => {
+  it('shows who named the person and accepts with the hash on the press', async () => {
+    api.emergency.mockResolvedValue({ ok: true });
     const tok = token({ grantor_name: 'Alice', grantor_email: 'alice@example.org' });
-    open(<AcceptEmergency />, '/accept-emergency', { id: 'grant-1', token: tok });
+    open(<AcceptEmergency />, '/accept-emergency', { id: 'grant-1', email: 'jo@example.org', token: tok });
     expect(screen.getByText('Alice (alice@example.org)')).toBeInTheDocument();
-    expect(screen.getByText(/appears under Emergency access/)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/sign-in?next=%2Fsecurity');
-    expect(fetched).not.toHaveBeenCalled();
-    expect(window.location.hash).toBe('');
+    expect(api.emergency).not.toHaveBeenCalled();
+    const user = userEvent.setup();
+    await user.type(field(), 'pw');
+    await user.click(screen.getByRole('button', { name: 'Accept and become their emergency contact' }));
+    expect(await screen.findByText(/The person who named you now confirms you/)).toBeInTheDocument();
+    expect(api.emergency).toHaveBeenCalledWith('grant-1', tok, 'aGFzaA==');
+    expect(screen.getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/sign-in');
   });
 
-  it('is incomplete without an id or a token', () => {
-    open(<AcceptEmergency />, '/accept-emergency', { id: 'grant-1' });
+  it('is incomplete without an id, a token or an address', () => {
+    open(<AcceptEmergency />, '/accept-emergency', { id: 'grant-1', token: 't.k.n' });
     expect(screen.getByText(/link is incomplete/)).toBeInTheDocument();
   });
 });

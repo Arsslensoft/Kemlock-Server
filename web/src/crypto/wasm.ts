@@ -5,6 +5,8 @@
 /** The `Vault` class of crates/kemlock-wasm/src/wasm.rs. Methods that return several values
  * return one JSON string. Failures throw an `Error` whose message is `invalid` or `locked`. */
 export interface WasmVault {
+  /** The Bitwarden hash for an Argon2id account, base64url (the worker makes the PBKDF2 ones itself). */
+  bitwardenArgonHash(password: string, email: string, memoryKib: number, iterations: number, parallelism: number): string;
   masterKey(
     password: string,
     memoryKib: number,

@@ -9,6 +9,7 @@ import {
   CryptoError,
   type CryptoErrorCode,
   type ApprovedKeyHandle,
+  type BitwardenKdf,
   type ChainAppend,
   type ChainBuilt,
   type ChainVerdict,
@@ -85,6 +86,56 @@ function passwordText(password: string | Uint8Array): string {
   return text;
 }
 
+const BW_PBKDF2_ITERATIONS = { min: 5_000, max: 2_000_000 };
+
+/** Standard base64 of bytes, which is what a Bitwarden server reads. */
+function stdBase64(bytes: Uint8Array): string {
+  let text = '';
+  for (const byte of bytes) text += String.fromCharCode(byte);
+  return btoa(text);
+}
+
+/**
+ * The Bitwarden master password hash (see `CryptoApi.bitwardenPasswordHash`). PBKDF2 runs in
+ * WebCrypto here; Argon2id runs in the module (`argon`). The password's bytes are wiped and nothing
+ * is kept. A hostile server's prelogin can ask for an absurd cost, so settings outside Bitwarden's
+ * own bounds are refused before any work is done.
+ */
+async function bitwardenHash(
+  password: string,
+  email: string,
+  kdf: BitwardenKdf,
+  argon: (password: string, email: string, memoryKib: number, iterations: number, parallelism: number) => Promise<string>,
+): Promise<string> {
+  const mail = email.trim().toLowerCase();
+  const whole = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value);
+  if (mail === '' || !whole(kdf.iterations)) throw new CryptoError('invalid');
+  if (kdf.type === 1) {
+    if (!whole(kdf.memory) || !whole(kdf.parallelism)) throw new CryptoError('invalid');
+    const url = await argon(password, mail, kdf.memory * 1024, kdf.iterations, kdf.parallelism);
+    return stdBase64(b64urlDecode(url));
+  }
+  if (kdf.type !== 0) throw new CryptoError('invalid');
+  if (kdf.iterations < BW_PBKDF2_ITERATIONS.min || kdf.iterations > BW_PBKDF2_ITERATIONS.max) {
+    throw new CryptoError('invalid');
+  }
+  const subtle = globalThis.crypto.subtle;
+  const typed = new TextEncoder().encode(password);
+  try {
+    const first = await subtle.importKey('raw', typed, 'PBKDF2', false, ['deriveBits']);
+    const masterBits = await subtle.deriveBits(
+      { name: 'PBKDF2', hash: 'SHA-256', salt: new TextEncoder().encode(mail), iterations: kdf.iterations },
+      first,
+      256,
+    );
+    const master = await subtle.importKey('raw', masterBits, 'PBKDF2', false, ['deriveBits']);
+    const hash = await subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: typed, iterations: 1 }, master, 256);
+    return stdBase64(new Uint8Array(hash));
+  } finally {
+    typed.fill(0);
+  }
+}
+
 export function createDispatcher(deps: DispatcherDeps): Dispatcher {
   let factory: Promise<WasmFactory> | undefined;
   let vault: WasmVault | undefined;
@@ -128,6 +179,11 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
   }
 
   const handlers: { [Op in OpName]: (...args: Ops[Op]['args']) => Promise<Ops[Op]['result']> } = {
+    async bitwardenPasswordHash({ password, email, kdf }) {
+      return bitwardenHash(password, email, kdf, (...args) =>
+        current().then((v) => v.bitwardenArgonHash(...args)),
+      );
+    },
     async masterKey(password, kdf) {
       const v = await current();
       let text = passwordText(password);
