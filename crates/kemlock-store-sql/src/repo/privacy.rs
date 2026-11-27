@@ -40,7 +40,7 @@ use kemlock_app::privacy::{
     AccountData, AccountEraser, ErasedRows, NewSignIn, PrivacyLog, PrivacySettings, PurgedTrash,
     RetentionStore, TwoFactorInfo,
 };
-use kemlock_app::spaces::SpaceRepo;
+use kemlock_app::spaces::{OWNER_REQUIRED, SpaceRepo};
 use kemlock_domain::privacy::{Retention, SignInEntry, StoredEvent, stored_ip};
 use kemlock_domain::spaces::Member;
 use kemlock_domain::{
@@ -902,7 +902,14 @@ impl AccountEraser for SqlStore {
 
     async fn erase_user(&self, user: &User) -> Result<ErasedRows, StoreError> {
         let txn = self.writer().begin().await.store()?;
-        match erase_in(&txn, user, self.origin()).await {
+        // The owners are checked again in the erasure's own transaction: the use case read them
+        // before, and a scheduled erasure runs long after it was asked for.
+        let checked = match blocking(&txn, user.id.0).await {
+            Ok(blocked) if blocked.is_empty() => erase_in(&txn, user, self.origin()).await,
+            Ok(_) => Err(StoreError::Backend(OWNER_REQUIRED.to_owned())),
+            Err(err) => Err(err),
+        };
+        match checked {
             Ok(rows) => {
                 txn.commit().await.store()?;
                 Ok(rows)

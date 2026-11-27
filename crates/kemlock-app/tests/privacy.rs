@@ -397,6 +397,36 @@ async fn a_grace_period_schedules_the_erasure_and_ends_the_sessions() {
     assert_eq!(privacy.lock().erased, vec![user.id]);
 }
 
+#[tokio::test]
+async fn a_due_erasure_is_held_while_a_space_would_be_left_with_no_owner() {
+    let world = World::new();
+    let user = account("ada@example.org");
+    world.store.put_user(user.clone());
+    let privacy = FakePrivacy::new(&world.store);
+    privacy.lock().retention.deleted_account_grace_days = 14;
+    let eraser = erase(&world, &privacy, &FakeSends::default());
+    eraser
+        .execute(user.id, Requester::Account)
+        .await
+        .expect("scheduled");
+
+    // The other owner steps down during the grace period.
+    world.env.clock.advance(Duration::days(15));
+    privacy.lock().blocking = vec![SpaceId::random()];
+    assert!(matches!(
+        eraser.erase_due(user.id).await,
+        Err(AppError::Invalid(_))
+    ));
+    assert!(privacy.lock().erased.is_empty(), "nothing was erased");
+
+    // Once the space has an owner again, the next run erases.
+    privacy.lock().blocking = Vec::new();
+    assert!(matches!(
+        eraser.erase_due(user.id).await,
+        Ok(Erasure::Erased(_))
+    ));
+}
+
 // ---------------------------------------------------------------------------------------------
 // Re-authentication.
 
