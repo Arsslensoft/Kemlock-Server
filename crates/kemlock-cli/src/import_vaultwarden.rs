@@ -24,6 +24,7 @@ use kemlock_server::files::{BitwardenBlobs, open_blobs};
 use kemlock_server::keys::load_or_create_server_key;
 use kemlock_server::migration::describe;
 use kemlock_store_sql::{ImportFiles, ImportOptions, SqlImportSink, SqlStore};
+use kemlock_vaultwarden::settings::MappedSettings;
 use kemlock_vaultwarden::{
     ApplyReport, Deletion, ImportSink, MappedImport, Source, apply, diff, map_snapshot,
     read_snapshot, render_plan,
@@ -175,6 +176,22 @@ impl SinkSource for SqlSinks {
     }
 }
 
+/// Records each setting a pass carried over from `config.json` in the admin event log, by name and
+/// value: the source is not trusted, and an admin reading the log sees what it set.
+async fn audit_settings<S: SinkSource>(
+    sinks: &mut S,
+    source: &str,
+    settings: &MappedSettings,
+    report: &ApplyReport,
+) {
+    let refused = report.refused.get("setting").cloned().unwrap_or_default();
+    for (name, value) in &settings.values {
+        if !refused.contains(name) {
+            sinks.audit(source, &format!("setting {name} = {value}")).await;
+        }
+    }
+}
+
 /// One pass: opens a sink, puts `mapped` into it and deletes `deletions`, then commits.
 async fn write_pass<S: SinkSource>(
     sinks: &mut S,
@@ -298,6 +315,7 @@ async fn execute<S: SinkSource>(
                 println!("Wrote {report:?}");
                 report_left_alone(&report);
                 sinks.audit(&source.describe(), &describe(&report)).await;
+                audit_settings(sinks, &source.describe(), &first_mapped.settings, &report).await;
             }
             Err(e) => {
                 eprintln!("kemlock-cli: {e}");
@@ -346,6 +364,7 @@ async fn execute<S: SinkSource>(
                 println!("Wrote the changes: {report:?}");
                 report_left_alone(&report);
                 sinks.audit(&source.describe(), &describe(&report)).await;
+                audit_settings(sinks, &source.describe(), &delta.settings, &report).await;
             }
             Err(e) => {
                 eprintln!("kemlock-cli: {e}");
