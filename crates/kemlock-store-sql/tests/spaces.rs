@@ -5,6 +5,7 @@
 mod common;
 
 use common::{draft, memory, user};
+use kemlock_app::bitwarden::BwOrgStore;
 use kemlock_app::ports::{Clock, ItemStore, Notifier, StoreError, UserRepo};
 use kemlock_app::spaces::{
     AcceptInvitation, BundleFingerprints, CollectionRekey, ConfirmInput, ConfirmMember,
@@ -647,6 +648,45 @@ async fn removing_a_member_clears_their_grants_keys_and_group_memberships() {
         .expect("exists");
     assert!(loaded.groups.is_empty());
     assert_eq!(loaded.grants.len(), 1);
+}
+
+#[tokio::test]
+async fn removing_a_member_forgets_what_the_bitwarden_api_kept_of_them() {
+    let store = memory().await;
+    let sam = person(&store, 1, "sam@example.org").await;
+    let ana = person(&store, 2, "ana@example.org").await;
+    let (space, everyone) = make_space(&store, sam.id).await;
+    join(&store, space, everyone, &sam, &ana).await;
+    // Ana enrolled a key for account recovery (a Bitwarden member document), and Sam's is there too.
+    let document = r#"{"akey":"","accessAll":false,"atype":2,"status":2,"resetPasswordKey":"k"}"#;
+    for who in [ana.id, sam.id] {
+        BwOrgStore::doc_put(&store, space.0, "member", &who.to_string(), document)
+            .await
+            .expect("a member document");
+    }
+
+    SpaceRepo::apply(
+        &store,
+        SpaceChanges {
+            members_removed: vec![ana.id],
+            ..SpaceChanges::new(space)
+        },
+    )
+    .await
+    .expect("Ana is removed");
+    assert_eq!(
+        BwOrgStore::doc_get(&store, space.0, "member", &ana.id.to_string())
+            .await
+            .expect("reads"),
+        None,
+        "an invitation later starts with nothing enrolled"
+    );
+    assert!(
+        BwOrgStore::doc_get(&store, space.0, "member", &sam.id.to_string())
+            .await
+            .expect("reads")
+            .is_some()
+    );
 }
 
 #[tokio::test]

@@ -9,6 +9,7 @@
 use super::items::{release_written, write_in};
 use crate::error::StoreResult;
 use crate::store::SqlStore;
+use crate::tables::bw_docs;
 use crate::tables::items as item_rows;
 use crate::tables::space_chain::held;
 use crate::tables::space_recovery;
@@ -546,6 +547,7 @@ pub(super) async fn apply_in(
     for user in &changes.members_removed {
         let in_space = collection_ids(txn, space).await?;
         delete_recovery_box(txn, space, user.0).await?;
+        delete_bitwarden_member(txn, space, user.0).await?;
         members::Entity::delete_many()
             .filter(members::Column::SpaceId.eq(space))
             .filter(members::Column::UserId.eq(user.0))
@@ -707,6 +709,27 @@ pub(super) async fn apply_in(
     }
     Ok(())
 }
+
+/// Deletes what the Bitwarden API keeps of a member of an organization: their document, with the
+/// key they enrolled for account recovery. It goes when they are removed, so an invitation later
+/// starts a membership with nothing enrolled that the person didn't enrol again.
+async fn delete_bitwarden_member(
+    txn: &DatabaseTransaction,
+    space: Uuid,
+    user: Uuid,
+) -> Result<(), StoreError> {
+    bw_docs::Entity::delete_many()
+        .filter(bw_docs::Column::Scope.eq(space))
+        .filter(bw_docs::Column::Kind.eq(BW_MEMBER_KIND))
+        .filter(bw_docs::Column::DocKey.eq(user.to_string()))
+        .exec(txn)
+        .await
+        .store()?;
+    Ok(())
+}
+
+/// The kind of the Bitwarden API's member documents (`kemlock-api-bw`, `KIND_MEMBER`).
+const BW_MEMBER_KIND: &str = "member";
 
 /// Deletes a member's recovery box: it goes when they leave or are removed.
 pub(super) async fn delete_recovery_box(
