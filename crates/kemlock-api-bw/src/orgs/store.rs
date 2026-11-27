@@ -78,11 +78,16 @@ pub(crate) fn mirror_member(
         });
     row.role = role_of(doc.atype);
     row.custom = custom_of(doc);
+    // A member the row confirmed stays confirmed when the document says they are only invited or
+    // accepted (what they have to do on the Bitwarden side): the document is about the Bitwarden
+    // key, and writing it back must not take away what the Kemlock side confirmed.
+    let confirmed_there = row.state == MemberState::Confirmed;
     row.state = if doc.revoked() {
         MemberState::Revoked
     } else {
         match doc.status {
             CONFIRMED => MemberState::Confirmed,
+            _ if confirmed_there => MemberState::Confirmed,
             ACCEPTED => MemberState::Accepted,
             _ => MemberState::Invited,
         }

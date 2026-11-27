@@ -689,3 +689,44 @@ async fn require_sso_is_one_setting_for_both_apis() {
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
+
+/// A member only the Kemlock side confirmed has not accepted on the Bitwarden side: they stay
+/// invited there, an administrator can't confirm them as accepted, and their own acceptance moves
+/// them to accepted without taking away what the Kemlock side confirmed.
+#[tokio::test]
+async fn a_member_the_space_row_confirmed_stays_invited_until_they_accept_here() {
+    use kemlock_domain::spaces::MemberState;
+    let h = Harness::new().await;
+    let (eve, _) = h.signed_in("eve@example.com").await;
+    let (bob, bob_id) = h.signed_in("bob@example.com").await;
+    let org = organization(&h, &eve).await;
+    invite(&h, &eve, &org, "bob@example.com").await;
+    h.change_row(&org, bob_id, |row| row.state = MemberState::Confirmed)
+        .await;
+
+    assert_eq!(
+        status_of(&h, &eve, &org, "bob@example.com").await,
+        Some(0),
+        "invited, not accepted"
+    );
+    let (status, body) = confirm(&h, &eve, &org, bob_id).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["message"], "User in invalid state");
+
+    // Bob accepts for himself; the Kemlock side's confirmation is still there.
+    let token = h.invite_token(&org, bob_id, "bob@example.com");
+    let (status, body) = accept_as(&h, Some(&bob), &org, bob_id, &token).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(status_of(&h, &eve, &org, "bob@example.com").await, Some(1));
+    let space = kemlock_domain::SpaceId(org.parse().expect("an organization id"));
+    let state = kemlock_app::spaces::SpaceRepo::load(&h.store, space)
+        .await
+        .expect("a read")
+        .expect("the space");
+    let row = state
+        .members
+        .iter()
+        .find(|m| m.user == bob_id)
+        .expect("bob's row");
+    assert_eq!(row.state, MemberState::Confirmed);
+}
