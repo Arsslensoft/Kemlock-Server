@@ -209,6 +209,10 @@ struct MemberOut {
     /// The `seq` of their last `rekey`: nobody compared the new fingerprint.
     #[serde(skip_serializing_if = "Option::is_none")]
     rekey_seq: Option<u64>,
+    /// The `seq` of a `confirm` of this member, already confirmed, under a newer bundle that the
+    /// member did not sign for: the page asks for the new fingerprint to be compared.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reconfirmed_seq: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -345,6 +349,7 @@ fn view_of(held: &HeldChain, me: &Id) -> ChainView {
             confirmed_by: m.confirmation.as_ref().map(|c| uuid(&c.by)),
             confirmed_seq: m.confirmation.as_ref().map(|c| c.seq),
             rekey_seq: m.rekey_seq,
+            reconfirmed_seq: m.reconfirmed_seq,
         })
         .collect();
     let keys = state

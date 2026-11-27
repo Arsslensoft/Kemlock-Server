@@ -1808,6 +1808,11 @@ State: the member is `confirmed` with this bundle and the confirmation `{by, sta
 statementSignature, seq}`. Their role and grants stay. The member is now entitled to the space key
 and to every collection they have access to, and awaits those seals.
 
+A `confirm` of a member who is already `confirmed` (a newer bundle) also records its `seq` as the
+member's **reconfirmed** `seq`: nothing the member signed vouches for that bundle, so a client shows
+the new fingerprint and asks a person to compare it again. The member's own `rekey`, and a `remove`,
+clear it. It is not a rule: a record is accepted either way.
+
 #### `rekey`
 
 ```json

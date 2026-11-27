@@ -50,6 +50,10 @@ pub struct Member {
     pub bundle_signature: Vec<u8>,
     pub confirmation: Option<Confirmation>,
     pub rekey_seq: Option<u64>,
+    /// The `seq` of the `confirm` that confirmed this member again under a newer bundle while they
+    /// were confirmed (another account signed it, the member did not): a client asks a person to
+    /// compare the new fingerprint. Cleared by the member's own `rekey` and by a removal.
+    pub reconfirmed_seq: Option<u64>,
 }
 
 impl Member {
@@ -367,6 +371,7 @@ mod tests {
             bundle_signature: Vec::new(),
             confirmation: None,
             rekey_seq: None,
+            reconfirmed_seq: None,
         }
     }
 

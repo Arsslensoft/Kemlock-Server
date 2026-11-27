@@ -522,6 +522,7 @@ fn case_12_the_10001st_member_is_invalid() {
                 bundle_signature: Vec::new(),
                 confirmation: None,
                 rekey_seq: None,
+                reconfirmed_seq: None,
             },
         )
     };

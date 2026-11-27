@@ -391,6 +391,7 @@ impl State {
                         bundle_signature: bundle_signature.clone(),
                         confirmation: None,
                         rekey_seq: None,
+                        reconfirmed_seq: None,
                     },
                 );
                 next.space = SpaceInfo {
@@ -457,6 +458,7 @@ impl State {
                         bundle_signature: Vec::new(),
                         confirmation: None,
                         rekey_seq: None,
+                        reconfirmed_seq: None,
                     },
                 );
                 for (collection, permission) in grants {
@@ -510,6 +512,10 @@ impl State {
                     seq,
                 });
                 m.rekey_seq = None;
+                // A member already confirmed, confirmed again under a newer bundle by someone else:
+                // nothing the member signed vouches for the bundle, so a client asks for its
+                // fingerprint to be compared again.
+                m.reconfirmed_seq = (current.status == Status::Confirmed).then_some(seq);
             }
             Body::Rekey {
                 bundle,
@@ -528,6 +534,7 @@ impl State {
                 m.bundle_signature = bundle_signature.clone();
                 m.confirmation = None;
                 m.rekey_seq = Some(seq);
+                m.reconfirmed_seq = None;
             }
             Body::Role {
                 custom,
@@ -567,6 +574,7 @@ impl State {
                 m.bundle_signature.clear();
                 m.confirmation = None;
                 m.rekey_seq = None;
+                m.reconfirmed_seq = None;
                 next.grants
                     .retain(|(_, grantee), _| *grantee != Grantee::User(*member));
                 for group in next.groups.values_mut() {
