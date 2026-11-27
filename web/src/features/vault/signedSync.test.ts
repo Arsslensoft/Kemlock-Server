@@ -6,7 +6,8 @@ import type { SyncResult } from '@/api/client';
 import type { ItemDto } from '@/api/types';
 import { signedItem } from '@/api/signedWrites';
 import { createWriteChecker } from '@/manifest/writes';
-import { encodeB64, utf8 } from '@/lib/b64url';
+import { decodeB64, encodeB64, utf8 } from '@/lib/b64url';
+import { ciphertextHash } from '@/manifest/format';
 import { crypto, resetFakeCrypto } from '@/test/fake-crypto';
 import { memoryFloorStore } from '@/spaces/anchors';
 import { type VaultDeps, VaultStore, syncVault } from './vault';
@@ -251,7 +252,14 @@ describe('an unsigned revision of an item this browser saw signed', () => {
 
 describe('a revision signed by a member the space has taken out', () => {
   /** A vault whose write checker says every revision is a former member's. */
-  function formerSetup(options: { floor?: Record<string, number>; manifestRevisions?: Record<string, number> } = {}) {
+  function formerSetup(
+    options: {
+      floor?: Record<string, number>;
+      manifestRevisions?: Record<string, number>;
+      /** The hash each manifest entry holds; zeros when left out. */
+      manifestHashes?: Record<string, string>;
+    } = {},
+  ) {
     const store = new VaultStore();
     const pages: ItemDto[][] = [];
     const rejected = vi.fn();
@@ -279,7 +287,7 @@ describe('a revision signed by a member the space has taken out', () => {
         entries: Object.entries(options.manifestRevisions ?? {}).map(([id, revision]) => ({
           id,
           revision,
-          hash: '0'.repeat(64),
+          hash: options.manifestHashes?.[id] ?? '0'.repeat(64),
           deleted: false,
         })),
       }),
@@ -299,7 +307,7 @@ describe('a revision signed by a member the space has taken out', () => {
     expect(await floors.load(ACCOUNT, OWN)).toEqual({});
   });
 
-  it('is taken in at or below the floor, and raises nothing', async () => {
+  it('is taken in at the floor’s revision, and raises nothing', async () => {
     const { store, sync, rejected, floors } = formerSetup({ floor: { [A]: 3 } });
     await sync(await sealed(A, 3));
     expect(store.items.get(A)?.revision).toBe(3);
@@ -307,13 +315,29 @@ describe('a revision signed by a member the space has taken out', () => {
     expect(await floors.load(ACCOUNT, OWN)).toEqual({});
   });
 
-  it('is taken in at or below the accepted manifest’s entry, on a browser with no floor', async () => {
-    const { store, sync, rejected } = formerSetup({ manifestRevisions: { [A]: 2 } });
+  it('is not taken in below the floor: only the very revision this browser accepted is', async () => {
+    const { store, sync, rejected } = formerSetup({ floor: { [A]: 3 } });
     await sync(await sealed(A, 2));
+    expect(store.items.has(A)).toBe(false);
+    expect(rejected).toHaveBeenCalledWith(expect.objectContaining({ id: A, revision: 2 }), 'former');
+  });
+
+  it('is taken in only when the accepted manifest’s entry has this revision and this ciphertext', async () => {
+    const accepted = await sealed(A, 2);
+    const hash = await ciphertextHash(decodeB64(accepted.ciphertext ?? ''));
+    const { store, sync, rejected } = formerSetup({ manifestRevisions: { [A]: 2 }, manifestHashes: { [A]: hash } });
+    await sync(accepted);
     expect(store.items.get(A)?.revision).toBe(2);
     await sync(await sealed(A, 3));
     expect(store.items.get(A)?.revision).toBe(2);
     expect(rejected).toHaveBeenCalledWith(expect.objectContaining({ id: A, revision: 3 }), 'former');
+  });
+
+  it('is not taken in when the revision matches the manifest but the ciphertext is another', async () => {
+    const { store, sync, rejected } = formerSetup({ manifestRevisions: { [A]: 2 } });
+    await sync(await sealed(A, 2));
+    expect(store.items.has(A)).toBe(false);
+    expect(rejected).toHaveBeenCalledWith(expect.objectContaining({ id: A, revision: 2 }), 'former');
   });
 
   it('is not taken in for an item neither the floor nor the manifest knows', async () => {
