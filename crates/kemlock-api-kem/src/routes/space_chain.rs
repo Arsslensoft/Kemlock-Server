@@ -67,13 +67,10 @@ const MAX_REPLACEMENT_BODY_BYTES: usize = 32 * 1024 * 1024;
 /// The most items one request re-writes: more than [`MAX_REPLACEMENT_BODY_BYTES`] can hold.
 const MAX_REWRITES: usize = 6_000;
 
-/// How long a body of at most [`MAX_CHAIN_BODY_BYTES`] has to arrive.
-const BODY_WINDOW: Duration = Duration::from_secs(30);
-
-/// The slowest a body above [`MAX_CHAIN_BODY_BYTES`] may arrive, in bytes a second, counted from
-/// the byte that crossed it, with [`RATE_GRACE`] of slack for the start.
-const MIN_LARGE_RATE: u64 = 256 * 1024;
-const RATE_GRACE: u64 = 1024 * 1024;
+/// A body has this long to arrive, from its first byte, and one more second for each
+/// [`BODY_RATE`] bytes it has by then: the floor is [`BODY_RATE`] a second, after this start.
+const BODY_GRACE: Duration = Duration::from_secs(30);
+const BODY_RATE: u64 = 256 * 1024;
 
 /// The longest a large body may go without a chunk.
 const CHUNK_WAIT: Duration = Duration::from_secs(15);
@@ -234,14 +231,14 @@ fn too_slow() -> Problem {
         "request-timeout",
         "The request body arrived too slowly",
     )
-    .detail("A body above 8 MiB must arrive at 256 KiB a second or faster")
+    .detail("A body has 30 seconds, and a second more for each 256 KiB of it, to arrive")
 }
 
 /// Reads an append's body after the caller is authenticated, as a stream. At most 8 MiB is held
 /// unless `large_ok` and [`may_send_large`] say the caller may send more and a place among the
 /// large bodies is free: `413` answers otherwise (a stranger, a plain member, a space with no key
-/// to replace), and nothing past 8 MiB was buffered. A body above 8 MiB must keep up
-/// [`MIN_LARGE_RATE`], and gives its place back, with a wait for the account, when it doesn't.
+/// to replace), and nothing past 8 MiB was buffered. Every body must keep up [`BODY_RATE`] from
+/// its first byte, and one that doesn't gives its place back.
 async fn read_chain_body<S, P, K, R>(
     env: &Env<S, P, K, R>,
     places: &LargeBodies,
@@ -292,13 +289,11 @@ where
     let mut stream = body.into_data_stream();
     let mut bytes: Vec<u8> = Vec::new();
     let started = Instant::now();
-    // When the body crossed 8 MiB, and how much of it had arrived.
-    let mut crossed: Option<(Instant, usize)> = None;
     loop {
-        let wait = match crossed {
-            None => BODY_WINDOW.saturating_sub(started.elapsed()),
-            Some(_) => CHUNK_WAIT,
-        };
+        // What is allowed so far is the start and a second for each 256 KiB that arrived: a chunk
+        // may not take longer than that to come, nor more than [`CHUNK_WAIT`].
+        let allowed = BODY_GRACE + Duration::from_secs(bytes.len() as u64 / BODY_RATE);
+        let wait = allowed.saturating_sub(started.elapsed()).min(CHUNK_WAIT);
         let next = tokio::time::timeout(wait, stream.next())
             .await
             .map_err(|_| too_slow())?;
@@ -306,23 +301,20 @@ where
             return Ok(bytes);
         };
         let chunk = chunk.map_err(|_| bad("the body couldn't be read"))?;
-        if crossed.is_none() && bytes.len().saturating_add(chunk.len()) > MAX_CHAIN_BODY_BYTES {
+        let total = bytes.len().saturating_add(chunk.len());
+        if large.is_none() && total > MAX_CHAIN_BODY_BYTES {
             if !large_ok || !may_send_large(env, actor, space).await {
                 return Err(Problem::payload_too_large());
             }
             *large = Some(places.take(*actor.user.as_bytes(), *space.as_bytes(), env.api.now())?);
-            crossed = Some((Instant::now(), bytes.len()));
         }
-        if bytes.len().saturating_add(chunk.len()) > MAX_REPLACEMENT_BODY_BYTES {
+        if total > MAX_REPLACEMENT_BODY_BYTES {
             return Err(Problem::payload_too_large());
         }
         bytes.extend_from_slice(&chunk);
-        if let Some((at, from)) = crossed {
-            let got = u64::try_from(bytes.len() - from).unwrap_or(u64::MAX);
-            let owed = MIN_LARGE_RATE.saturating_mul(at.elapsed().as_secs());
-            if got.saturating_add(RATE_GRACE) < owed {
-                return Err(too_slow());
-            }
+        let allowed = BODY_GRACE + Duration::from_secs(bytes.len() as u64 / BODY_RATE);
+        if started.elapsed() > allowed {
+            return Err(too_slow());
         }
     }
 }
