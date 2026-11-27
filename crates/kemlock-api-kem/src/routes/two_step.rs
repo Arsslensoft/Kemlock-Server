@@ -539,24 +539,6 @@ where
 
 const PROOF_NEEDED: &str = "a fresh proof is needed to add a second step beside one that is on";
 
-/// Turning on the first second step takes no proof (there is none to give), so a session alone
-/// could do it: it asks for a sign-in from the last 15 minutes instead. With a step already on,
-/// the fresh proof of [`require_proof_to_add`] is what asks.
-pub(crate) async fn require_fresh_for_first_step<S, P, K>(
-    api: &Api<S, P, K>,
-    authed: &Authed,
-) -> Result<(), Problem>
-where
-    S: Store,
-    P: Crypto,
-    K: TokenSigner + Clone + 'static,
-{
-    if methods_on(api, authed.actor.user).await?.is_empty() {
-        authed.require_fresh_sign_in(api.now())?;
-    }
-    Ok(())
-}
-
 /// What lets a method be turned on. With no method on, a session alone may add the first step.
 /// With one or more on, the request must carry a fresh proof, the one a removal takes (a mailed
 /// code, a current code of the authenticator app, or the recovery code), so a stolen session
@@ -1076,7 +1058,6 @@ where
 {
     let request: EmailConfirmRequest = body.json()?;
     limit_setup(&api, &authed, "email-setup")?;
-    require_fresh_for_first_step(&api, &authed).await?;
     // The setup code is checked first, then the proof is spent, then the method is turned on. A
     // refused proof puts the right setup code back, so it needn't be mailed again.
     let steps = two_step_of(&api, &runtime);
@@ -1145,7 +1126,6 @@ where
 {
     let request: YubikeySetRequest = body.json()?;
     limit_setup(&api, &authed, "yubikey-setup")?;
-    require_fresh_for_first_step(&api, &authed).await?;
     if request.otps.iter().all(|otp| otp.trim().is_empty()) {
         return Err(AppError::Invalid("A key is required.").into());
     }
@@ -1214,7 +1194,6 @@ where
 {
     let request: DuoSetRequest = body.json()?;
     limit_setup(&api, &authed, "duo-setup")?;
-    require_fresh_for_first_step(&api, &authed).await?;
     let custom = match (request.host, request.client_id, request.client_secret) {
         (None, None, None) => None,
         (host, ik, sk) => Some(DuoKeys {

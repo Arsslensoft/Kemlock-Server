@@ -488,10 +488,6 @@ impl<S: Store + DevicesStore, P: Crypto, K: TokenSigner + Clone + 'static> Api<S
             }
             _ => return Err(Problem::bad_request("decision must be approve or deny")),
         };
-        // Approving seals the account's root key to a new device: only a recent sign-in may.
-        if matches!(answer, Answer::Approve { .. }) {
-            authed.require_fresh_sign_in(api.now())?;
-        }
         api.answer_approval()
             .execute(&authed.actor, id, answer)
             .await?;
@@ -531,7 +527,6 @@ impl<S: Store + DevicesStore, P: Crypto, K: TokenSigner + Clone + 'static> Api<S
         State(api): State<Self>,
         authed: Authed,
     ) -> Result<StatusCode, Problem> {
-        authed.require_fresh_sign_in(api.now())?;
         api.key_copies().remove(&authed.actor).await?;
         Ok(StatusCode::NO_CONTENT)
     }
@@ -543,7 +538,6 @@ impl<S: Store + DevicesStore, P: Crypto, K: TokenSigner + Clone + 'static> Api<S
         authed: Authed,
         Path(id): Path<String>,
     ) -> Result<StatusCode, Problem> {
-        authed.require_fresh_sign_in(api.now())?;
         let device = id
             .parse::<Uuid>()
             .map_err(|_| Problem::bad_request("the device id isn't a UUID"))?;
@@ -581,7 +575,6 @@ impl<S: Store + DevicesStore, P: Crypto, K: TokenSigner + Clone + 'static> Api<S
         authed: Authed,
         body: Body,
     ) -> Result<StatusCode, Problem> {
-        authed.require_fresh_sign_in(api.now())?;
         let request: SignOutRequest = body.json()?;
         api.sign_out_device()
             .execute(&authed.actor, DeviceId(request.device_id))

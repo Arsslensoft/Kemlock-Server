@@ -418,7 +418,6 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
             &format!("totp:{}", authed.actor.user),
             now,
         )?;
-        super::two_step::require_fresh_for_first_step(&api, &authed).await?;
         // Beside another second step that is on, the recovery code proves it is the owner.
         super::two_step::require_proof_to_add_via_api(
             &api,
