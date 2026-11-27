@@ -230,6 +230,18 @@ pub struct KeysRotatedNotice {
     pub at: OffsetDateTime,
 }
 
+/// An emergency contact rotated their account's keys, so the grantor's grant lost its box and
+/// waits for the grantor to confirm the contact again. The mail goes to the grantor. It carries no
+/// key and no secret.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmergencyContactRekeyedNotice {
+    /// The grantor: the mail goes there.
+    pub to: Email,
+    /// The address of the emergency contact whose keys changed.
+    pub contact: Email,
+    pub at: OffsetDateTime,
+}
+
 /// Everything the server emails.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Notice {
@@ -257,6 +269,8 @@ pub enum Notice {
     PasswordChanged(PasswordChangedNotice),
     /// The account's root key was rotated, mailed to the account's address.
     KeysRotated(KeysRotatedNotice),
+    /// An emergency contact rotated their keys, mailed to the grantor, who must confirm them again.
+    EmergencyContactRekeyed(EmergencyContactRekeyedNotice),
     /// The link that confirms the address of a new account, mailed to that address.
     SignupVerify(SignupVerifyNotice),
     /// The link that proves an address before its account is made, mailed to that address.
@@ -286,6 +300,7 @@ impl Notice {
             Notice::EmailChanged(_) => "email-changed",
             Notice::PasswordChanged(_) => "password-changed",
             Notice::KeysRotated(_) => "keys-rotated",
+            Notice::EmergencyContactRekeyed(_) => "emergency-contact-rekeyed",
             Notice::SignupVerify(_) => "signup-verify",
             Notice::RegisterVerify(_) => "register-verify",
             Notice::BwOrgInvite(_) => "bw-org-invite",

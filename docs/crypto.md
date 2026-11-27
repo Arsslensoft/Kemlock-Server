@@ -552,7 +552,12 @@ wraps and ciphertexts, a device that was offline keeps its own copy of what it o
 copy on the server is deleted with the device), and another server's copies are why a federated
 account is refused. After the commit, and best effort, the other devices are signed out and their rows and
 tokens deleted as `PUT /account/password` with `signOutOthers` does, and the calling device gets new
-tokens (`{keyVersion, tokens}`); the event `account.keys_rotated` is written (no key material).
+tokens (`{keyVersion, tokens}`); the event `account.keys_rotated` is written (no key material). The
+account's address is mailed a notice, and so is the grantor of each grant the install reset above
+(the grants in which the account is the contact): the mail says their emergency contact replaced
+their keys and that they must confirm the contact again in Emergency access, until which the
+contact has no access. Every mail is best effort, sent after the commit, and carries no key
+material.
 
 Other devices' sessions end with the stamp: each signs in again and sees at
 `GET /kem/v1/account/keys` a `keyVersion` it did not hold, so it opens with the password, a passkey,

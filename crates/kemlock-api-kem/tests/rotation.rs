@@ -14,10 +14,11 @@ use kemlock_api_kem::{RotationApiDoc, rotation_router};
 use kemlock_app::notices::{BoxFuture, Notice, Outbox};
 use kemlock_app::ports::{StoreError, UserRepo};
 use kemlock_app::rotation::{
-    Holdings, Install, PreviousKeys, RotationError, RotationStore, StagedItem, check_install,
+    Holdings, Install, Installed, PreviousKeys, RotationError, RotationStore, StagedItem,
+    check_install,
 };
 use kemlock_domain::unlock::{EmergencyState, GrantId};
-use kemlock_domain::{ChangeId, ItemId, PasskeyId, Revision, UserId};
+use kemlock_domain::{ItemId, PasskeyId, Revision, UserId};
 use serde_json::{Value, json};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -42,6 +43,8 @@ struct FakeRotation {
     users: FakeStore,
     holdings: Arc<Mutex<Holdings>>,
     installs: Arc<Mutex<u32>>,
+    /// The grantors the install says it reset the grants of.
+    reset_grantors: Arc<Mutex<Vec<UserId>>>,
     snapshots: Arc<Mutex<u32>>,
 }
 
@@ -75,12 +78,15 @@ impl RotationStore for FakeRotation {
         Ok(())
     }
 
-    async fn install(&self, install: Install) -> Result<Option<ChangeId>, RotationError> {
+    async fn install(&self, install: Install) -> Result<Installed, RotationError> {
         let holdings = self.holdings.lock().expect("lock").clone();
         check_install(&install, &holdings, &[])?;
         UserRepo::update(&self.users, &install.after).await?;
         *self.installs.lock().expect("lock") += 1;
-        Ok(None)
+        Ok(Installed {
+            change: None,
+            reset_grantors: self.reset_grantors.lock().expect("lock").clone(),
+        })
     }
 
     async fn previous_keys(&self, _user: UserId) -> Result<Option<PreviousKeys>, StoreError> {
@@ -118,6 +124,7 @@ fn rig() -> Rig {
         users: app.store.clone(),
         holdings: Arc::new(Mutex::new(Holdings::default())),
         installs: Arc::new(Mutex::new(0)),
+        reset_grantors: Arc::new(Mutex::new(Vec::new())),
         snapshots: Arc::new(Mutex::new(0)),
     };
     let router = app
@@ -140,13 +147,17 @@ struct Person {
 
 impl Rig {
     async fn person(&self) -> Person {
+        self.person_at(EMAIL).await
+    }
+
+    async fn person_at(&self, email: &str) -> Person {
         let mut client = Client::new(
             self.router.clone(),
             self.app.clock.clone(),
             DpopSigner::es256(),
         );
         client.peer = Some(next_peer());
-        let session = register_and_sign_in(&client, EMAIL).await;
+        let session = register_and_sign_in(&client, email).await;
         let id = UserId(session.user_id.parse().expect("a user id"));
         Person {
             client,
@@ -402,6 +413,70 @@ async fn an_install_replaces_the_keys_and_ends_every_other_session() {
     // The token the device held ended with the old security stamp.
     let old = sam.call("GET", "/kem/v1/account/rotation", None).await;
     assert_eq!(old.status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn the_grantor_of_a_grant_the_install_reset_is_mailed_to_confirm_the_contact_again() {
+    let grantor_email = "grace@example.org";
+    let rig = rig();
+    let grantor = rig.person_at(grantor_email).await;
+    let sam = rig.person().await;
+    *rig.repo.holdings.lock().expect("lock") = Holdings {
+        as_contact: vec![(GrantId::random(), EmergencyState::Confirmed)],
+        ..Holdings::default()
+    };
+    // The store says, from inside its transaction, which grants it sent back to waiting.
+    *rig.repo.reset_grantors.lock().expect("lock") = vec![grantor.id];
+    rig.mailbox.0.lock().expect("the lock").clear();
+
+    let reply = sam
+        .call(
+            "POST",
+            "/kem/v1/account/rotation",
+            Some(sam.install_body().await),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.body);
+
+    let mails = rig.mailbox.0.lock().expect("the lock");
+    let told: Vec<_> = mails
+        .iter()
+        .filter_map(|notice| match notice {
+            Notice::EmergencyContactRekeyed(n) => Some(n),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(told.len(), 1, "{mails:?}");
+    assert_eq!(told[0].to.as_str(), grantor_email);
+    assert_eq!(told[0].contact.as_str(), EMAIL);
+    // The contact is told of their own rotation, and not of the grantor's.
+    assert!(
+        mails
+            .iter()
+            .any(|notice| matches!(notice, Notice::KeysRotated(n) if n.to.as_str() == EMAIL)),
+        "{mails:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_install_that_resets_no_grant_mails_no_grantor() {
+    let rig = rig();
+    let sam = rig.person().await;
+    let reply = sam
+        .call(
+            "POST",
+            "/kem/v1/account/rotation",
+            Some(sam.install_body().await),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.body);
+    let mails = rig.mailbox.0.lock().expect("the lock");
+    assert!(
+        !mails
+            .iter()
+            .any(|notice| matches!(notice, Notice::EmergencyContactRekeyed(_))),
+        "{mails:?}"
+    );
 }
 
 #[tokio::test]

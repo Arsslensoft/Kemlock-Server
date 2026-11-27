@@ -170,11 +170,11 @@ async fn rotation(store: &SqlStore) {
         .await,
         Ok(2)
     );
-    let change = RotationStore::install(store, install_of(&sam, request()))
+    let installed = RotationStore::install(store, install_of(&sam, request()))
         .await
         .expect("the install");
     assert!(
-        change.is_some(),
+        installed.change.is_some(),
         "the last item written names the change to nudge devices with"
     );
     let after = UserRepo::by_id(store, sam.id)
@@ -434,9 +434,14 @@ async fn a_grant_that_names_the_account_as_contact_goes_back_to_waiting(store: &
         "the account holds no box of its own for it"
     );
 
-    RotationStore::install(store, install_of(&sam, request()))
+    let installed = RotationStore::install(store, install_of(&sam, request()))
         .await
         .expect("the install");
+    assert_eq!(
+        installed.reset_grantors,
+        vec![grantor.id],
+        "the install names the grantor to tell"
+    );
     // The grantor's box was sealed to the keys the account no longer has: the grantor confirms
     // again, to the new bundle.
     let after = EmergencyRepo::grant(store, grant.id)

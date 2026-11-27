@@ -11,9 +11,9 @@ use kemlock_app::devices::NewDeviceNotice;
 use kemlock_app::emergency::{EmergencyEvent, EmergencyNotice};
 use kemlock_app::notices::{
     BwEmergencyInviteNotice, BwOrgInviteNotice, EmailChangeNotice, EmailChangeRequestedNotice,
-    EmailChangedNotice, EmailTakenNotice, InvitationNotice, KeysRotatedNotice, Notice,
-    PasswordChangedNotice, ProtectedActionNotice, RegisterVerifyNotice, SignupVerifyNotice,
-    TwoStepChangedNotice, TwoStepCodeNotice, TwoStepRecoveredNotice,
+    EmailChangedNotice, EmailTakenNotice, EmergencyContactRekeyedNotice, InvitationNotice,
+    KeysRotatedNotice, Notice, PasswordChangedNotice, ProtectedActionNotice, RegisterVerifyNotice,
+    SignupVerifyNotice, TwoStepChangedNotice, TwoStepCodeNotice, TwoStepRecoveredNotice,
 };
 use kemlock_domain::DeviceKind;
 use kemlock_domain::unlock::EmergencyKind;
@@ -511,6 +511,30 @@ fn keys_rotated(notice: &KeysRotatedNotice, brand: &Branding) -> Rendered {
     )
 }
 
+/// Tells a grantor that their emergency contact rotated their keys, so the contact has to be
+/// confirmed again. It carries no key and no link.
+fn emergency_contact_rekeyed(notice: &EmergencyContactRekeyedNotice, brand: &Branding) -> Rendered {
+    let lead = format!(
+        "On {}, your emergency contact {} replaced the keys of their account.",
+        when(notice.at),
+        plain(notice.contact.as_str())
+    );
+    let body = Body::new(&[
+        &lead,
+        "The copy of your vault key that you sealed for them opens no more, and it was deleted. They have no emergency access to your vault until you confirm them again: open Emergency access, check their new key fingerprint with them, and confirm.",
+        "If you don't know why their keys changed, don't confirm them until you have asked them.",
+    ]);
+    finish(
+        notice.to.as_str(),
+        format!(
+            "Your emergency contact replaced their keys on {}",
+            brand.app_name
+        ),
+        &body,
+        brand,
+    )
+}
+
 /// The mail of a registration that has to prove its address first. The link is the Bitwarden web
 /// vault's `finish-signup`; its token proves the mailbox is the person's, and works for 30 minutes.
 fn register_verify(notice: &RegisterVerifyNotice, brand: &Branding) -> Rendered {
@@ -601,6 +625,7 @@ pub fn render(notice: &Notice, brand: &Branding) -> Rendered {
         Notice::EmailChanged(n) => email_changed(n, brand),
         Notice::PasswordChanged(n) => password_changed(n, brand),
         Notice::KeysRotated(n) => keys_rotated(n, brand),
+        Notice::EmergencyContactRekeyed(n) => emergency_contact_rekeyed(n, brand),
         Notice::SignupVerify(n) => signup_verify(n, brand),
         Notice::RegisterVerify(n) => register_verify(n, brand),
         Notice::BwOrgInvite(n) => bw_org_invite(n, brand),
@@ -1018,6 +1043,27 @@ mod tests {
         );
         assert!(rendered.text.contains("other devices were signed out"));
         assert!(rendered.text.contains("If it wasn't"));
+    }
+
+    #[test]
+    fn the_mail_to_a_grantor_whose_contact_rotated_says_to_confirm_the_contact_again() {
+        let rendered = render(
+            &Notice::EmergencyContactRekeyed(EmergencyContactRekeyedNotice {
+                to: email(),
+                contact: Email::parse("sam@example.org").expect("email"),
+                at: datetime!(2026-12-02 10:05 +01:00),
+            }),
+            &brand(),
+        );
+        assert_eq!(rendered.to, "ada@example.com");
+        assert_eq!(
+            rendered.subject,
+            "Your emergency contact replaced their keys on Kemlock"
+        );
+        assert!(rendered.text.contains("sam@example.org"), "{}", rendered.text);
+        assert!(rendered.text.contains("2026-12-02 09:05 UTC"));
+        assert!(rendered.text.contains("Emergency access"));
+        assert!(rendered.text.contains("confirm them again"));
     }
 
     #[test]
