@@ -574,6 +574,11 @@ where
         security_stamp,
         ..
     } = caller.0;
+    // The client sends nothing but pings and a close, so a frame of more than a few KiB is
+    // refused before it is buffered, not after 64 MiB of it.
+    let upgrade = upgrade
+        .max_message_size(crate::live::MAX_CLIENT_MESSAGE_BYTES)
+        .max_frame_size(crate::live::MAX_CLIENT_MESSAGE_BYTES);
     Ok(upgrade.on_upgrade(move |socket| {
         crate::live::serve_socket(socket, hub, owners, lifetime, move || {
             let api = api.clone();
