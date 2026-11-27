@@ -23,7 +23,7 @@
 //! their own, merged beside the spaces router.
 
 use crate::dto::decode;
-use crate::problem::Problem;
+use crate::problem::{Problem, rate_limited};
 use crate::routes::spaces::{Caller, Env, mail_invitations, nonce_header};
 use crate::state::{Api, Crypto, Store};
 use axum::body::{Body, Bytes};
@@ -32,7 +32,7 @@ use axum::http::StatusCode;
 use axum::middleware;
 use axum::routing::get;
 use axum::routing::post;
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use futures_util::StreamExt;
 use kemlock_app::authenticate::Actor;
 use kemlock_app::ports::TokenSigner;
@@ -45,12 +45,12 @@ use kemlock_app::{AppError, b64url};
 use kemlock_crypto::space_chain::{KeyRef, NameTarget, Reason, SignedRecord};
 use kemlock_domain::spaces::CollectionId;
 use kemlock_domain::spaces::CustomPermissions;
-use kemlock_domain::spaces::SpaceRole;
 use kemlock_domain::{ItemError, ItemId, Revision, SpaceId, UserId};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::BTreeSet;
-use std::sync::{Mutex, PoisonError};
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 use utoipa::{OpenApi, ToSchema};
 use uuid::Uuid;
 
@@ -58,64 +58,155 @@ use uuid::Uuid;
 /// base64url, with their signatures, boxes and names.
 const MAX_CHAIN_BODY_BYTES: usize = 8 * 1024 * 1024;
 
-/// The most a request may weigh when it is sent by a confirmed member who may replace keys. A key
-/// replacement writes every live item of the replaced collections again in the same request, and
-/// each carries its signature ("Signed item writes", 3,373 bytes, 4.5 KiB in base64url), so the
-/// request grows with the items: this is room for about 5,000 items of ordinary size.
+/// The most a request may weigh when it replaces keys. A key replacement writes every live item of
+/// the replaced collections again in the same request, and each carries its signature ("Signed item
+/// writes", 3,373 bytes, 4.5 KiB in base64url), so the request grows with the items: this is room
+/// for about 5,000 items of ordinary size.
 const MAX_REPLACEMENT_BODY_BYTES: usize = 32 * 1024 * 1024;
 
-/// The most large bodies (above [`MAX_CHAIN_BODY_BYTES`]) this server reads and handles at once.
+/// The most items one request re-writes: more than [`MAX_REPLACEMENT_BODY_BYTES`] can hold.
+const MAX_REWRITES: usize = 6_000;
+
+/// How long a body of at most [`MAX_CHAIN_BODY_BYTES`] has to arrive.
+const BODY_WINDOW: Duration = Duration::from_secs(30);
+
+/// The slowest a body above [`MAX_CHAIN_BODY_BYTES`] may arrive, in bytes a second, counted from
+/// the byte that crossed it, with [`RATE_GRACE`] of slack for the start.
+const MIN_LARGE_RATE: u64 = 256 * 1024;
+const RATE_GRACE: u64 = 1024 * 1024;
+
+/// The longest a large body may go without a chunk.
+const CHUNK_WAIT: Duration = Duration::from_secs(15);
+
+/// How long an account waits after a large body that ended in a refusal (a `4xx` but a conflict).
+const COOLDOWN_SECS: i64 = 60;
+
+/// The most large bodies (above [`MAX_CHAIN_BODY_BYTES`]) a server reads and handles at once.
 const MAX_LARGE_BODIES: usize = 2;
 
-/// The accounts that have a large body being read or handled: at most [`MAX_LARGE_BODIES`] in all,
-/// and one for each account.
-static LARGE_BODIES: Mutex<BTreeSet<[u8; 16]>> = Mutex::new(BTreeSet::new());
+/// Who has a large body in hand, and who must wait: at most `max` at once on the server, one for
+/// each account and one for each space, and an account whose last large body was refused waits
+/// [`COOLDOWN_SECS`]. Owned by the router, so each router (and each test) has its own.
+#[derive(Clone, Debug)]
+pub struct LargeBodies(Arc<Mutex<Places>>);
+
+#[derive(Debug)]
+struct Places {
+    max: usize,
+    /// How long an account waits after a refused large body, in seconds.
+    cooldown: i64,
+    accounts: BTreeSet<[u8; 16]>,
+    spaces: BTreeSet<[u8; 16]>,
+    /// The accounts that wait, and until when (Unix seconds).
+    cooling: BTreeMap<[u8; 16], i64>,
+}
+
+impl Default for LargeBodies {
+    fn default() -> LargeBodies {
+        LargeBodies::new(MAX_LARGE_BODIES, COOLDOWN_SECS)
+    }
+}
+
+impl LargeBodies {
+    /// Room for `max` large bodies at once, and `cooldown` seconds of waiting for an account whose
+    /// large body was refused.
+    pub fn new(max: usize, cooldown: i64) -> LargeBodies {
+        LargeBodies(Arc::new(Mutex::new(Places {
+            max,
+            cooldown,
+            accounts: BTreeSet::new(),
+            spaces: BTreeSet::new(),
+            cooling: BTreeMap::new(),
+        })))
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Places> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Takes a place for `account` in `space` at `now` (Unix seconds), or answers `429`: the
+    /// account waits, or the server's places, the account's or the space's are taken.
+    pub fn take(&self, account: [u8; 16], space: [u8; 16], now: i64) -> Result<LargeBody, Problem> {
+        let mut places = self.lock();
+        places.cooling.retain(|_, until| *until > now);
+        if let Some(until) = places.cooling.get(&account) {
+            let wait = u64::try_from(*until - now).unwrap_or(1).max(1);
+            return Err(rate_limited(wait));
+        }
+        if places.accounts.len() >= places.max
+            || places.accounts.contains(&account)
+            || places.spaces.contains(&space)
+        {
+            return Err(rate_limited(5));
+        }
+        places.accounts.insert(account);
+        places.spaces.insert(space);
+        drop(places);
+        Ok(LargeBody {
+            places: self.clone(),
+            account,
+            space,
+            now,
+            refused: false,
+        })
+    }
+
+    /// Takes a place without a request, for a test that fills them.
+    #[doc(hidden)]
+    pub fn occupy(&self, account: [u8; 16], space: [u8; 16]) -> Result<LargeBody, Problem> {
+        self.take(account, space, 0)
+    }
+}
 
 /// A place among the large bodies, held until the request is answered.
 #[derive(Debug)]
-struct LargeBody {
+pub struct LargeBody {
+    places: LargeBodies,
     account: [u8; 16],
+    space: [u8; 16],
+    now: i64,
+    refused: bool,
 }
 
 impl LargeBody {
-    /// Takes a place for `account`, or answers `429` when the server's places or the account's are
-    /// taken.
-    fn take(account: [u8; 16]) -> Result<LargeBody, Problem> {
-        let mut busy = LARGE_BODIES.lock().unwrap_or_else(PoisonError::into_inner);
-        if busy.len() >= MAX_LARGE_BODIES || !busy.insert(account) {
-            return Err(Problem::new(
-                StatusCode::TOO_MANY_REQUESTS,
-                "busy",
-                "Another large request is being handled",
-            )
-            .detail("Try again in a moment"));
-        }
-        Ok(LargeBody { account })
+    /// The request ended in a refusal: the account waits before it sends another.
+    fn refused(&mut self) {
+        self.refused = true;
     }
 }
 
 impl Drop for LargeBody {
     fn drop(&mut self) {
-        LARGE_BODIES
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&self.account);
+        let mut places = self.places.lock();
+        places.accounts.remove(&self.account);
+        places.spaces.remove(&self.space);
+        if self.refused {
+            places
+                .cooling
+                .insert(self.account, self.now.saturating_add(places.cooldown));
+        }
     }
 }
 
-/// The raw body of an append. The ordinary body limit is 2 MiB, which a request of large records
-/// exceeds, so it is read here: up to [`MAX_CHAIN_BODY_BYTES`] from anyone who is signed in, and
-/// up to [`MAX_REPLACEMENT_BODY_BYTES`] once the caller is known to be a confirmed member who may
-/// replace keys, and has a place among the large bodies.
+/// Whether an answer of `status` counts against the account that sent a large body: a refusal of
+/// the request, not a conflict (a retry after one is the client's own) or a wait.
+fn counts_against(status: StatusCode) -> bool {
+    status.is_client_error()
+        && status != StatusCode::CONFLICT
+        && status != StatusCode::TOO_MANY_REQUESTS
+}
+
+/// The raw body of an append, and the place among the large bodies it holds, if it is one.
 #[derive(Debug)]
 struct ChainBody {
     bytes: Bytes,
-    _large: Option<LargeBody>,
+    large: Option<LargeBody>,
 }
 
-/// Whether `actor` is a confirmed member of `space` who may replace its keys or re-write items: an
-/// owner or an admin, or a member with edit on a collection. What the use case then decides is
-/// stricter; this only decides who may send more than the ordinary limit.
+/// Whether `actor` may send more than the ordinary limit to `space` now: the chain's state has a
+/// collection key marked that the actor may replace, as the worker's `replace_marked` decides (a
+/// confirmed member entitled to the key, with edit on the collection). Nothing else needs a body
+/// that large: the items of a key replacement are the only thing that does.
 async fn may_send_large<S, P, K, R>(env: &Env<S, P, K, R>, actor: &Actor, space: SpaceId) -> bool
 where
     S: Store,
@@ -123,29 +214,75 @@ where
     K: TokenSigner + Clone + 'static,
     R: SpaceRepo + SpaceChainRepo + Clone + 'static,
 {
-    let Ok(Some(state)) = env.spaces.load(space).await else {
+    let Ok(Some((_, state))) = env.spaces.chain_state(space).await else {
         return false;
     };
-    let Ok(member) = state.confirmed_actor(actor.user) else {
-        return false;
-    };
-    matches!(member.role, SpaceRole::Owner | SpaceRole::Admin)
-        || state
-            .collections
-            .iter()
-            .any(|c| state.access(actor.user, c.id).is_some_and(|a| a.edit))
+    let me = *actor.user.as_bytes();
+    state.keys().iter().any(|key| match key {
+        KeyRef::Collection(id) => {
+            state.key_marked(key)
+                && state.entitled(key).contains(&me)
+                && state.access(&me, id).is_some_and(|rights| rights.edit)
+        }
+        KeyRef::Space => false,
+    })
 }
 
-/// Reads an append's body after the caller is authenticated, as a stream, so a body over the
-/// ordinary limit is not buffered past it unless the caller may send more: the chunk that would
-/// cross it is held back until [`may_send_large`] and a place among the large bodies say so, and
-/// `413` answers otherwise (a stranger and a plain viewer alike).
+fn too_slow() -> Problem {
+    Problem::new(
+        StatusCode::REQUEST_TIMEOUT,
+        "request-timeout",
+        "The request body arrived too slowly",
+    )
+    .detail("A body above 8 MiB must arrive at 256 KiB a second or faster")
+}
+
+/// Reads an append's body after the caller is authenticated, as a stream. At most 8 MiB is held
+/// unless `large_ok` and [`may_send_large`] say the caller may send more and a place among the
+/// large bodies is free: `413` answers otherwise (a stranger, a plain member, a space with no key
+/// to replace), and nothing past 8 MiB was buffered. A body above 8 MiB must keep up
+/// [`MIN_LARGE_RATE`], and gives its place back, with a wait for the account, when it doesn't.
 async fn read_chain_body<S, P, K, R>(
     env: &Env<S, P, K, R>,
+    places: &LargeBodies,
     actor: &Actor,
     space: SpaceId,
     body: Body,
+    large_ok: bool,
 ) -> Result<ChainBody, Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: SpaceRepo + SpaceChainRepo + Clone + 'static,
+{
+    let mut large: Option<LargeBody> = None;
+    let read = read_stream(env, places, actor, space, body, large_ok, &mut large).await;
+    match read {
+        Ok(bytes) => Ok(ChainBody {
+            bytes: Bytes::from(bytes),
+            large,
+        }),
+        Err(problem) => {
+            if let Some(place) = large.as_mut()
+                && counts_against(problem.status)
+            {
+                place.refused();
+            }
+            Err(problem)
+        }
+    }
+}
+
+async fn read_stream<S, P, K, R>(
+    env: &Env<S, P, K, R>,
+    places: &LargeBodies,
+    actor: &Actor,
+    space: SpaceId,
+    body: Body,
+    large_ok: bool,
+    large: &mut Option<LargeBody>,
+) -> Result<Vec<u8>, Problem>
 where
     S: Store,
     P: Crypto,
@@ -154,26 +291,40 @@ where
 {
     let mut stream = body.into_data_stream();
     let mut bytes: Vec<u8> = Vec::new();
-    let mut limit = MAX_CHAIN_BODY_BYTES;
-    let mut large = None;
-    while let Some(chunk) = stream.next().await {
+    let started = Instant::now();
+    // When the body crossed 8 MiB, and how much of it had arrived.
+    let mut crossed: Option<(Instant, usize)> = None;
+    loop {
+        let wait = match crossed {
+            None => BODY_WINDOW.saturating_sub(started.elapsed()),
+            Some(_) => CHUNK_WAIT,
+        };
+        let next = tokio::time::timeout(wait, stream.next())
+            .await
+            .map_err(|_| too_slow())?;
+        let Some(chunk) = next else {
+            return Ok(bytes);
+        };
         let chunk = chunk.map_err(|_| bad("the body couldn't be read"))?;
-        if bytes.len().saturating_add(chunk.len()) > limit {
-            if large.is_some() || !may_send_large(env, actor, space).await {
+        if crossed.is_none() && bytes.len().saturating_add(chunk.len()) > MAX_CHAIN_BODY_BYTES {
+            if !large_ok || !may_send_large(env, actor, space).await {
                 return Err(Problem::payload_too_large());
             }
-            large = Some(LargeBody::take(*actor.user.as_bytes())?);
-            limit = MAX_REPLACEMENT_BODY_BYTES;
-            if bytes.len().saturating_add(chunk.len()) > limit {
-                return Err(Problem::payload_too_large());
-            }
+            *large = Some(places.take(*actor.user.as_bytes(), *space.as_bytes(), env.api.now())?);
+            crossed = Some((Instant::now(), bytes.len()));
+        }
+        if bytes.len().saturating_add(chunk.len()) > MAX_REPLACEMENT_BODY_BYTES {
+            return Err(Problem::payload_too_large());
         }
         bytes.extend_from_slice(&chunk);
+        if let Some((at, from)) = crossed {
+            let got = u64::try_from(bytes.len() - from).unwrap_or(u64::MAX);
+            let owed = MIN_LARGE_RATE.saturating_mul(at.elapsed().as_secs());
+            if got.saturating_add(RATE_GRACE) < owed {
+                return Err(too_slow());
+            }
+        }
     }
-    Ok(ChainBody {
-        bytes: Bytes::from(bytes),
-        _large: large,
-    })
 }
 
 fn bad(why: &'static str) -> Problem {
@@ -552,8 +703,15 @@ fn read_request(body: &ChainBody) -> Result<AppendRequest, Problem> {
             sealed: decode("name", &name.name)?,
         });
     }
+    if request.writes.len() > MAX_REWRITES {
+        return Err(bad("a request re-writes at most 6,000 items"));
+    }
+    let mut written = BTreeSet::new();
     let mut writes = Vec::with_capacity(request.writes.len());
     for write in request.writes {
+        if !written.insert(write.item.id) {
+            return Err(bad("an item is re-written once in a request"));
+        }
         let item = write
             .item
             .into_write(Some(Revision(write.expected_revision)))?;
@@ -568,13 +726,16 @@ fn read_request(body: &ChainBody) -> Result<AppendRequest, Problem> {
     })
 }
 
-/// The signatures of the items a key replacement re-writes, checked as the signature of any item
-/// write is (docs/crypto.md, "Signed item writes"): by the signed-in account, over the statement
-/// rebuilt from the write and the collection it names. An unsigned re-write is left to the use
-/// case, which knows whether the space takes signed writes only.
-async fn verify_rewrites<S, P, K, R>(
+/// The re-written items of a key replacement, checked before anything is stored. First, cheaply,
+/// that the caller is a confirmed member of the space with edit on the collection of each item,
+/// from the chain's state: a stranger's request costs no signature check. Then each signature, as
+/// any item write's is (docs/crypto.md, "Signed item writes"): by the signed-in account, over the
+/// statement rebuilt from the write and the collection it names, on a blocking thread. An unsigned
+/// re-write is left to the use case, which knows whether the space takes signed writes only.
+async fn check_rewrites<S, P, K, R>(
     env: &Env<S, P, K, R>,
     actor: UserId,
+    space: SpaceId,
     request: &AppendRequest,
 ) -> Result<(), Problem>
 where
@@ -583,16 +744,82 @@ where
     K: TokenSigner + Clone + 'static,
     R: SpaceRepo + SpaceChainRepo + Clone + 'static,
 {
+    if request.writes.is_empty() {
+        return Ok(());
+    }
+    let Some((_, state)) = env
+        .spaces
+        .chain_state(space)
+        .await
+        .map_err(|e| Problem::from(AppError::Store(e.to_string())))?
+    else {
+        return Err(Problem::not_found());
+    };
+    let me = *actor.as_bytes();
+    if state.confirmed(&me).is_none() {
+        return Err(Problem::not_found());
+    }
+    for (collection, _) in &request.writes {
+        if !state
+            .access(&me, collection.0.as_bytes())
+            .is_some_and(|rights| rights.edit)
+        {
+            return Err(refused(
+                Reason::NotAllowed,
+                None,
+                "only a member with edit on a collection re-writes its items".to_owned(),
+            ));
+        }
+    }
     let writes: Vec<_> = request
         .writes
         .iter()
-        .map(|(collection, write)| (write, Some(*collection)))
+        .map(|(collection, write)| (write.clone(), Some(*collection)))
         .collect();
-    super::write_sig::verify_writes(&env.api.store, actor, &writes).await
+    super::write_sig::verify_writes_blocking(&env.api.store, actor, writes).await
+}
+
+/// What an append does once its body is read: the same for a new request and for the answer to a
+/// queued change (`pending`).
+async fn append_read<S, P, K, R>(
+    env: &Env<S, P, K, R>,
+    actor: &Actor,
+    space: SpaceId,
+    pending: Option<Uuid>,
+    body: &ChainBody,
+) -> Result<(StatusCode, Json<HeadDto>), Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: SpaceRepo + SpaceChainRepo + Clone + 'static,
+{
+    let request = read_request(body)?;
+    check_rewrites(env, actor.user, space, &request).await?;
+    let invited = invitees(&request);
+    let append = append_use_case(env);
+    let head = match pending {
+        None => append.execute(actor, space, request).await?,
+        Some(pending) => append.answer(actor, space, pending, request).await?,
+    };
+    mail_invitations(env, actor.user, &invited, space).await;
+    Ok((StatusCode::CREATED, Json(HeadDto::of(&head))))
+}
+
+impl ChainBody {
+    /// Notes how the request ended: a refusal makes the account wait before another large body.
+    fn settle<T>(&mut self, result: &Result<T, Problem>) {
+        if let (Some(place), Err(problem)) = (self.large.as_mut(), result)
+            && counts_against(problem.status)
+        {
+            place.refused();
+        }
+    }
 }
 
 async fn append_chain<S, P, K, R>(
     State(env): State<Env<S, P, K, R>>,
+    Extension(places): Extension<LargeBodies>,
     caller: Caller,
     Path(id): Path<String>,
     body: Body,
@@ -605,19 +832,17 @@ where
 {
     let space = space_id(&id)?;
     let actor = caller.actor();
-    let body = read_chain_body(&env, &actor, space, body).await?;
-    let request = read_request(&body)?;
-    verify_rewrites(&env, actor.user, &request).await?;
-    let invited = invitees(&request);
-    let head = append_use_case(&env)
-        .execute(&actor, space, request)
-        .await?;
-    mail_invitations(&env, actor.user, &invited, space).await;
-    Ok((StatusCode::CREATED, Json(HeadDto::of(&head))))
+    let mut body = read_chain_body(&env, &places, &actor, space, body, true).await?;
+    let result = append_read(&env, &actor, space, None, &body).await;
+    body.settle(&result);
+    result
 }
 
+/// A queued change is answered with the records that apply it, which are small: no queued change
+/// is a `keys` record, so this route reads 8 MiB at most, from anyone.
 async fn answer_pending<S, P, K, R>(
     State(env): State<Env<S, P, K, R>>,
+    Extension(places): Extension<LargeBodies>,
     caller: Caller,
     Path((id, pending)): Path<(String, String)>,
     body: Body,
@@ -631,15 +856,10 @@ where
     let space = space_id(&id)?;
     let pending: Uuid = pending.parse().map_err(|_| bad("the id isn't a UUID"))?;
     let actor = caller.actor();
-    let body = read_chain_body(&env, &actor, space, body).await?;
-    let request = read_request(&body)?;
-    verify_rewrites(&env, actor.user, &request).await?;
-    let invited = invitees(&request);
-    let head = append_use_case(&env)
-        .answer(&actor, space, pending, request)
-        .await?;
-    mail_invitations(&env, actor.user, &invited, space).await;
-    Ok((StatusCode::CREATED, Json(HeadDto::of(&head))))
+    let mut body = read_chain_body(&env, &places, &actor, space, body, false).await?;
+    let result = append_read(&env, &actor, space, Some(pending), &body).await;
+    body.settle(&result);
+    result
 }
 
 /// `?from=<seq>`: an integer from 0.
@@ -758,6 +978,18 @@ where
     K: TokenSigner + Clone + 'static,
     R: SpaceRepo + SpaceChainRepo + Clone + 'static,
 {
+    router_with(api, spaces, LargeBodies::default())
+}
+
+/// [`router`] over the given places for large bodies, which the router owns: one is made for each
+/// router, and a test that wants to fill them passes its own.
+pub fn router_with<S, P, K, R>(api: Api<S, P, K>, spaces: R, places: LargeBodies) -> Router
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: SpaceRepo + SpaceChainRepo + Clone + 'static,
+{
     let env = Env { api, spaces };
     Router::new()
         .route(
@@ -780,6 +1012,7 @@ where
             env.clone(),
             nonce_header::<S, P, K, R>,
         ))
+        .layer(Extension(places))
         .with_state(env)
 }
 
@@ -911,20 +1144,47 @@ mod tests {
     use super::*;
 
     #[test]
-    fn large_bodies_are_two_at_once_and_one_for_each_account() {
-        let first = LargeBody::take([1; 16]).expect("a place");
-        // The same account may not have a second one in hand.
-        assert!(LargeBody::take([1; 16]).is_err());
-        let second = LargeBody::take([2; 16]).expect("a second place");
+    fn large_bodies_are_limited_on_the_server_for_each_account_and_for_each_space() {
+        let places = LargeBodies::new(2, COOLDOWN_SECS);
+        let first = places.take([1; 16], [10; 16], 0).expect("a place");
+        // The same account, or the same space, may not have a second one in hand.
+        assert!(places.take([1; 16], [11; 16], 0).is_err());
+        assert!(places.take([2; 16], [10; 16], 0).is_err());
+        let second = places.take([2; 16], [11; 16], 0).expect("a second place");
         // The server has two places only.
-        assert!(LargeBody::take([3; 16]).is_err());
+        assert!(places.take([3; 16], [12; 16], 0).is_err());
         // A place comes back when its request is over, for that account and for another.
         drop(first);
-        let third = LargeBody::take([3; 16]).expect("a place came back");
-        assert!(LargeBody::take([1; 16]).is_err());
+        let third = places.take([3; 16], [10; 16], 0).expect("a place came back");
         drop(second);
         drop(third);
-        let again = LargeBody::take([1; 16]).expect("all places came back");
-        drop(again);
+        assert!(places.take([1; 16], [10; 16], 0).is_ok());
+    }
+
+    #[test]
+    fn an_account_whose_large_body_was_refused_waits_a_minute() {
+        let places = LargeBodies::new(2, COOLDOWN_SECS);
+        let mut body = places.take([1; 16], [10; 16], 100).expect("a place");
+        body.refused();
+        drop(body);
+        // Its place is free, but the account waits, and nobody else does.
+        assert!(places.take([1; 16], [10; 16], 101).is_err());
+        assert!(places.take([2; 16], [10; 16], 101).is_ok());
+        assert!(places.take([1; 16], [11; 16], 100 + COOLDOWN_SECS - 1).is_err());
+        assert!(places.take([1; 16], [11; 16], 100 + COOLDOWN_SECS).is_ok());
+        // A request that was answered goes without a wait.
+        let body = places.take([4; 16], [12; 16], 200).expect("a place");
+        drop(body);
+        assert!(places.take([4; 16], [12; 16], 201).is_ok());
+    }
+
+    #[test]
+    fn only_a_refusal_counts_against_an_account() {
+        assert!(counts_against(StatusCode::BAD_REQUEST));
+        assert!(counts_against(StatusCode::PAYLOAD_TOO_LARGE));
+        assert!(counts_against(StatusCode::UNPROCESSABLE_ENTITY));
+        assert!(!counts_against(StatusCode::CONFLICT));
+        assert!(!counts_against(StatusCode::CREATED));
+        assert!(!counts_against(StatusCode::INTERNAL_SERVER_ERROR));
     }
 }

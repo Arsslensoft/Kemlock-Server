@@ -55,6 +55,11 @@ impl<B> MakeSpan<B> for PathOnlySpan {
 /// How long a request may take before it is answered 408. WebSockets are upgraded long before.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How long a request to the space chain may take. A key replacement is one request of up to
+/// 32 MiB, which the route reads at 256 KiB a second or faster once it is above 8 MiB (two minutes
+/// for the most), so the chain routes have a timeout of their own and enforce the rate themselves.
+const CHAIN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
     #[error(transparent)]
@@ -363,10 +368,6 @@ where
             store.clone(),
         ))
         .merge(spaces_router)
-        .merge(kemlock_api_kem::space_chain_router(
-            api.clone(),
-            store.clone(),
-        ))
         .merge(kemlock_api_kem::space_recovery_router(
             api.clone(),
             store.clone(),
@@ -432,12 +433,26 @@ where
             kemlock_api_fed::home_gate::<SqlStore>,
         ))
         // What the Kemlock API reads of federation: a vault's servers, siblings, copied accounts.
-        .layer(axum::Extension(federated.view))
+        .layer(axum::Extension(federated.view.clone()))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             REQUEST_TIMEOUT,
         ))
-        // After the timeout above: the file routes have a longer one of their own.
+        // After the timeout above: the chain routes have a longer one of their own, under the same
+        // layers as the routes above.
+        .merge(
+            kemlock_api_kem::space_chain_router(api.clone(), store.clone())
+                .layer(axum::middleware::from_fn_with_state(
+                    federated.home_gate.clone(),
+                    kemlock_api_fed::home_gate::<SqlStore>,
+                ))
+                .layer(axum::Extension(federated.view))
+                .layer(TimeoutLayer::with_status_code(
+                    StatusCode::REQUEST_TIMEOUT,
+                    CHAIN_TIMEOUT,
+                )),
+        )
+        // And the file routes.
         .merge(files_router)
         .merge(sends_router)
         .layer(TraceLayer::new_for_http().make_span_with(PathOnlySpan))

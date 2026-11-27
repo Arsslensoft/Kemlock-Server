@@ -59,14 +59,56 @@ pub(crate) async fn verify_writes<U: UserRepo>(
     actor: UserId,
     writes: &[(&ItemWrite, Option<CollectionId>)],
 ) -> Result<(), Problem> {
-    if writes.iter().all(|(w, _)| w.signature.is_none()) {
+    let Some(account) = signer_of(users, actor, writes).await? else {
         return Ok(());
+    };
+    check_writes(&account, actor, writes)
+}
+
+/// [`verify_writes`] for many writes: the signatures are checked on a blocking thread, one after
+/// another, so a request of hundreds of them doesn't hold a runtime worker.
+pub(crate) async fn verify_writes_blocking<U: UserRepo>(
+    users: &U,
+    actor: UserId,
+    writes: Vec<(ItemWrite, Option<CollectionId>)>,
+) -> Result<(), Problem> {
+    let refs: Vec<(&ItemWrite, Option<CollectionId>)> =
+        writes.iter().map(|(w, c)| (w, *c)).collect();
+    let Some(account) = signer_of(users, actor, &refs).await? else {
+        return Ok(());
+    };
+    drop(refs);
+    tokio::task::spawn_blocking(move || {
+        let refs: Vec<(&ItemWrite, Option<CollectionId>)> =
+            writes.iter().map(|(w, c)| (w, *c)).collect();
+        check_writes(&account, actor, &refs)
+    })
+    .await
+    .map_err(|_| Problem::from(AppError::Store("a signature check didn't finish".to_owned())))?
+}
+
+/// The account `actor`, when some write carries a signature to check.
+async fn signer_of<U: UserRepo>(
+    users: &U,
+    actor: UserId,
+    writes: &[(&ItemWrite, Option<CollectionId>)],
+) -> Result<Option<kemlock_domain::User>, Problem> {
+    if writes.iter().all(|(w, _)| w.signature.is_none()) {
+        return Ok(None);
     }
-    let account = users
+    users
         .by_id(actor)
         .await
         .map_err(|e| Problem::from(AppError::from(e)))?
-        .ok_or_else(|| Problem::from(AppError::Unauthorized))?;
+        .map(Some)
+        .ok_or_else(|| Problem::from(AppError::Unauthorized))
+}
+
+fn check_writes(
+    account: &kemlock_domain::User,
+    actor: UserId,
+    writes: &[(&ItemWrite, Option<CollectionId>)],
+) -> Result<(), Problem> {
     for (write, collection) in writes {
         let Some(signature) = &write.signature else {
             continue;
