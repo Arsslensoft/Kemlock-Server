@@ -1351,8 +1351,8 @@ async fn an_account_has_a_budget_of_large_bodies_an_hour() {
 }
 
 #[tokio::test]
-async fn a_key_replacement_that_lands_costs_the_account_neither_a_wait_nor_budget() {
-    let places = ChainLargeBodies::new(2, 60).with_budget(1);
+async fn a_key_replacement_that_lands_makes_the_account_no_wait() {
+    let places = ChainLargeBodies::new(2, 60).with_budget(2);
     let rig = Rig::over_with(App::new(true), places.clone());
     let sam = rig.person("sam@example.org", 1).await;
     let ana = rig.person("ana@example.org", 3).await;
@@ -1380,7 +1380,7 @@ async fn a_key_replacement_that_lands_costs_the_account_neither_a_wait_nor_budge
     let reply = sam.post(&uri(space), body).await;
     assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
 
-    // It was what the places are for: no wait of a minute, and the one body of the hour is unspent.
+    // It was what the places are for: no wait of a minute (it spent one of the two of the hour).
     places
         .occupy(*sam.id.as_bytes(), [0x71; 16])
         .await

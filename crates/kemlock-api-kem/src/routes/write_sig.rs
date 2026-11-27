@@ -67,13 +67,16 @@ pub(crate) async fn verify_writes<U: UserRepo>(
 
 /// How many batches of signatures are checked at once: about one for each CPU, so a few large
 /// requests can't fill the blocking pool and starve everything else that uses it.
-fn verify_permits() -> &'static tokio::sync::Semaphore {
-    static PERMITS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
-    PERMITS.get_or_init(|| {
-        tokio::sync::Semaphore::new(
-            std::thread::available_parallelism().map_or(2, std::num::NonZeroUsize::get),
-        )
-    })
+fn verify_permits() -> std::sync::Arc<tokio::sync::Semaphore> {
+    static PERMITS: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> =
+        std::sync::OnceLock::new();
+    PERMITS
+        .get_or_init(|| {
+            std::sync::Arc::new(tokio::sync::Semaphore::new(
+                std::thread::available_parallelism().map_or(2, std::num::NonZeroUsize::get),
+            ))
+        })
+        .clone()
 }
 
 /// [`verify_writes`] for many writes into collections: the signatures are checked on a blocking
@@ -91,11 +94,14 @@ pub(crate) async fn verify_writes_blocking<U: UserRepo>(
     let Some(account) = account else {
         return Ok(writes);
     };
-    let _permit = verify_permits()
-        .acquire()
+    // Owned, and moved into the task: a request that is cancelled while its checks run can't free
+    // the permit, so the checks running never outnumber the permits.
+    let permit = verify_permits()
+        .acquire_owned()
         .await
         .map_err(|_| Problem::from(AppError::Store("a signature check didn't start".to_owned())))?;
     tokio::task::spawn_blocking(move || {
+        let _permit = permit;
         let checked = {
             let refs: Vec<(&ItemWrite, Option<CollectionId>)> =
                 writes.iter().map(|(c, w)| (w, Some(*c))).collect();
