@@ -181,7 +181,6 @@ async fn prelogin(client: &Client, email: &str) -> Reply {
         .await
 }
 
-
 #[tokio::test]
 async fn prelogin_is_limited_per_address_and_apart_from_the_sign_in_start() {
     let app = App::new(false);
