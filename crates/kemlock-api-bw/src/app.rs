@@ -136,6 +136,9 @@ pub struct Inner<S> {
     pub(crate) login_limit: crate::ip_limit::IpLimit,
     /// Vaultwarden's limiter for the other routes with no sign-in (`check_limit_unauthenticated`).
     pub(crate) unauthenticated_limit: crate::ip_limit::IpLimit,
+    /// How often one address may ask for an account's KDF settings (`prelogin`): the burst of the
+    /// unauthenticated limit, then one every 10 seconds. A person asks once per sign-in.
+    pub(crate) prelogin_limit: crate::ip_limit::IpLimit,
     /// How many verification mails (`send-verification-email`) an address may ask for: a burst of 5,
     /// then one every 5 minutes.
     pub(crate) verification_mail_limit: crate::ip_limit::IpLimit,
@@ -196,6 +199,8 @@ impl<S: BwStore> App<S> {
             parts.settings.unauthenticated_ratelimit_max_burst,
             parts.settings.unauthenticated_ratelimit_seconds,
         );
+        let prelogin_limit =
+            crate::ip_limit::IpLimit::new(parts.settings.unauthenticated_ratelimit_max_burst, 10);
         App(Arc::new(Inner {
             store: parts.store,
             env: parts.env,
@@ -211,6 +216,7 @@ impl<S: BwStore> App<S> {
             send_limit: crate::send_limit::SendAccessLimit::default(),
             login_limit,
             unauthenticated_limit,
+            prelogin_limit,
             verification_mail_limit: crate::ip_limit::IpLimit::new(5, 300),
             verification_mailed: crate::signup_hold::RecipientLimit::default(),
             events: parts.live.events,

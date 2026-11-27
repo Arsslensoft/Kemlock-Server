@@ -1619,6 +1619,30 @@ async fn a_request_with_no_sign_in_may_not_send_more_than_a_few_kib() {
 }
 
 #[tokio::test]
+async fn prelogin_is_limited_per_address() {
+    let h = Harness::with(|s| s.unauthenticated_ratelimit_max_burst = 3).await;
+    h.account("ada@example.com", HASH).await;
+    let ask = |path: &'static str| {
+        let h = &h;
+        async move {
+            h.json("POST", path, None, Some(json!({"email": "ada@example.com"})))
+                .await
+        }
+    };
+    for _ in 0..3 {
+        let (status, _) = ask("/identity/accounts/prelogin").await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    // Both routes share the address's budget.
+    let (status, body) = ask("/identity/accounts/prelogin/password").await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    // Ten seconds give one back.
+    h.env.advance(Duration::seconds(10));
+    let (status, _) = ask("/identity/accounts/prelogin").await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
 async fn wrong_passwords_are_counted_per_account_from_any_address() {
     // The console's limit is 2 here, so an account slows after two wrong passwords in a window
     // and refuses everything after twenty; the slowdown is switched off so the test doesn't wait.

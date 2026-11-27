@@ -107,7 +107,16 @@ struct PreloginData {
     email: String,
 }
 
-async fn prelogin<S: BwStore>(State(app): State<App<S>>, body: Bytes) -> JsonResult {
+async fn prelogin<S: BwStore>(
+    State(app): State<App<S>>,
+    Peer(ip): Peer,
+    body: Bytes,
+) -> JsonResult {
+    // The KDF settings are what tells a real account from an invented answer (an account whose
+    // settings are not one of the six common ones is known by them), so asking is limited by address.
+    app.prelogin_limit
+        .check(ip, app.now_secs())
+        .map_err(|_| BwError::status(StatusCode::TOO_MANY_REQUESTS, "Too many requests"))?;
     let data: PreloginData = parse(&body)?;
     ok(account::prelogin(&app, &data.email).await?)
 }
