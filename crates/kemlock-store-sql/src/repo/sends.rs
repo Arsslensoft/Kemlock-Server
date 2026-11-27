@@ -2,7 +2,7 @@
 
 use crate::convert::utc;
 use crate::error::StoreResult;
-use crate::owner_lock::begin_locked;
+use crate::owner_lock::{begin_locked, begin_locked_at};
 use crate::store::SqlStore;
 use crate::tables::sends::{self, untouched};
 use kemlock_app::ports::StoreError;
@@ -30,14 +30,24 @@ impl SendRepo for SqlStore {
         Ok(())
     }
 
-    /// The sum and the insert in one transaction, under the store's quota gate.
     async fn add_send_within_quota(
         &self,
         send: &SendRecord,
         quota: Option<u64>,
     ) -> Result<Result<(), QuotaRefusal>, StoreError> {
+        self.add_send_within_quota_at(send, quota, None).await
+    }
+
+    /// The sum and the insert in one transaction, under the store's quota gate, and the check of
+    /// the key version the Send's sealed key is for, under the owner's lock.
+    async fn add_send_within_quota_at(
+        &self,
+        send: &SendRecord,
+        quota: Option<u64>,
+        key_version: Option<u32>,
+    ) -> Result<Result<(), QuotaRefusal>, StoreError> {
         let _gate = self.quota_gate().await;
-        let txn = begin_locked(self, send.owner).await?;
+        let txn = begin_locked_at(self, send.owner, key_version).await?;
         let outcome = async {
             if let (Some(_), Some(file)) = (quota, send.file) {
                 let owned = sends::Entity::find()
@@ -98,10 +108,18 @@ impl SendRepo for SqlStore {
     }
 
     async fn update_send(&self, send: &SendRecord) -> Result<(), StoreError> {
+        self.update_send_at(send, None).await
+    }
+
+    async fn update_send_at(
+        &self,
+        send: &SendRecord,
+        key_version: Option<u32>,
+    ) -> Result<(), StoreError> {
         // An edit writes the Send's `meta`, which is sealed under the key a rotation's install
         // replaces. Under the owner's lock like `add_send`, it either commits before the install
         // reads (and is re-sealed by it) or waits for the install and then writes the new meta.
-        let txn = begin_locked(self, send.owner).await?;
+        let txn = begin_locked_at(self, send.owner, key_version).await?;
         let row = sends::ActiveModel {
             meta: Set(send.meta.clone()),
             payload: Set(send.payload.clone()),

@@ -37,6 +37,12 @@ export interface CreateSendRequest {
   payload: string;
   /** For a file Send. */
   file?: NewFileDto | undefined;
+  /**
+   * The account's key version `meta` and `payload` were sealed for (`ownKeyVersion()` of the key
+   * worker). A change for a version that is no longer the account's is a `409 key-version-stale`;
+   * absent is accepted, as an old client sends it.
+   */
+  keyVersion?: number | undefined;
   /** How many times it may be opened; absent for no limit. */
   maxAccess?: number | null | undefined;
   hideEmail: boolean;

@@ -49,6 +49,20 @@ pub trait SendRepo: Send + Sync {
         }
     }
 
+    /// [`add_send_within_quota`](SendRepo::add_send_within_quota) for a Send whose sealed key is
+    /// for `key_version`: a store that can read the owner's account refuses (`StaleKeyVersion`)
+    /// when that is no longer the account's, so a Send can't be made after a rotation with a key
+    /// of the old root key. `None` checks nothing. The provided method ignores the version.
+    fn add_send_within_quota_at(
+        &self,
+        send: &SendRecord,
+        quota: Option<u64>,
+        key_version: Option<u32>,
+    ) -> impl Future<Output = Result<Result<(), QuotaRefusal>, StoreError>> + Send {
+        let _ = key_version;
+        self.add_send_within_quota(send, quota)
+    }
+
     fn send_by_id(
         &self,
         id: SendId,
@@ -65,6 +79,19 @@ pub trait SendRepo: Send + Sync {
     /// the key, the file or the view count. `NotFound` when the Send is gone.
     fn update_send(&self, send: &SendRecord)
     -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// [`update_send`](SendRepo::update_send) for a change sealed for `key_version` (the account's
+    /// key version the client made `meta` and the content with): a store that can read the
+    /// owner's account refuses (`StaleKeyVersion`) when that is no longer the account's. `None`
+    /// checks nothing. The provided method ignores the version.
+    fn update_send_at(
+        &self,
+        send: &SendRecord,
+        key_version: Option<u32>,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        let _ = key_version;
+        self.update_send(send)
+    }
 
     /// Marks a file Send's bytes as arrived. `false` when the Send is gone or was ready already,
     /// which is how two uploads of one file are told apart.

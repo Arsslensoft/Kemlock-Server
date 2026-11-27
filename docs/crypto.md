@@ -546,8 +546,18 @@ box, and its grantor confirms the account's new bundle again. The locks that mak
 install takes the `server_meta` lock that every item write takes, and the account's row lock, before
 it reads; every write of a wrap (a PRF wrap, a device copy, the kit, an emergency box, a recovery
 box, a Send, a device approval) takes the account's row lock too, so a wrap written meanwhile is
-seen, or waits. Nothing the server holds refers to `R` afterwards: **no wrap of `R` stays in this
-server's database**. That holds for this server only: a backup taken earlier still has the old
+seen, or waits. A writer that waited then reads the account's `key_version` again under that lock, and
+a wrap that is for another version is refused (`409 key-version-stale`, with `currentKeyVersion`; an
+account at version 0 accepts any), so a write made from keys read before the install can't leave a
+wrap of `R` behind. The version comes from what the write carries: a PRF wrap's and a kit's
+`keyVersion`, the `u32be` that begins a new Send's `sealedKey`, and the optional `keyVersion` of a
+Send's edit (`PUT /kem/v1/sends/{id}`). **What this does not cover:** an edit of a Send from a client
+that doesn't send `keyVersion` is accepted, and so its `meta`, sealed under the old key, could land
+after an install that replaced it; and the device copy, an emergency box, a recovery box and a device
+approval carry no key version, so a write of one that waited for an install is not refused by the
+store (the next rotation covers it, as it covers any wrap, and a copy of an old version opens
+nothing). Nothing else the server holds refers to `R` afterwards: **no wrap of `R` stays in this
+server's database** except those. That holds for this server only: a backup taken earlier still has the old
 wraps and ciphertexts, a device that was offline keeps its own copy of what it opened (its trusted
 copy on the server is deleted with the device), and another server's copies are why a federated
 account is refused. After the commit, and best effort, the other devices are signed out and their rows and

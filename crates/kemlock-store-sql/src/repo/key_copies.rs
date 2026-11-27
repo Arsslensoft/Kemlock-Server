@@ -1,7 +1,7 @@
 //! `KeyCopyRepo` on `device_key_copies`.
 
 use crate::error::{StoreResult, is_unique_violation, map_db};
-use crate::owner_lock::begin_locked;
+use crate::owner_lock::begin_locked_at;
 use crate::store::SqlStore;
 use crate::tables::{device_key_copies, devices};
 use kemlock_app::devices::KeyCopyRepo;
@@ -24,6 +24,14 @@ impl KeyCopyRepo for SqlStore {
     /// An upsert that keeps the first `created_at`. A device that doesn't exist is `NotFound`
     /// (the foreign key refuses the row).
     async fn put_key_copy(&self, copy: &DeviceKeyCopy) -> Result<(), StoreError> {
+        self.put_key_copy_at(copy, None).await
+    }
+
+    async fn put_key_copy_at(
+        &self,
+        copy: &DeviceKeyCopy,
+        key_version: Option<u32>,
+    ) -> Result<(), StoreError> {
         let conflict = OnConflict::column(device_key_copies::Column::DeviceId)
             .update_columns([
                 device_key_copies::Column::WrappedKey,
@@ -39,7 +47,7 @@ impl KeyCopyRepo for SqlStore {
             .store()?
             .map(|device| UserId(device.user_id));
         let txn = match account {
-            Some(user) => begin_locked(self, user).await?,
+            Some(user) => begin_locked_at(self, user, key_version).await?,
             None => self.writer().begin().await.store()?,
         };
         let inserted = device_key_copies::Entity::insert(device_key_copies::active(copy))

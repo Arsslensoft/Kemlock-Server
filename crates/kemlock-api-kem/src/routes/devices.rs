@@ -196,6 +196,9 @@ pub(crate) struct KeyCopyRequest {
     /// `"secure-enclave"`, `"keystore"`, `"web-crypto"`, `"browser"` or `"software"`.
     #[schema(value_type = String)]
     pub(crate) protection: KeyProtection,
+    /// The account's key version the copy was made for. A copy for a version that is no longer
+    /// the account's is refused with `409 key-version-stale`; absent (an old client) is accepted.
+    pub(crate) key_version: Option<u32>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -494,10 +497,11 @@ impl<S: Store + DevicesStore, P: Crypto, K: TokenSigner + Clone + 'static> Api<S
         let request: KeyCopyRequest = body.json()?;
         let copy = api
             .key_copies()
-            .put(
+            .put_at(
                 &authed.actor,
                 decode("wrappedKey", &request.wrapped_key)?,
                 request.protection,
+                request.key_version,
             )
             .await?;
         Ok(Json(KeyCopyResponse::from_copy(&copy)))

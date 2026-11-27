@@ -13,7 +13,9 @@ use kemlock_app::passkeys::PasskeyRepo;
 use kemlock_app::ports::{DeviceRepo, ItemStore, StoreError, UserRepo};
 use kemlock_app::recovery_kit::RecoveryKitRepo;
 use kemlock_app::rotation::{Install, InstallRequest, RotationError, RotationStore, StagedItem};
+use kemlock_app::sends::SendRepo;
 use kemlock_domain::DeviceKind;
+use kemlock_domain::sends::{SendId, SendKind, SendRecord};
 use kemlock_domain::unlock::{
     ApprovalId, ApprovalState, AuthRequest, DeviceKeyCopy, EmergencyGrant, EmergencyKind,
     EmergencyState, GrantId, KeyProtection, SEALED_BOX_OVERHEAD,
@@ -644,8 +646,67 @@ async fn a_wrap_for_the_old_key_version_is_refused_after_the_install(store: &Sql
     assert_eq!(store.insert_recovery_kit(sam.id, &kit(2)).await, Ok(true));
     assert_eq!(
         store.replace_recovery_kit(sam.id, &kit(1)).await,
+        Err(stale.clone())
+    );
+
+    // A device copy says which version it was made for, when the client says.
+    let phone = common::device(sam.id, "phone", T0);
+    DeviceRepo::upsert(store, &phone).await.expect("device");
+    let copy = DeviceKeyCopy {
+        device: phone.id,
+        wrapped_key: vec![1; 80],
+        protection: KeyProtection::WebCrypto,
+        created_at: T0,
+        updated_at: T0,
+    };
+    assert_eq!(
+        store.put_key_copy_at(&copy, Some(1)).await,
+        Err(stale.clone())
+    );
+    assert_eq!(store.key_copy(phone.id).await, Ok(None));
+    store
+        .put_key_copy_at(&copy, Some(2))
+        .await
+        .expect("a copy for the current version");
+
+    // A Send is sealed for the version its sealed key says; an edit says which it was made for.
+    let send = SendRecord {
+        id: SendId::random(),
+        owner: sam.id,
+        kind: SendKind::Text,
+        meta: vec![1; 40],
+        sealed_key: vec![2; 64],
+        payload: vec![3; 60],
+        file: None,
+        password: None,
+        max_access: None,
+        access_count: 0,
+        hide_email: false,
+        disabled: false,
+        expires_at: None,
+        deletion_at: T0 + time::Duration::days(7),
+        created_at: T0,
+        revised_at: T0,
+    };
+    assert_eq!(
+        SendRepo::add_send_within_quota_at(store, &send, None, Some(1)).await,
+        Err(stale.clone())
+    );
+    assert_eq!(SendRepo::send_by_id(store, send.id).await, Ok(None));
+    assert_eq!(
+        SendRepo::add_send_within_quota_at(store, &send, None, Some(2)).await,
+        Ok(Ok(()))
+    );
+    assert_eq!(
+        SendRepo::update_send_at(store, &send, Some(1)).await,
         Err(stale)
     );
+    SendRepo::update_send_at(store, &send, Some(2))
+        .await
+        .expect("an edit for the current version");
+    SendRepo::update_send_at(store, &send, None)
+        .await
+        .expect("an old client says no version");
 }
 
 async fn all(store: &SqlStore) {
