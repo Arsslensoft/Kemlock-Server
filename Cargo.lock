@@ -3815,6 +3815,7 @@ dependencies = [
  "kemlock-crypto",
  "kemlock-domain",
  "kemlock-federation",
+ "kemlock-store-sql",
  "kemlock-vaultwarden",
  "sea-orm",
  "sea-orm-migration",
