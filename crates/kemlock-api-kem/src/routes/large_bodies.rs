@@ -11,8 +11,9 @@
 //! - **Every large body counts** against the account that sent it, whatever came of it: the
 //!   account waits a minute, from the moment the request is over, before another. The one
 //!   exception is a request that replaced a marked collection key and was stored (`201`), which
-//!   is what the places are for; it doesn't count.
-//! - **A budget** of four large bodies an hour for each account, on top of the places.
+//!   is what the places are for: it doesn't make the account wait.
+//! - **A budget** of four large bodies an hour for each account, on top of the places. Every large
+//!   body uses one, a request that replaced a key too.
 //!
 //! The places are owned by the router that serves the routes, never by the process, so each
 //! router (and each test) has its own.
@@ -236,8 +237,8 @@ impl LargeBodies {
         }
     }
 
-    /// A place taken without a request, for a test that fills them. Giving it back costs the
-    /// account neither a wait nor budget.
+    /// A place taken without a request, for a test that fills them. Giving it back doesn't make
+    /// the account wait.
     #[doc(hidden)]
     pub async fn occupy(&self, account: [u8; 16], space: [u8; 16]) -> Result<LargeBody, Problem> {
         let mut place = self.take(account, space).await?;
@@ -270,7 +271,8 @@ impl Drop for Waiting {
 }
 
 /// A place among the large bodies, held until the request is answered. Dropping it frees the place
-/// and starts the account's wait, unless the request [`replaced`](LargeBody::replaced) a key.
+/// and starts the account's wait, unless the request [`replaced`](LargeBody::replaced) a key. The
+/// hourly budget is spent either way.
 #[derive(Debug)]
 pub struct LargeBody {
     places: LargeBodies,
@@ -281,7 +283,7 @@ pub struct LargeBody {
 
 impl LargeBody {
     /// The request replaced a marked collection key and was stored: it is what the places are for,
-    /// so it costs the account neither a wait nor budget.
+    /// so the account doesn't wait after it. It still counts against the hourly budget.
     pub(crate) fn replaced(&mut self) {
         self.replaced = true;
     }
@@ -295,11 +297,7 @@ impl Drop for LargeBody {
         state.active = state.active.saturating_sub(1);
         state.accounts.remove(&self.account);
         state.spaces.remove(&self.space);
-        if self.replaced {
-            if let Some(window) = state.taken.get_mut(&self.account) {
-                window.pop_back();
-            }
-        } else {
+        if !self.replaced {
             let until = now.saturating_add(state.cooldown);
             state.cooling.insert(self.account, until);
         }
@@ -423,19 +421,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_request_that_replaced_a_key_costs_neither_a_wait_nor_budget() {
+    async fn a_request_that_replaced_a_key_makes_no_wait_but_spends_budget() {
         let (places, _now) = timed(2, 60);
-        let places = places.with_budget(1);
+        let places = places.with_budget(2);
         let mut body = places.take(A, S1).await.expect("a place");
         body.replaced();
         drop(body);
-        // No wait, and the one large body of the hour is still there to send.
-        let again = places.take(A, S1).await.expect("it didn't count");
-        // This one didn't replace anything: it counts, however it ended.
+        // No wait of a minute...
+        let again = places.take(A, S1).await.expect("it made no wait");
+        // ...but it spent one of the two of the hour, and this one, which replaced nothing, makes
+        // the account wait as well.
         drop(again);
-        assert_eq!(
-            places.take(A, S1).await.expect_err("it did count").status,
-            StatusCode::TOO_MANY_REQUESTS
+        let told = places.take(A, S1).await.expect_err("the wait");
+        assert_eq!(told.status, StatusCode::TOO_MANY_REQUESTS);
+
+        // The budget alone, with no wait: one of one, spent by a request that replaced a key.
+        let (places, _now) = timed(2, 60);
+        let places = places.with_budget(1);
+        let mut body = places.take(B, S2).await.expect("a place");
+        body.replaced();
+        drop(body);
+        let told = places.take(B, S2).await.expect_err("out of budget");
+        assert_eq!(told.status, StatusCode::TOO_MANY_REQUESTS);
+        // The time to wait is the hour's, not the minute's.
+        assert!(
+            told.headers
+                .iter()
+                .any(|(name, value)| name == "retry-after" && value == "3600")
         );
     }
 

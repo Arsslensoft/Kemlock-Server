@@ -2409,9 +2409,9 @@ reads above 8 MiB: no queued change is a `keys` record.
 - *Every large body counts* against the account that sent it, whatever came of it (read, refused,
   too slow, or stored): the account waits 60 seconds, counted from the moment the request is over,
   before another. The one exception is a request that was stored (`201`) and replaced a marked
-  collection key, which is what the places are for: it costs neither the wait nor budget.
+  collection key, which is what the places are for: it doesn't make the account wait.
 - *A budget* of four large bodies an hour for each account, on top of the places (`429` with
-  `Retry-After`).
+  `Retry-After`). Every large body uses one, a key replacement that was stored too.
 - *A floor on the rate.* Every body, from its first byte, has 30 seconds and one more second for
   each 256 KiB it has by then: it must arrive at **256 KiB a second or faster** (2 Mbit/s) after a
   30 second start, and no chunk may take more than 15 seconds; otherwise it is `408`, and a place it
@@ -2422,10 +2422,11 @@ reads above 8 MiB: no queued change is a `keys` record.
   collections, or a connection slower than that, can't have its keys replaced from the web vault,
   which says so and sends nothing.
 
-*What remains.* These limits bound what one account can ask of a server, not what many can. A person
-who can make accounts (each its own space, each with a marked key it may replace) can still keep both
-places busy and so delay the key replacements of others by up to the ten seconds a request waits,
-each of them. A server with sign-ups off, where only its admin makes accounts, has no such person.
+*What remains.* These limits bound what one account can ask of a server, not what several can. Two
+accounts that have accepted a space (each a member of one in which a key waits and may replace it)
+can, within their budgets of four an hour, keep both places busy and so make the key replacements of
+others wait their turn. A request waits at most ten seconds for a place and is then told to try
+again, so the delay is bounded and the queue does not grow.
 
 The server refuses a record unless all of these hold:
 
