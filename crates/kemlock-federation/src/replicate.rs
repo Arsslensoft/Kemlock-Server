@@ -110,11 +110,13 @@ pub struct Counts {
     pub siblings: usize,
     /// Records already held or replaced.
     pub duplicates: usize,
-    /// Records left out: an item id another owner holds, a change from the future, a writer
-    /// signature that is missing or doesn't verify, an origin over its quota, and a rollback.
+    /// Records left out: an item id another owner holds, a change from the future, a record whose
+    /// origin signature no key of the origin's verifies, a writer signature that is missing or
+    /// doesn't verify, an origin over its quota, and a rollback.
     pub refused: usize,
     /// Of the refused, the ones a later comparison may apply: a change from the future or past an
-    /// origin's quota, a writer whose keys or space membership haven't arrived. The rest (a bad
+    /// origin's quota, an origin whose key hasn't arrived, a writer whose keys or space membership
+    /// haven't arrived. The rest (a bad
     /// signature, an unsigned change for a signed-only owner, a rollback) will be refused again, so
     /// a pull that left only those has nothing to compare.
     pub retry: usize,
@@ -681,8 +683,44 @@ impl<S: FedStore> Replica<S> {
         Ok(Rank::Clock)
     }
 
-    /// Verifies and applies records of `vault`. A record from an origin whose key we don't hold,
-    /// or whose signature fails, fails the whole batch: nothing past it is applied.
+    /// Opens a record: the origin's signature checked with the key we hold for it, or with one it
+    /// used before and replaced, for a record dated up to then. `None` when no key verifies it (an
+    /// origin whose key we don't hold, a revoked or unpaired one, a forgery, garbage), with whether a
+    /// later comparison may apply it once the origin's key arrives.
+    async fn open_envelope(
+        &self,
+        envelope: &[u8],
+        keys: &HashMap<ServerId, sig1::PublicKey>,
+    ) -> Result<std::result::Result<ChangeRecord, bool>> {
+        let failure = match change::open(envelope, keys) {
+            Ok(record) => return Ok(Ok(record)),
+            Err(e) => e,
+        };
+        let Ok(origin) = change::claimed_origin(envelope) else {
+            tracing::warn!(error = %failure, "a change that does not parse was left out");
+            return Ok(Err(false));
+        };
+        let past: Vec<(Vec<u8>, u64)> = self
+            .store
+            .past_keys(origin)
+            .await?
+            .into_iter()
+            .map(|past| (past.key, past.replaced_at))
+            .collect();
+        if !past.is_empty()
+            && let Ok(record) = change::open_with_past_keys(envelope, &past)
+        {
+            return Ok(Ok(record));
+        }
+        tracing::warn!(%origin, error = %failure, "a change that can't be verified was left out");
+        // An origin whose key may still arrive (a peer vouches for it) is worth asking for again.
+        Ok(Err(!keys.contains_key(&origin)))
+    }
+
+    /// Verifies and applies records of `vault`. A record that no key of its origin verifies is left
+    /// out and counted, and the rest of the batch goes on: one record that can never be checked
+    /// (signed by a key since replaced or revoked) must not hold the cursor, and every replica
+    /// behind it, still.
     pub(crate) async fn apply_envelopes(
         &self,
         from: ServerId,
@@ -706,7 +744,14 @@ impl<S: FedStore> Replica<S> {
         let rank = self.rank_of(vault).await?;
         let mut counts = Counts::default();
         for envelope in envelopes {
-            let record = change::open(envelope, &keys)?;
+            let record = match self.open_envelope(envelope, &keys).await? {
+                Ok(record) => record,
+                Err(retry) => {
+                    counts.refused += 1;
+                    counts.retry += usize::from(retry);
+                    continue;
+                }
+            };
             if record.owner != vault {
                 return Err(FedError::Invalid("a record for another vault"));
             }
@@ -1291,7 +1336,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_forged_record_fails_the_pull_and_moves_no_cursor() {
+    async fn a_forged_record_is_left_out_and_the_cursor_still_moves() {
         let t = two().await;
         t.a.store
             .put(draft(ItemId::random(), t.vault, None, 1, 1_000))
@@ -1326,19 +1371,72 @@ mod tests {
             remote: &t.a,
             caller: t.b.server_id(),
         });
-        assert!(
+        // The record is counted and left out, and the pull goes on: one record nobody can check
+        // must not hold the cursor, and every replica behind it, still.
+        let report =
             t.b.pull(&mut channel, t.a.server_id(), t.vault)
                 .await
-                .is_err()
+                .expect("pull");
+        assert_eq!(
+            (report.counts.applied, report.counts.refused, report.counts.retry),
+            (0, 1, 0)
         );
         assert_eq!(t.b.store.len(), 0);
         assert!(
-            t.b.store
+            !t.b.store
                 .peer_cursor(t.a.server_id(), t.vault)
                 .await
                 .expect("cursor")
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn changes_signed_before_the_origin_rotated_still_verify_and_later_ones_do_not() {
+        let t = two().await;
+        let a = t.a.server_id();
+        let now = crate::session::unix_now();
+        t.a.store
+            .put(draft(ItemId::random(), t.vault, None, 1, 1_000))
+            .expect("put");
+        // A signed that change with its old key. B learns that A rotated a while ago.
+        let old = t.a.identity().public.as_bytes().to_vec();
+        let new = crate::crypto::sign_public(&sig1::SigningKey::from_bytes(&[9; 64]))
+            .expect("a key");
+        t.b.store
+            .set_peer_identity(a, new.as_bytes())
+            .await
+            .expect("pinned");
+        t.b.store
+            .push_past_key(a, &old, now - 10_000)
+            .await
+            .expect("kept");
+        let mut channel = Direct {
+            remote: &t.a,
+            caller: t.b.server_id(),
+        };
+        let report =
+            t.b.pull(&mut channel, a, t.vault)
+                .await
+                .expect("pull");
+        assert_eq!((report.counts.applied, report.counts.refused), (1, 0));
+
+        // The old key does not sign what is dated after it was replaced.
+        t.a.store
+            .put(draft(
+                ItemId::random(),
+                t.vault,
+                None,
+                1,
+                (now - 5_000) * 1000,
+            ))
+            .expect("put");
+        let report =
+            t.b.pull(&mut channel, a, t.vault)
+                .await
+                .expect("pull");
+        assert_eq!((report.counts.applied, report.counts.refused), (0, 1));
+        assert_eq!(t.b.store.len(), 1);
     }
 
     #[tokio::test]

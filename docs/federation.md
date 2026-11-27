@@ -343,6 +343,15 @@ that peers already hold, so a peer's change can't be re-stamped, and re-stamping
 invalidate a signature peers may have taken. They stay as they are; such an item keeps winning the
 head against older versions until a write that names it in its lineage replaces it.
 
+**Records signed by a replaced key.** A record is checked with the key this server holds for its
+origin. When that fails, it is checked with the keys the origin used before and this server replaced
+(the history a rotation leaves, `past_keys`), and a past key counts only for a record dated up to the
+moment it was replaced plus 300 seconds, so a key that leaks after its replacement can't sign new
+changes. A record that no key of its origin verifies (a revoked or unpaired origin, a forgery, garbage)
+is left out and counted as refused, and the rest of the batch goes on: the cursor moves, so one such
+record can't hold every replica behind it. It is asked for again by a later comparison only when the
+origin's key is simply not known yet.
+
 ### Writer signatures
 
 A `kem1` record also carries the **writing account's** signature of the write
