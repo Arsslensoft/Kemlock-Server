@@ -14,11 +14,12 @@
 
 use super::attempts;
 use super::contract_crypto::Pbkdf2Check;
+use kemlock_app::AppError;
 use super::guard;
 use crate::dto::{KdfDto, decode, rfc3339};
 use crate::extract::{Authed, Body, Proof};
 use crate::openapi::ProblemDoc;
-use crate::problem::Problem;
+use crate::problem::{Problem, rate_limited};
 use crate::ratelimit::ip_key;
 use crate::state::{Api, Crypto, Store};
 use axum::extract::State;
@@ -381,6 +382,16 @@ where
             proof.ip,
         )
         .await?;
+        // A place in the gate for the PBKDF2 of the hash check, or a 429 when none comes free.
+        let Some(_hashing) = super::contract_crypto::hash_permit().await else {
+            // Not a wrong password: it is given back to the account's cap.
+            attempts::end_password_attempt(
+                &api,
+                &attempt,
+                &Err::<(), AppError>(AppError::Invalid("the server is busy hashing")),
+            );
+            return Err(rate_limited(1));
+        };
         let started = api
             .bitwarden_enrol()
             .start(EnrolStartInput {
