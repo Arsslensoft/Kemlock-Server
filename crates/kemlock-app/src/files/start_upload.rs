@@ -61,7 +61,11 @@ impl<I: ItemStore, A: AttachmentRepo, B: BlobStore, C: Clock> StartUpload<I, A, 
             .add_within_quota(&attachment, limit)
             .await?
             .map_err(FileError::Quota)?;
-        let upload = self.blobs.presigned_upload(attachment.blob).await?;
+        // The URL names the file's exact length, so a `PUT` to it can be no larger than announced.
+        let upload = self
+            .blobs
+            .presigned_upload_sized(attachment.blob, size)
+            .await?;
         Ok(Started { attachment, upload })
     }
 }

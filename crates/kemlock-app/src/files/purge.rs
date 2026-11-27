@@ -1,6 +1,8 @@
 //! Purge orphans: removes the attachments no item names any more. When the tombstone purge
 //! deletes an item's row, its attachments are left without an item; an upload that never finished
-//! is left pending. Both go after the grace period, bytes first.
+//! is left pending. Both go after the grace period, bytes first. So do the objects a pre-signed
+//! upload left under the staging name that no row names (the row was deleted before the upload
+//! arrived).
 
 use super::ports::{AttachmentRepo, BlobError, BlobStore};
 use super::{FileError, FilesConfig};
@@ -35,8 +37,15 @@ impl<A: AttachmentRepo, B: BlobStore, C: Clock> PurgeOrphans<A, B, C> {
                 purged += 1;
             }
             if batch < BATCH as usize {
-                return Ok(purged);
+                break;
             }
         }
+        // What pre-signed uploads left under the staging name past the grace period: an upload
+        // can arrive after its row was deleted, and then no row names it.
+        purged += self
+            .blobs
+            .purge_staging(self.config.orphan_grace.unsigned_abs())
+            .await?;
+        Ok(purged)
     }
 }

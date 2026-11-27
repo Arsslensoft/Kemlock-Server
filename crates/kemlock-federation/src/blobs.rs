@@ -211,6 +211,21 @@ impl<B: BlobStore> BlobStore for OnDemandBlobs<B> {
         self.inner.presigned_upload(blob).await
     }
 
+    async fn presigned_upload_sized(
+        &self,
+        blob: BlobId,
+        size: u64,
+    ) -> std::result::Result<Option<PresignedUrl>, BlobError> {
+        self.inner.presigned_upload_sized(blob, size).await
+    }
+
+    async fn purge_staging(
+        &self,
+        older_than: std::time::Duration,
+    ) -> std::result::Result<u64, BlobError> {
+        self.inner.purge_staging(older_than).await
+    }
+
     /// A direct bucket URL only for a file that is already here: a missing one is fetched by the
     /// streamed download, which goes through [`open`](Self::open).
     async fn presigned_download(

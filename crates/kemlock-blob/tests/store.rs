@@ -474,8 +474,10 @@ async fn a_bucket_signs_urls_only_when_the_setting_is_on() {
 
     let on =
         ObjectBlobStore::s3(&bucket(), Some(Duration::from_secs(300))).expect("a bucket store");
+    // An upload URL is signed for one length: the unsized form gives none.
+    assert_eq!(on.presigned_upload(blob).await, Ok(None));
     for url in [
-        on.presigned_upload(blob)
+        on.presigned_upload_sized(blob, 4096)
             .await
             .expect("signs")
             .expect("a URL"),
@@ -496,6 +498,65 @@ async fn a_bucket_signs_urls_only_when_the_setting_is_on() {
 }
 
 #[tokio::test]
+async fn an_upload_url_signs_the_files_exact_length() {
+    let on =
+        ObjectBlobStore::s3(&bucket(), Some(Duration::from_secs(300))).expect("a bucket store");
+    let blob = BlobId::random();
+    let url = on
+        .presigned_upload_sized(blob, 4096)
+        .await
+        .expect("signs")
+        .expect("a URL")
+        .url;
+    // It names the staging object, and the length is one of the headers the signature binds.
+    assert!(url.contains(&format!("/staging/{blob}")), "{url}");
+    let signed = url
+        .split("X-Amz-SignedHeaders=")
+        .nth(1)
+        .and_then(|rest| rest.split('&').next())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    assert!(signed.contains("content-length"), "{url}");
+}
+
+#[tokio::test]
+async fn the_purge_removes_only_the_staging_objects_past_the_grace_period() {
+    let store = ObjectBlobStore::memory();
+    let (a, b) = (BlobId::random(), BlobId::random());
+    store
+        .put_raw(&format!("staging/{a}"), b"left behind".to_vec())
+        .await
+        .expect("put");
+    store
+        .put_raw(&format!("staging/{b}"), b"left behind too".to_vec())
+        .await
+        .expect("put");
+    store
+        .put_blob_raw(a, b"a finished blob".to_vec())
+        .await
+        .expect("put");
+
+    // Nothing is old enough yet.
+    assert_eq!(store.purge_staging(Duration::from_secs(3600)).await, Ok(0));
+    assert!(
+        store
+            .get_raw(&format!("staging/{a}"))
+            .await
+            .expect("read")
+            .is_some()
+    );
+    // Past the grace period they go, and a finished blob is not under `staging/`.
+    assert_eq!(store.purge_staging(Duration::ZERO).await, Ok(2));
+    for blob in [a, b] {
+        assert_eq!(
+            store.get_raw(&format!("staging/{blob}")).await,
+            Ok(None)
+        );
+    }
+    assert!(store.get_blob_raw(a).await.expect("read").is_some());
+}
+
+#[tokio::test]
 async fn the_settings_build_the_store_they_describe() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let folder = dir.path().join("made").join("on").join("demand");
@@ -505,6 +566,7 @@ async fn the_settings_build_the_store_they_describe() {
         },
         max_size: 1000,
         presign: true,
+        staging_expiry_confirmed: true,
         presign_ttl: Duration::from_secs(60),
     };
     let store = ObjectBlobStore::from_config(&config).expect("a local store");
@@ -515,6 +577,7 @@ async fn the_settings_build_the_store_they_describe() {
         backend: Backend::S3(bucket()),
         max_size: 1000,
         presign: true,
+        staging_expiry_confirmed: true,
         presign_ttl: Duration::from_secs(60),
     };
     let store = ObjectBlobStore::from_config(&config).expect("a bucket store");

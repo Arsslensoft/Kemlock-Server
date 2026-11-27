@@ -15,6 +15,7 @@ use crate::config::{Backend, BlobConfig, S3Config};
 use crate::kma1::{self, Kma1Error, StreamCheck};
 use bytes::Bytes;
 use futures_util::{StreamExt, TryStreamExt};
+use http::{HeaderValue, header::CONTENT_LENGTH};
 use kemlock_app::files::{BlobError, BlobRead, BlobStore, BlobUpload, ByteStream, PresignedUrl};
 use kemlock_app::sends::SendBlobs;
 use kemlock_domain::BlobId;
@@ -22,7 +23,7 @@ use object_store::aws::AmazonS3Builder;
 use object_store::local::LocalFileSystem;
 use object_store::memory::InMemory;
 use object_store::path::Path;
-use object_store::signer::{Method, Signer};
+use object_store::signer::{Method, SignedUrlOptions, Signer};
 use object_store::{
     GetOptions, GetResultPayload, MultipartUpload, ObjectStore, PutMultipartOptions, PutOptions,
     PutPayload, PutPayloadMut,
@@ -516,11 +517,66 @@ impl BlobStore for ObjectBlobStore {
         self.delete_path(staging_path_of(blob)).await
     }
 
-    /// The URL names the staging path, not the blob's own: the signature can't limit the length of
-    /// what is sent or end when the upload is settled, so what arrives there is checked and moved
-    /// by `verify`, and a later `PUT` to the URL only makes a new staging object.
-    async fn presigned_upload(&self, blob: BlobId) -> Result<Option<PresignedUrl>, BlobError> {
-        self.presigned(Method::PUT, &staging_path_of(blob)).await
+    /// A URL with no length in its signature would take up to 5 GB, so there is none: the server
+    /// asks for [`presigned_upload_sized`](Self::presigned_upload_sized), and a caller that does
+    /// not know the size streams through the server.
+    async fn presigned_upload(&self, _blob: BlobId) -> Result<Option<PresignedUrl>, BlobError> {
+        Ok(None)
+    }
+
+    /// The URL names the staging path, not the blob's own, and signs the file's exact
+    /// `Content-Length`: the bucket refuses a `PUT` of any other length, so a URL takes what the
+    /// upload announced and no more. It can't end when the upload is settled, so what arrives is
+    /// checked and moved by `verify`, and a later `PUT` to the URL only makes a new staging object
+    /// (which the purge job removes, see [`purge_staging`](Self::purge_staging)).
+    ///
+    /// A signer that can't bind the header gives no URL (the upload then goes through the server)
+    /// rather than one with no limit.
+    async fn presigned_upload_sized(
+        &self,
+        blob: BlobId,
+        size: u64,
+    ) -> Result<Option<PresignedUrl>, BlobError> {
+        let (Some(signer), Some(expires_in)) = (&self.signer, self.presign_ttl) else {
+            return Ok(None);
+        };
+        let options =
+            SignedUrlOptions::new().with_signed_header(CONTENT_LENGTH, HeaderValue::from(size));
+        match signer
+            .signed_url_opts(Method::PUT, &staging_path_of(blob), expires_in, &options)
+            .await
+        {
+            Ok(url) => Ok(Some(PresignedUrl {
+                url: url.to_string(),
+                expires_in,
+            })),
+            Err(e) => {
+                tracing::warn!(error = %e, "couldn't sign a length into an upload URL: the upload goes through the server");
+                Ok(None)
+            }
+        }
+    }
+
+    /// Deletes the objects under `staging/` last written `older_than` ago or longer.
+    async fn purge_staging(&self, older_than: Duration) -> Result<u64, BlobError> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+        let cutoff = now.saturating_sub(i64::try_from(older_than.as_secs()).unwrap_or(i64::MAX));
+        let prefix = Path::from("staging");
+        let mut stale = Vec::new();
+        let mut listing = self.store.list(Some(&prefix));
+        while let Some(meta) = listing.try_next().await.map_err(backend)? {
+            if meta.last_modified.timestamp() <= cutoff {
+                stale.push(meta.location);
+            }
+        }
+        let mut gone = 0u64;
+        for path in stale {
+            self.delete_path(path).await?;
+            gone += 1;
+        }
+        Ok(gone)
     }
 
     async fn presigned_download(&self, blob: BlobId) -> Result<Option<PresignedUrl>, BlobError> {
