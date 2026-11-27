@@ -11,7 +11,8 @@
 //!   treated the same way, keyed by a MAC of the address, so the treatment says nothing about who
 //!   has an account.
 //! - **One client prefix** (a /56 for IPv6, an IPv4 address): at most one hash in flight. A second
-//!   request from the same prefix is answered 429 at once.
+//!   request from the same prefix waits for its turn the same bounded time, then is answered 429,
+//!   so clients behind one address (a NAT, an office) queue rather than being refused.
 //!
 //! The permit and the claims on the account and the prefix are held by the blocking task that does
 //! the work, not by the request: a request that is dropped (a reset connection, a timeout) leaves
@@ -148,29 +149,42 @@ impl HashGate {
         }
     }
 
-    /// Runs `work` on a blocking thread for `who`, under the gate. `Err` is a 429 when the prefix
-    /// has a hash running, or the account's turn or a permit did not come in time.
+    /// Takes the prefix's turn (one hash in flight per prefix), waiting for it up to `deadline`:
+    /// clients behind one address (a NAT, an office) queue rather than being refused.
+    async fn claim_prefix(&self, prefix: IpAddr, deadline: Instant) -> BwResult<()> {
+        loop {
+            if locked(&self.0.prefixes).insert(prefix) {
+                return Ok(());
+            }
+            if Instant::now() + POLL > deadline {
+                return Err(too_many());
+            }
+            tokio::time::sleep(POLL).await;
+        }
+    }
+
+    /// Runs `work` on a blocking thread for `who`, under the gate. `Err` is a 429 when the
+    /// prefix's turn, the account's turn or a permit did not come in time.
     pub(crate) async fn run<T: Send + 'static>(
         &self,
         who: Who,
         work: impl FnOnce() -> T + Send + 'static,
     ) -> BwResult<T> {
         let deadline = Instant::now() + self.0.wait;
-        if let Some(prefix) = who.prefix
-            && !locked(&self.0.prefixes).insert(prefix)
-        {
-            return Err(too_many());
-        }
         // From here the claims are given back by `Claims`, wherever this returns.
         let mut claims = Claims {
             gate: self.clone(),
             who: Who {
                 account: None,
-                prefix: who.prefix,
+                prefix: None,
             },
             started: false,
             _permit: None,
         };
+        if let Some(prefix) = who.prefix {
+            self.claim_prefix(prefix, deadline).await?;
+            claims.who.prefix = Some(prefix);
+        }
         if let Some(key) = who.account {
             self.claim_account(key, deadline).await?;
             claims.who.account = Some(key);
@@ -246,7 +260,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_second_hash_of_one_prefix_is_refused_while_one_runs() {
+    async fn a_second_hash_of_one_prefix_waits_its_turn_and_is_refused_if_it_does_not_come() {
         let gate = HashGate::new(4, Duration::from_millis(500), Duration::ZERO);
         let (task, release, started) = held(&gate, who(1, Some(9)));
         wait_started(started).await;
@@ -258,6 +272,22 @@ mod tests {
         release.send(()).expect("released");
         task.await.expect("joined").expect("the first finished");
         gate.run(who(2, Some(9)), || ()).await.expect("runs again");
+    }
+
+    #[tokio::test]
+    async fn a_second_hash_of_one_prefix_runs_once_the_first_ends() {
+        let gate = HashGate::new(4, Duration::from_secs(5), Duration::ZERO);
+        let (task, release, started) = held(&gate, who(1, Some(9)));
+        wait_started(started).await;
+        let queued = tokio::spawn({
+            let gate = gate.clone();
+            async move { gate.run(who(2, Some(9)), || 5).await }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!queued.is_finished(), "the second waits for the prefix");
+        release.send(()).expect("released");
+        task.await.expect("joined").expect("the first finished");
+        assert_eq!(queued.await.expect("joined").expect("runs after the first"), 5);
     }
 
     #[tokio::test]
