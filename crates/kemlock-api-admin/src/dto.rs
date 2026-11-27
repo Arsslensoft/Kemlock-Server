@@ -270,6 +270,10 @@ pub struct AdminSpaceDto {
     /// The members of a Bitwarden organization who are still invited and have a Bitwarden
     /// invitation, whose link the console can copy. Empty outside an organization.
     pub bitwarden_invitations: Vec<SpaceOwnerDto>,
+    /// Only in the answer to a change of owner: the space has a chain, which takes a change of roles
+    /// only as a signed record, so the change is queued for its owners or admins to sign and
+    /// `owners` are still the old ones.
+    pub owner_change_queued: bool,
 }
 
 impl From<&AdminSpaceRow> for AdminSpaceDto {
@@ -291,6 +295,7 @@ impl From<&AdminSpaceRow> for AdminSpaceDto {
             keys_pending_since: s.keys_pending_since.map(secs),
             bitwarden_organization: false,
             bitwarden_invitations: Vec::new(),
+            owner_change_queued: false,
         }
     }
 }

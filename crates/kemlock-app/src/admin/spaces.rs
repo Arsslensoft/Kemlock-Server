@@ -22,6 +22,15 @@ use std::net::IpAddr;
 /// The most spaces a page lists.
 pub const MAX_SPACE_PAGE: u32 = 200;
 
+/// What a change of owner did: the space as it is now, and whether the change is only queued. A space
+/// with a chain takes a change of roles only as a signed record, so the change waits for the
+/// space's owners or admins to sign it and the owners in `row` are still the old ones.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OwnerChange {
+    pub row: AdminSpaceRow,
+    pub queued: bool,
+}
+
 #[derive(Debug)]
 pub struct AdminSpaces<Sp, R, M, C> {
     pub spaces: Sp,
@@ -58,7 +67,7 @@ where
         space: SpaceId,
         new_owner: UserId,
         demote_previous: bool,
-    ) -> Result<AdminSpaceRow, AdminError> {
+    ) -> Result<OwnerChange, AdminError> {
         let state = self.spaces.load(space).await?.ok_or(AdminError::NotFound)?;
         let target = state.member(new_owner).ok_or(AdminError::State(
             "that account isn't a member of the space",
@@ -95,6 +104,9 @@ where
                 changes.members.push(owner);
             }
         }
+        // On a space with a chain a role changes only by a signed record: the store keeps the change
+        // for an owner's or admin's app to sign (or refuses it), and nothing has changed yet.
+        let queued = self.spaces.is_chained(space).await?;
         self.spaces.apply(changes).await?;
 
         let audit = Audit {
@@ -109,10 +121,17 @@ where
                 ip,
                 "admin.space.change_owner",
                 Some(format!("{space}/{new_owner}")),
-                "changed who owns a space",
+                if queued {
+                    "asked to change who owns a space (queued for its admins to sign)"
+                } else {
+                    "changed who owns a space"
+                },
             )
             .await;
-        self.get(space).await
+        Ok(OwnerChange {
+            row: self.get(space).await?,
+            queued,
+        })
     }
 
     /// The link that accepts a member's invitation to a Bitwarden organization, for a server that

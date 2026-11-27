@@ -3228,3 +3228,81 @@ async fn the_invitation_link_is_not_given_when_the_copy_cannot_be_recorded() {
     );
     assert!(rig.admin.actions().is_empty());
 }
+
+#[tokio::test]
+async fn a_change_of_owner_on_a_chained_space_says_it_is_only_queued() {
+    use kemlock_app::spaces::{ChainAppend, SpaceChainRepo, StoredRecord};
+
+    let rig = Rig::new();
+    let root = rig.admin(ADMIN).await;
+    let ada = rig.user("ada@kemlock.test").await;
+    let bob = rig.user("bob@kemlock.test").await;
+    let space = SpaceId::random();
+    SpaceRepo::create(
+        &rig.spaces,
+        space_with(
+            space,
+            &[
+                (ada.id, SpaceRole::Owner, MemberState::Confirmed),
+                (bob.id, SpaceRole::Member, MemberState::Confirmed),
+            ],
+        ),
+    )
+    .await
+    .expect("space");
+    rig.admin.track_space(space);
+    let uri = format!("/admin/v1/spaces/{space}/owner");
+
+    // Without a chain the change is made, and the answer doesn't say queued.
+    let token = root.step_up(&rig).await;
+    let done = root
+        .write(
+            "PUT",
+            &uri,
+            Some(json!({"newOwner": bob.id.to_string(), "demotePrevious": false})),
+            &token,
+        )
+        .await;
+    assert_eq!(done.status, StatusCode::OK, "{:?}", done.json());
+    assert_eq!(done.json()["ownerChangeQueued"], false);
+
+    // Give the space a chain: from then on a role changes only by a signed record.
+    rig.spaces
+        .chain_append(
+            space,
+            ChainAppend {
+                expected: None,
+                records: vec![StoredRecord {
+                    seq: 0,
+                    link: [1; 32],
+                    epoch: 1,
+                    by: ada.id,
+                    at: 0,
+                    entry: Vec::new(),
+                    signature: Vec::new(),
+                    cosignature: None,
+                }],
+                seals: Vec::new(),
+                names: Vec::new(),
+                changes: SpaceChanges::new(space),
+                creating: false,
+                held: Vec::new(),
+                writes: Vec::new(),
+                answers: None,
+                state: None,
+            },
+        )
+        .await
+        .expect("a chain");
+    let token = root.step_up(&rig).await;
+    let queued = root
+        .write(
+            "PUT",
+            &uri,
+            Some(json!({"newOwner": bob.id.to_string(), "demotePrevious": true})),
+            &token,
+        )
+        .await;
+    assert_eq!(queued.status, StatusCode::OK, "{:?}", queued.json());
+    assert_eq!(queued.json()["ownerChangeQueued"], true);
+}
