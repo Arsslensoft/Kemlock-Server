@@ -504,6 +504,89 @@ async fn a_vault_that_takes_signed_writes_only_installs_no_unsigned_item(store: 
         .expect("the install");
 }
 
+/// A wrap written while an install runs, on every backend (on PostgreSQL and MySQL the two really
+/// take row locks; on SQLite the one writer connection orders them). Whichever goes first, the
+/// outcome is one of two consistent states, never a hang, a lost write or a half install:
+///
+/// - the writer committed first: the install reads the wrap under the account's lock, finds a
+///   wrap its request does not name, and is refused (`Incomplete`) with nothing written; the
+///   client reads the plan again, names the wrap, and the second install replaces it;
+/// - the install committed first: the writer waited for its commit and then wrote. The wrap it
+///   wrote is tagged with the key version its writer read (1), which is no longer the account's
+///   (2), so nothing opens it as the account's current wrap.
+///
+/// The rounds run on accounts of their own, so a database that holds earlier runs is fine.
+async fn a_wrap_written_while_the_install_runs_is_replaced_or_the_install_refused(
+    store: &SqlStore,
+) {
+    for round in 0..6 {
+        let sam = account(store).await;
+        let passkey = Passkey {
+            id: PasskeyId::random(),
+            user: sam.id,
+            credential_id: Uuid::new_v4().as_bytes().to_vec(),
+            name: format!("racing {round}"),
+            credential: vec![8; 32],
+            prf_wrap: Some(PrfWrap {
+                wrapped_key: vec![2; 92],
+                key_version: 1,
+            }),
+            created_at: T0,
+            last_used_at: None,
+        };
+        let (written, installed) = tokio::join!(
+            PasskeyRepo::insert_passkey(store, &passkey),
+            RotationStore::install(store, install_of(&sam, request())),
+        );
+        written.expect("the wrap is written, whichever way the race went");
+
+        let account_after = UserRepo::by_id(store, sam.id)
+            .await
+            .expect("read")
+            .expect("account");
+        let held = PasskeyRepo::passkeys_of(store, sam.id)
+            .await
+            .expect("read");
+        assert_eq!(held.len(), 1, "round {round}: the writer's passkey is stored");
+        let wrap = held[0].prf_wrap.clone().expect("a wrap");
+
+        match installed {
+            Err(RotationError::Incomplete(_)) => {
+                assert_eq!(account_after.key_version, 1, "round {round}: nothing written");
+                assert_eq!(account_after.public_bundle, sam.public_bundle);
+                assert_eq!(account_after.security_stamp, sam.security_stamp);
+                assert_eq!((wrap.wrapped_key.clone(), wrap.key_version), (vec![2; 92], 1));
+                // Reading the plan again and naming the wrap installs, and replaces it.
+                let named = InstallRequest {
+                    passkeys: vec![(passkey.id, vec![3; 92])],
+                    ..request()
+                };
+                RotationStore::install(store, install_of(&sam, named))
+                    .await
+                    .expect("the install that names the wrap");
+                let held = PasskeyRepo::passkeys_of(store, sam.id)
+                    .await
+                    .expect("read");
+                let wrap = held[0].prf_wrap.clone().expect("a wrap");
+                assert_eq!(
+                    (wrap.wrapped_key, wrap.key_version),
+                    (vec![3; 92], 2),
+                    "round {round}: no wrap of the old key is left"
+                );
+            }
+            Ok(_) => {
+                assert_eq!(account_after.key_version, 2, "round {round}");
+                assert_ne!(account_after.security_stamp, sam.security_stamp);
+                // The install did not know the wrap: it was written after, and it still says
+                // it is for the key version its writer read.
+                assert_eq!(wrap.key_version, 1, "round {round}");
+                assert_ne!(wrap.key_version, account_after.key_version);
+            }
+            Err(other) => panic!("round {round}: the install failed another way: {other:?}"),
+        }
+    }
+}
+
 async fn all(store: &SqlStore) {
     a_vault_that_takes_signed_writes_only_installs_no_unsigned_item(store).await;
     rotation(store).await;
@@ -512,6 +595,7 @@ async fn all(store: &SqlStore) {
     wraps_written_through_the_repos_are_all_seen_and_replaced(store).await;
     an_approval_that_holds_the_old_root_key_does_not_survive_the_install(store).await;
     a_grant_that_names_the_account_as_contact_goes_back_to_waiting(store).await;
+    a_wrap_written_while_the_install_runs_is_replaced_or_the_install_refused(store).await;
 }
 
 #[tokio::test]
