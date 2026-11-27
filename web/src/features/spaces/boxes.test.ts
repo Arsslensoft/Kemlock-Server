@@ -5,14 +5,13 @@ import { decodeB64, encodeB64, utf8 } from '@/lib/b64url';
 import { uuidBytes } from '@/sharing/bundle';
 import { memoryPinStore } from '@/spaces/anchors';
 import { type BoxStore, memoryBoxStore } from '@/spaces/boxstore';
-import { PROVISIONAL_FINGERPRINT, fakeBoxSignature, fakeSpaceCrypto } from '@/test/fake-space-crypto';
+import { fakeBoxSignature, fakeSpaceCrypto } from '@/test/fake-space-crypto';
 import {
   type BoxContext,
   type BoxKey,
   type BoxRefusal,
   KeyBoxRefused,
   WrongAccount,
-  acceptProvisional,
   openKeyBox,
   openUnchainedKeys,
   signedInAccount,
@@ -281,39 +280,21 @@ describe('a key box from before keys were signed', () => {
   });
 });
 
-describe('keys taken from an unsigned box on first sight', () => {
+describe('keys opened from an unsigned box', () => {
   const unsigned = { sealed: encodeB64(BOX), sealedBy: null };
 
-  it('open as provisional: read, but nothing is sealed or written under them', async () => {
+  it('are read-only in the worker, on first sight and on every later visit', async () => {
     const { ctx, crypto } = await setup();
     await openKeyBox(ctx, { key: finance, version: 1, ...unsigned });
     expect(crypto.calls).toContain(`openCollection:${FINANCE}:unsigned`);
-    expect(crypto.provisional).not.toBeNull();
-    // Opened again on a later visit with nobody having compared them: still provisional.
     crypto.calls.length = 0;
     await openKeyBox(ctx, { key: finance, version: 1, ...unsigned });
     expect(crypto.calls).toContain(`openCollection:${FINANCE}:unsigned`);
   });
 
-  it('do not open as provisional when a signed box carried them', async () => {
+  it('are not marked read-only when a signed box carried them', async () => {
     const { ctx, crypto, lee } = await setup();
     await openKeyBox(ctx, { key: finance, version: 1, ...signedBy(lee, finance, 1) });
-    expect(crypto.calls).toContain(`openCollection:${FINANCE}`);
-    expect(crypto.calls).not.toContain(`openCollection:${FINANCE}:unsigned`);
-    expect(crypto.provisional).toBeNull();
-  });
-
-  it('open settled once the person typed the last group of the fingerprint, here and on later visits', async () => {
-    const { ctx, deps, crypto, boxes } = await setup();
-    await openKeyBox(ctx, { key: finance, version: 1, ...unsigned });
-    crypto.provisional = [{ collection: FINANCE, version: 1, fingerprint: PROVISIONAL_FINGERPRINT }];
-    await expect(acceptProvisional(deps, SPACE, ME, '11111')).rejects.toThrow();
-    expect((await boxes.load(ME, SPACE, `collection:${FINANCE}`, 1))?.compared).toBeUndefined();
-    await acceptProvisional(deps, SPACE, ME, '67890');
-    expect((await boxes.load(ME, SPACE, `collection:${FINANCE}`, 1))?.compared).toBe(true);
-    expect(crypto.provisional).toBeNull();
-    crypto.calls.length = 0;
-    await openKeyBox(ctx, { key: finance, version: 1, ...unsigned });
     expect(crypto.calls).toContain(`openCollection:${FINANCE}`);
     expect(crypto.calls).not.toContain(`openCollection:${FINANCE}:unsigned`);
   });

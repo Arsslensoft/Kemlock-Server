@@ -66,11 +66,25 @@ describe('the anchors this browser keeps', () => {
   it('reads an anchor kept before owners and promotions existed, and one that has them', () => {
     // An old anchor has neither, and is still an anchor.
     expect(parseAnchor('{"seq":2,"epoch":1,"links":["a","b","c"]}')).toEqual({ seq: 2, epoch: 1, links: ['a', 'b', 'c'] });
-    const full = { ...at(1), owners: { [A]: 'aGFzaDE', [B]: 'aGFzaDI' }, promotions: [[A, 'aGFzaA']] as Array<[string, string]> };
+    const full = {
+      ...at(1),
+      owners: [
+        { id: A, bundle: 'aGFzaDE' },
+        { id: B, bundle: 'aGFzaDI' },
+      ],
+      promotions: [{ home: A, promotion: 'aGFzaA' }],
+    };
     expect(parseAnchor(JSON.stringify(full))).toEqual(full);
+    // The shapes an earlier page kept (a record of owners, pairs of promotions) are read into these.
+    expect(
+      parseAnchor(
+        JSON.stringify({ ...at(1), owners: { [A]: 'aGFzaDE' }, promotions: [[A, 'aGFzaA']] }),
+      ),
+    ).toEqual({ ...at(1), owners: [{ id: A, bundle: 'aGFzaDE' }], promotions: [{ home: A, promotion: 'aGFzaA' }] });
     for (const bad of [
       '{"seq":1,"epoch":1,"links":[],"owners":"x"}',
       '{"seq":1,"epoch":1,"links":[],"owners":["a"]}',
+      '{"seq":1,"epoch":1,"links":[],"owners":[{"id":"a"}]}',
       '{"seq":1,"epoch":1,"links":[],"owners":null}',
       '{"seq":1,"epoch":1,"links":[],"owners":{"a":1}}',
       '{"seq":1,"epoch":1,"links":[],"promotions":[["a"]]}',
@@ -82,7 +96,7 @@ describe('the anchors this browser keeps', () => {
   });
 
   it('keeps the owners and promotions with the anchor, through the sealed store too', async () => {
-    const full = { ...at(2), owners: { [A]: 'aGFzaDE' }, promotions: [[B, 'aGFzaA']] as Array<[string, string]> };
+    const full = { ...at(2), owners: [{ id: A, bundle: 'aGFzaDE' }], promotions: [{ home: B, promotion: 'aGFzaA' }] };
     const store = memoryAnchorStore();
     await store.save(A, SPACE, full);
     expect(await store.load(A, SPACE)).toEqual(full);

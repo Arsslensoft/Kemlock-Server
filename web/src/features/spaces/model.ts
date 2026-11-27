@@ -21,7 +21,7 @@ import type {
 } from '@/api/spaces';
 import { isApiError } from '@/api/errors';
 import type { ItemDto } from '@/api/types';
-import type { ChainBuilt, ChainChange, ChainReplacement, ChainView, ProvisionalKey } from '@/crypto/types';
+import type { ChainBuilt, ChainChange, ChainReplacement, ChainView } from '@/crypto/types';
 import { decodeB64, encodeB64 } from '@/lib/b64url';
 import { type Manifest, ciphertextHash } from '@/manifest/format';
 import { type Fingerprint, fingerprintBytes } from '@/sharing/bundle';
@@ -68,14 +68,6 @@ export interface SpaceDeps {
    * this browser pinned while it was current (src/manifest/bundleHistory.ts); null for anything else.
    */
   pastBundle?: (account: string, version: number) => Promise<Uint8Array | null>;
-  /**
-   * The spaces the account's own signed manifest says have a chain (src/manifest/chained.ts), which a
-   * space served with no chain is held against. Left out, none is known. Throws when it can't be
-   * read: a space is then not taken for one with no chain.
-   */
-  chainedSpaces?: () => Promise<ReadonlySet<string>>;
-  /** Told of a chain this browser verified and trusted, so the account's own manifest lists the space. */
-  noteChained?: (spaceId: string) => void;
 }
 
 /** Tells the manifest keeper, when there is one, of items this browser wrote. Never throws. */
@@ -400,12 +392,6 @@ export interface SpaceDetail {
    */
   legacyKeys?: string[];
   /**
-   * The keys of a space with no chain that this browser took on the server's word (an unsigned box on
-   * first sight): they are read, but nothing is sealed under them or written to the space until a
-   * person compares their fingerprints with a member who holds them (`acceptProvisional`).
-   */
-  provisional?: ProvisionalKey[];
-  /**
    * The member whose fingerprint a person should compare so the keys of a space with no chain open:
    * the member who sealed one of them, or the root of the confirmations that lead to them, whom this
    * browser can't trace yet (`startPin` asks for it).
@@ -421,7 +407,6 @@ export async function loadSpaceDetail(deps: SpaceDeps, spaceId: string): Promise
   let members = servedMembers;
   let readable = false;
   let legacyKeys: string[] = [];
-  let provisional: ProvisionalKey[] | null = null;
   let compare: string | undefined;
   let nameVersion = (_kind: 'space' | 'collection' | 'group', _id: string) => served.space.keyVersion;
   if (trust.kind === 'verified') {
@@ -450,7 +435,6 @@ export async function loadSpaceDetail(deps: SpaceDeps, spaceId: string): Promise
         collectionKeys: served.collectionKeys,
       });
       readable = true;
-      provisional = await deps.crypto.provisionalKeys(spaceId);
     } catch (error) {
       readable = false;
       // A sealer nobody here has compared: what would put it right is a person comparing their
@@ -494,7 +478,6 @@ export async function loadSpaceDetail(deps: SpaceDeps, spaceId: string): Promise
     readable,
     trust,
     ...(legacyKeys.length > 0 ? { legacyKeys } : {}),
-    ...(provisional ? { provisional } : {}),
     ...(compare ? { compare } : {}),
     ...(unverified.length > 0 ? { unverified } : {}),
     name: await title('space', space.id, space.name),

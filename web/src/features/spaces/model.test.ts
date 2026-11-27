@@ -98,7 +98,7 @@ describe('the space list', () => {
     expect(rows).toEqual([
       { id: SPACE, name: 'Example Co', role: 'owner', state: 'confirmed', keysPending: false },
     ]);
-    // The default summary carries no signature, so the key is taken on the server's word (provisional).
+    // The default summary carries no signature: the key opens, read-only.
     expect(crypto.calls).toContain(`openSpace:${SPACE}:unsigned`);
   });
 
@@ -120,8 +120,8 @@ describe('reading one space', () => {
     expect(loaded.collections.map((c) => c.title)).toEqual(['Infrastructure', 'Finance']);
     expect(loaded.groups.map((g) => g.title)).toEqual(['Ops']);
     expect(crypto.calls.some((call) => call.startsWith(`openCollection:${INFRA}`))).toBe(true);
-    // Keys served unsigned are taken on the server's word: read, and held back from writing.
-    expect(loaded.provisional).toBeDefined();
+    // Keys served unsigned are read-only, and the page says they were sealed before keys were signed.
+    expect(loaded.legacyKeys).toContain(`collection:${INFRA}`);
   });
 
   it('is not readable, with no names, when the key can not be opened', async () => {

@@ -979,8 +979,9 @@ who made them. The rule keeps existing spaces usable without opening the door to
 
 - A client **accepts and remembers** an unsigned box once per (space, key, version): the first time
   it meets one it opens it, stores its SHA-256 as in 2 and marks it "sealed before keys were
-  signed". The mark is shown to the person on the space ("Some keys of this space were sealed before
-  keys were signed; ask an owner or admin to re-seal them"), and goes when the box is replaced.
+  signed", and the key is read-only (below). The mark is shown to the person on the space ("This
+  space's keys were sealed before keys were signed. Ask an owner or admin to re-seal them."), and goes
+  when the box is replaced.
 - An unsigned box that differs from the one remembered for that (space, key, version) is refused.
 - A client also keeps, for each space, whether it ever accepted a **signed** box of it. From then on
   it refuses an unsigned box of any key it had not already accepted: every box made since signatures
@@ -1006,51 +1007,32 @@ space with a chain. A client re-seals only to members it verified as for a confi
 the collection keys it holds (an owner or admin holds those of the collections it is granted), so a
 collection whose key no owner or admin holds stays unsigned until its key is replaced.
 
-What this leaves open, stated plainly: a device that has seen **no signed box of that space** yet
-accepts an unsigned box on first sight, for the space key and every collection key, because nothing
-yet tells it that signatures have begun. A server that serves such a device boxes of its own before
-the device has accepted any signed one is not caught by the signature rules. So a key taken that way
-is **provisional**: the worker reads with it (names and items open) and refuses to seal under it or
-write under it (no item, name, collection or key box of that space) until a person has compared it.
-The page shows the fingerprint of each provisional key, 12 groups of 5 digits worked out from two
-one-way children of the key bound to the space, collection and version
-(`key_fingerprint` in `crates/kemlock-wasm/src/spaces.rs`), for the person to compare with a member
-who already holds the space. The person types the last group of the space key's, the worker checks
-it (constant time), and only then is the space settled; the browser remembers it
-(`compared` in the box record) so the same boxes open settled next time. A box a client accepted
-before this rule, and was never compared, is provisional again on the next visit. Re-sealing or a
-key replacement removes the exposure: the signed boxes are never provisional.
+**An unsigned key is read-only.** A key opened from a box with `sealedBy` null, on first sight or
+not, is read-only in the worker: names and items open under it, and the worker refuses to seal under
+it, write under it (no item, name, collection or key box of that version) or seal it to anyone
+(`SpaceKeys::require_settled_space` and `require_settled_collection` in
+`crates/kemlock-wasm/src/spaces.rs`, for space keys and collection keys alike). The page opens the
+box with `unsigned` set, offers no collection of such a space for writing, and says: "This space's
+keys were sealed before keys were signed. Ask an owner or admin to re-seal them." Writing needs a
+**signed box** (rule 1: a verified sealer) or a verified chain. Re-sealing, a key replacement or a new
+confirmation produces signed boxes, and opening one of those makes the key writable again. There is no
+fingerprint to compare for such a key and no typed digits: a key has none a person could check against
+another member's app.
 
-### Chained spaces the account has met
+What this leaves open, stated plainly: a server can show **fake content in a legacy read-only space**,
+to a device that has seen no signed box of it: it can serve keys of its own, and names and items made
+under them open. It can't read what the device writes afterwards, because nothing is written under
+an unsigned key; and once the space is re-sealed, signed boxes replace the unsigned ones and the
+rules above apply. Nothing in the space is hidden from the server by a legacy key either way: a
+member who wants to be sure compares the space's members with the owners out of band.
 
-A server that serves a space with no chain to a device that has none stored would pass for a space
-that never had one (the `seen` marker in a browser's store is the only memory of a chain, and a new
-browser, a private window, cleared site data or the reset that follows a rotation has none). To give
-a client a fact the server can't remove, **the account's own signed manifest lists its chained
-spaces** ("Signed manifest"):
-
-- For each space the account has first-contacted a chain of, the account's own manifest holds an
-  entry whose item id is the space's id, `deleted` is 1, the hash is the 32 zero bytes of a tombstone
-  and the **revision is 0**. A tombstone of an item is a revision of it, and revisions start at 1, so
-  a revision 0 tombstone is never an item's: the format and the signing rules are unchanged, a
-  reader that knows nothing of marks sees a tombstone of an id it holds no item for, and a client
-  that merges entries keeps these (`src/manifest/chained.ts`).
-- A browser writes a mark when a chain verifies and first contact is done, with the next manifest it
-  signs (the same publish as an item write, or alone after two seconds), at a counter one above the
-  highest known. It never replaces a manifest it could not verify to add one.
-- Before it reads the chain a space is served, a browser reads the marks of the manifest it holds
-  (the server's, when its signature verifies under the account's own key and its counter is not below
-  the highest this browser has seen) and tells the worker (`expectChained`) for each space listed. For
-  such a space an empty chain is a refusal ("chain withheld", the space shows as "can't be checked"),
-  and its keys open only through a chain, never through the unchained boxes.
-- A server can't make a mark (the manifest is signed by the account's own `sig1` key) and can't remove
-  one from a browser that has seen it (the counter only goes up, and a lower or missing manifest is
-  "rolled back" or "dropped"). **What stays open:** a browser that has seen no manifest of the account
-  at all is told by the server, which can serve an older manifest of the account that lacks the
-  mark. For it, the first-sight rule above is the guard: a key accepted unsigned on first sight is
-  provisional, so nothing is sealed or written under the server's keys until a person compares them.
-- A mark names a space id and nothing else. It is shown to nobody, and an app that does not read it
-  loses nothing.
+**Root key boxes.** The worker seals the root key in a few places that rely on the page being honest:
+`sealRootKey` for a device approval, `sealRootKeyForRecovery`, and `rotationSealRootKey` to any
+`kx1` key the page names. Abusing these needs script running in the vault page (XSS), which has the
+unlocked session anyway, so they add no new exposure beyond it; the page checks who it is sealing to
+(a fingerprint a person compared) before it calls them. In the same way, the self-signature check in
+`sealEmergencyKey` shows only that the bundle is internally consistent (its keys signed it), not
+whose it is: identity comes from the fingerprint the person compared, not from that check.
 
 **A sealer's key version.** The statement binds the key version of the sealer's bundle, so a client
 verifies a signature against the sealer's bundle **at the version the signature names**, not only

@@ -1,10 +1,27 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CollectionDto, GrantDto, MemberDto, SpaceViewDto } from '@/api/spaces';
 import { encodeB64, utf8 } from '@/lib/b64url';
 import type { SpaceCrypto } from '@/spaces/crypto';
 import { NO_CHAIN } from '@/test/fake-space-crypto';
 import { canEditCollection, createSpaceKeyLoader, loadWritableCollections, openSpaceKeys } from './keys';
 import type { SpaceDeps } from './model';
+
+// The boxes these tests serve carry no signature; `signed` says to treat them as signed ones, so the
+// writable-collection list is tested apart from the box checks (boxes.test.ts).
+const state = vi.hoisted(() => ({ signed: true }));
+vi.mock('./boxes', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./boxes')>();
+  return {
+    ...original,
+    openUnchainedKeys: async (...args: Parameters<typeof original.openUnchainedKeys>) => {
+      const readOnly = await original.openUnchainedKeys(...args);
+      return state.signed ? [] : readOnly;
+    },
+  };
+});
+beforeEach(() => {
+  state.signed = true;
+});
 
 const SPACE = '00000000-0000-4000-8000-0000000000bb';
 const ME = '00000000-0000-4000-8000-0000000000aa';
@@ -56,8 +73,6 @@ function deps(spaceView: SpaceViewDto) {
     verifySpaceChain: vi.fn(async () => NO_CHAIN),
     openSpace: vi.fn(async () => undefined),
     openCollection: vi.fn(async () => undefined),
-    // Nothing waits for a person to compare it.
-    provisionalKeys: vi.fn(async () => null),
     openName: vi.fn(async ({ ciphertext }: { ciphertext: Uint8Array }) =>
       new TextDecoder().decode(ciphertext).replace('name:', 'collection '),
     ),
@@ -139,13 +154,11 @@ describe('loadWritableCollections', () => {
     expect(list[0]).toMatchObject({ spaceId: SPACE, collectionName: `collection ${C1}` });
   });
 
-  it('offers nothing of a space whose keys were taken on the server’s word and nobody compared', async () => {
+  it('offers nothing under a key opened from an unsigned box: it is read-only', async () => {
+    state.signed = false;
     const d = deps(view('owner', []));
-    vi.mocked(d.crypto.provisionalKeys).mockResolvedValueOnce([
-      { collection: null, version: 1, fingerprint: '11111 22222 33333 44444 55555 66666 77777 88888 99999 00000 12345 67890' },
-    ]);
     expect(await loadWritableCollections(d)).toEqual([]);
-    // Compared (nothing waits any more): the same space offers its collections.
+    state.signed = true;
     expect((await loadWritableCollections(d)).length).toBeGreaterThan(0);
   });
 

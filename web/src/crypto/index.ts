@@ -199,9 +199,6 @@ export function createCryptoClient(factory: () => WorkerPort): CryptoApi {
     openLocal: (label, sealed) => call('openLocal', [label, sealed]),
     spaceChainView: (spaceId) => call('spaceChainView', [spaceId]),
     acceptFirstContact: (spaceId) => call('acceptFirstContact', [spaceId]),
-    expectChained: (spaceId) => call('expectChained', [spaceId]),
-    provisionalKeys: (spaceId) => call('provisionalKeys', [spaceId]),
-    acceptProvisionalKeys: (spaceId, typed) => call('acceptProvisionalKeys', [spaceId, typed]),
     openChainKey: (input) => call('openChainKey', [input]),
   };
 }
