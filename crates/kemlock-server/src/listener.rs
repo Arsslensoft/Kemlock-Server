@@ -22,6 +22,7 @@
 //! connection when it upgrades, still counts: the permit lives in the socket.
 
 use crate::config::Config;
+use kemlock_api_kem::ratelimit::Proxy;
 use axum::Router;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto::Builder as ConnectionBuilder;
@@ -64,8 +65,8 @@ pub struct ServeLimits {
     pub max_connections: usize,
     /// How many connections one address holds at once; 0 for no limit.
     pub max_connections_per_ip: usize,
-    /// Addresses the per-address limit doesn't apply to: the trusted proxies.
-    pub exempt: Vec<IpAddr>,
+    /// Addresses (or blocks of them) the per-address limit doesn't apply to: the trusted proxies.
+    pub exempt: Vec<Proxy>,
 }
 
 /// The soft limit on open files this process runs under, read from `/proc/self/limits`. `None`
@@ -124,7 +125,7 @@ struct Tracker {
     freed: tokio::sync::Notify,
     max_total: usize,
     max_per_address: usize,
-    exempt: Vec<IpAddr>,
+    exempt: Vec<Proxy>,
 }
 
 #[derive(Debug, Default)]
@@ -156,7 +157,7 @@ impl Tracker {
             freed: tokio::sync::Notify::new(),
             max_total: limits.max_connections,
             max_per_address: limits.max_connections_per_ip,
-            exempt: limits.exempt.iter().map(IpAddr::to_canonical).collect(),
+            exempt: limits.exempt.clone(),
         })
     }
 
@@ -171,7 +172,7 @@ impl Tracker {
 
     /// Counts a connection from `peer`, or `None` when that address holds as many as it may.
     fn admit(self: &Arc<Self>, peer: IpAddr) -> Option<Permit> {
-        let exempt = self.exempt.contains(&peer.to_canonical());
+        let exempt = self.exempt.iter().any(|proxy| proxy.contains(peer));
         let key = address_key(peer);
         let mut state = self.lock();
         if !exempt
@@ -774,7 +775,7 @@ mod tests {
     async fn a_trusted_proxy_is_exempt_from_the_address_limit() {
         let (address, stop, task) = serve_for_test(ServeLimits {
             max_connections_per_ip: 1,
-            exempt: vec!["127.0.0.1".parse().expect("an address")],
+            exempt: vec![Proxy::parse("127.0.0.1").expect("an address")],
             ..limits()
         })
         .await;
@@ -799,7 +800,7 @@ mod tests {
         let mut limits = limits();
         limits.max_connections_per_ip = 2;
         limits.max_connections = 3;
-        limits.exempt = vec!["10.0.0.1".parse().expect("an address")];
+        limits.exempt = vec![Proxy::parse("10.0.0.1").expect("an address")];
         let tracker = Tracker::new(&limits);
         let ip = |text: &str| text.parse::<IpAddr>().expect("an address");
 

@@ -27,7 +27,11 @@ logLevel: info
 logFormat: text
 
 # Real client addresses behind an ingress controller: the header to trust, and the addresses it
-# is trusted from (the controller's pod or node network). Rate limits count by this address.
+# is trusted from (the controller's pod or node network, as addresses or blocks such as
+# 10.244.0.0/16). Rate limits and connection caps count by this address. With ingress.enabled and
+# nothing set here, X-Forwarded-For is trusted from the private ranges (10.0.0.0/8, 172.16.0.0/12,
+# 192.168.0.0/16, fc00::/7); name your controller's network to narrow that. Setting ipHeader
+# without trustedProxies, with the ingress off, is refused.
 ipHeader: ""
 trustedProxies: []
 

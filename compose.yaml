@@ -16,6 +16,13 @@ services:
     environment:
       DOMAIN: https://vault.example.com
       SIGNUPS_ALLOWED: "false"
+      # The reverse proxy on this host reaches the container from the bridge network's gateway, an
+      # address in 172.16.0.0/12, so without these two every client looks like the proxy: all of
+      # them share one rate-limit budget and one connection allowance. Narrow the block to your
+      # network's gateway (`docker network inspect`) if other containers share it. Have the proxy
+      # drop any X-Forwarded-For the client sent (deploy/proxy/ does).
+      IP_HEADER: X-Forwarded-For
+      KEMLOCK_TRUSTED_PROXIES: 172.16.0.0/12
     volumes:
       - ./kemlock-data:/data
     ports:

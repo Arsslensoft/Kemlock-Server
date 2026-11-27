@@ -3,7 +3,7 @@
 
 use crate::dpop::DpopVerifier;
 use crate::live::LiveHub;
-use crate::ratelimit::Limiter;
+use crate::ratelimit::{Limiter, Proxy};
 use crate::replay::{Full, TimedSet};
 use kemlock_app::admin::{InviteGate, InviteTicket, Live};
 use kemlock_app::api_use::{ApiUseRepo, RecordApiUse, USE_GRANULARITY};
@@ -108,8 +108,9 @@ pub struct ApiConfig {
     pub source_url: String,
     /// Token lifetimes, `SIGNUPS_ALLOWED` and item limits.
     pub auth: AuthConfig,
-    /// `KEMLOCK_TRUSTED_PROXIES`: peers whose forwarded header is believed.
-    pub trusted_proxies: Vec<IpAddr>,
+    /// `KEMLOCK_TRUSTED_PROXIES`: peers (addresses or blocks of them) whose forwarded header is
+    /// believed.
+    pub trusted_proxies: Vec<Proxy>,
     /// `IP_HEADER`: the header naming the client behind a trusted proxy.
     pub ip_header: Option<String>,
     /// `KEMLOCK_BROWSER_EXTENSION_IDS`: the ids of the Kemlock browser extensions that may take an

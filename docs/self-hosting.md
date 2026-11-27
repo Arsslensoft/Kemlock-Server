@@ -28,7 +28,7 @@ TrueNAS).
 Set `DOMAIN` to the address clients use, for example `https://vault.example.com`. Sign-in proofs
 are checked against it. Settings use Vaultwarden's names (`DOMAIN`, `DATABASE_URL`,
 `SIGNUPS_ALLOWED`, `DATA_FOLDER`, `LOG_LEVEL`, `ROCKET_ADDRESS`, `ROCKET_PORT`, `IP_HEADER`), plus
-`KEMLOCK_TRUSTED_PROXIES`, `KEMLOCK_LOG_FORMAT`, `KEMLOCK_BROWSER_EXTENSION_IDS` (see below) and
+`KEMLOCK_TRUSTED_PROXIES` (addresses or blocks such as `10.0.0.0/8`), `KEMLOCK_LOG_FORMAT`, `KEMLOCK_BROWSER_EXTENSION_IDS` (see below) and
 `KEMLOCK_SERVER_KEY`. A Vaultwarden setting
 Kemlock has no use for, such as `ADMIN_TOKEN`, is logged once as ignored.
 
@@ -467,8 +467,14 @@ WebSocket through it. Kemlock serves the API, the web vault and both WebSocket r
 | HAProxy | A long `timeout tunnel`, such as `1h`, so idle WebSockets stay open |
 
 - Real client IPs. The header named by `IP_HEADER` is trusted only from the addresses in
-  `KEMLOCK_TRUSTED_PROXIES`, so rate limits see the real client. Set both, with the proxy's
-  address, or every client looks like the proxy. Kemlock reads every line of the header and takes
+  `KEMLOCK_TRUSTED_PROXIES`, so rate limits and connection caps see the real client. Set both:
+  without them every client looks like the proxy and shares one budget, so a few slow requests
+  from one person can lock everyone out. `KEMLOCK_TRUSTED_PROXIES` takes addresses and blocks of
+  them (`10.0.0.1, 10.244.0.0/16, fd00::/8`; `/0` is refused), and Kemlock refuses to start when
+  `IP_HEADER` is set with no trusted proxy. `compose.yaml` trusts `X-Forwarded-For` from
+  `172.16.0.0/12`, the Docker bridge networks the host's proxy arrives from; the Helm chart does
+  the same from the private ranges when the ingress is on (set `ipHeader` and `trustedProxies` to
+  narrow it to your controller). Kemlock reads every line of the header and takes
   the right-most address that is not a trusted proxy; have the outermost proxy drop any
   `X-Forwarded-For` the client sent (the HAProxy example does).
 - Private only. Bind the port to a Tailscale or WireGuard address, or run Tailscale as a sidecar

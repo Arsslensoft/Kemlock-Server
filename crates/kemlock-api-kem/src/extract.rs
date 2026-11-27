@@ -3,7 +3,7 @@
 
 use crate::dpop::{DpopError, Pending};
 use crate::problem::{Problem, rate_limited};
-use crate::ratelimit::{client_ip, ip_key, ip_key_48, joined_header};
+use crate::ratelimit::{Proxy, client_ip, ip_key, ip_key_48, joined_header};
 use crate::state::{Api, Crypto, Store};
 use axum::body::{Body as HttpBody, Bytes};
 use axum::extract::{ConnectInfo, FromRequest, FromRequestParts, Request};
@@ -99,11 +99,11 @@ const FORWARDING_HEADERS: [&str; 5] = [
 pub fn is_secure_connection(
     peer: IpAddr,
     headers: &HeaderMap,
-    trusted_proxies: &[IpAddr],
+    trusted_proxies: &[Proxy],
     ip_header: Option<&str>,
 ) -> bool {
     let peer = peer.to_canonical();
-    if trusted_proxies.iter().any(|p| p.to_canonical() == peer) {
+    if trusted_proxies.iter().any(|proxy| proxy.contains(peer)) {
         // The nearest proxy appends last, so the last value is the one a trusted proxy wrote.
         return headers
             .get_all("x-forwarded-proto")
@@ -451,7 +451,7 @@ mod tests {
     #[test]
     fn a_trusted_proxy_says_which_scheme_the_client_used() {
         let proxy = ip("10.0.0.1");
-        let trusted = [proxy];
+        let trusted = [Proxy::from(proxy)];
         let check =
             |pairs: &[(&str, &str)]| is_secure_connection(proxy, &headers(pairs), &trusted, None);
         assert!(check(&[("x-forwarded-proto", "https")]));
@@ -469,7 +469,7 @@ mod tests {
         assert!(!is_secure_connection(
             ip("127.0.0.1"),
             &headers(&[("x-forwarded-proto", "http")]),
-            &[ip("127.0.0.1")],
+            &[Proxy::from(ip("127.0.0.1"))],
             None
         ));
         // And an IPv4 proxy matches its mapped form.
@@ -483,7 +483,7 @@ mod tests {
 
     #[test]
     fn only_a_trusted_proxy_is_believed() {
-        let trusted = [ip("10.0.0.1")];
+        let trusted = [Proxy::from(ip("10.0.0.1"))];
         let https = headers(&[("x-forwarded-proto", "https")]);
         assert!(!is_secure_connection(
             ip("10.0.0.2"),

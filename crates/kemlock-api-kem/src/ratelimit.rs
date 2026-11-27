@@ -12,7 +12,7 @@
 
 use kemlock_crypto::hash;
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, PoisonError};
 
@@ -315,17 +315,99 @@ pub fn joined_header(headers: &axum::http::HeaderMap, name: &str) -> Option<Stri
     (!values.is_empty()).then(|| values.join(","))
 }
 
+/// A proxy the server trusts to say who its client is: one address, or a block of them (`10.0.0.0/8`,
+/// a cluster's pod network). The block is kept as its network address and prefix length.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Proxy {
+    network: IpAddr,
+    prefix: u8,
+}
+
+/// `addr` with every bit past the first `prefix` cleared.
+fn masked(addr: IpAddr, prefix: u8) -> IpAddr {
+    match addr {
+        IpAddr::V4(v4) => {
+            let mask = if prefix == 0 {
+                0
+            } else {
+                u32::MAX << (32 - u32::from(prefix))
+            };
+            IpAddr::V4(Ipv4Addr::from(u32::from(v4) & mask))
+        }
+        IpAddr::V6(v6) => {
+            let mask = if prefix == 0 {
+                0
+            } else {
+                u128::MAX << (128 - u32::from(prefix))
+            };
+            IpAddr::V6(Ipv6Addr::from(u128::from(v6) & mask))
+        }
+    }
+}
+
+impl Proxy {
+    /// `10.0.0.1`, `2001:db8::1` or a block of either, `10.0.0.0/8` (the prefix is 1 to 32, or 1 to
+    /// 128 for IPv6). `None` for anything else, and for `/0`, which would trust every address.
+    pub fn parse(text: &str) -> Option<Proxy> {
+        let text = text.trim();
+        let (address, prefix) = match text.split_once('/') {
+            Some((address, prefix)) => (address.trim(), Some(prefix.trim().parse::<u8>().ok()?)),
+            None => (text, None),
+        };
+        let parsed: IpAddr = address.parse().ok()?;
+        let canonical = parsed.to_canonical();
+        // A prefix on an IPv4-mapped IPv6 address could mean either width: say it the plain way.
+        if prefix.is_some() && parsed != canonical {
+            return None;
+        }
+        let widest = if canonical.is_ipv4() { 32 } else { 128 };
+        let prefix = prefix.unwrap_or(widest);
+        if prefix == 0 || prefix > widest {
+            return None;
+        }
+        Some(Proxy {
+            network: masked(canonical, prefix),
+            prefix,
+        })
+    }
+
+    /// Whether `ip` is this address or inside this block. An IPv4-mapped IPv6 address is the IPv4
+    /// address it carries.
+    pub fn contains(&self, ip: IpAddr) -> bool {
+        let ip = ip.to_canonical();
+        ip.is_ipv4() == self.network.is_ipv4() && masked(ip, self.prefix) == self.network
+    }
+}
+
+impl From<IpAddr> for Proxy {
+    /// A single address.
+    fn from(ip: IpAddr) -> Proxy {
+        let ip = ip.to_canonical();
+        Proxy {
+            network: ip,
+            prefix: if ip.is_ipv4() { 32 } else { 128 },
+        }
+    }
+}
+
+impl std::fmt::Display for Proxy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.network, self.prefix)
+    }
+}
+
 /// The real client address: the peer's, or, when the peer is a trusted proxy and the configured
 /// header names the client, the right-most address in that header that isn't itself a trusted
 /// proxy (`KEMLOCK_TRUSTED_PROXIES`, `IP_HEADER`). Every address is canonicalised first, so an
-/// IPv4 proxy listed as `10.0.0.1` matches a peer shown as `::ffff:10.0.0.1`.
-pub fn client_ip(peer: IpAddr, header: Option<&str>, trusted: &[IpAddr]) -> IpAddr {
+/// IPv4 proxy listed as `10.0.0.1` matches a peer shown as `::ffff:10.0.0.1`, and a proxy listed
+/// as a block (`10.0.0.0/8`) matches every address in it.
+pub fn client_ip(peer: IpAddr, header: Option<&str>, trusted: &[Proxy]) -> IpAddr {
     let peer = peer.to_canonical();
     let Some(header) = header else {
         return peer;
     };
-    let trusted: Vec<IpAddr> = trusted.iter().map(IpAddr::to_canonical).collect();
-    if !trusted.contains(&peer) {
+    let is_trusted = |ip: IpAddr| trusted.iter().any(|proxy| proxy.contains(ip));
+    if !is_trusted(peer) {
         return peer;
     }
     let addresses: Vec<IpAddr> = header
@@ -336,7 +418,7 @@ pub fn client_ip(peer: IpAddr, header: Option<&str>, trusted: &[IpAddr]) -> IpAd
     addresses
         .iter()
         .rev()
-        .find(|ip| !trusted.contains(ip))
+        .find(|ip| !is_trusted(**ip))
         .or(addresses.first())
         .copied()
         .unwrap_or(peer)
@@ -602,6 +684,45 @@ mod tests {
     }
 
     #[test]
+    fn a_proxy_may_be_an_address_or_a_block_of_them() {
+        let ip = |text: &str| text.parse::<IpAddr>().expect("ip");
+        let block = Proxy::parse("10.244.0.0/16").expect("a block");
+        assert!(block.contains(ip("10.244.3.7")));
+        assert!(block.contains(ip("::ffff:10.244.255.255")));
+        assert!(!block.contains(ip("10.245.0.1")));
+        assert!(!block.contains(ip("2001:db8::1")));
+        // Host bits are ignored: the block is its network.
+        assert_eq!(Proxy::parse("10.244.9.9/16"), Some(block));
+        assert_eq!(block.to_string(), "10.244.0.0/16");
+        let v6 = Proxy::parse("2001:db8:1::/48").expect("a block");
+        assert!(v6.contains(ip("2001:db8:1:ffff::1")));
+        assert!(!v6.contains(ip("2001:db8:2::1")));
+        // One address is a block of one.
+        let one = Proxy::parse(" 192.0.2.7 ").expect("an address");
+        assert!(one.contains(ip("192.0.2.7")) && one.contains(ip("::ffff:192.0.2.7")));
+        assert!(!one.contains(ip("192.0.2.8")));
+        assert_eq!(one, Proxy::from(ip("192.0.2.7")));
+        // Not an address, a prefix too wide for its family, and /0 (every address) are refused.
+        for bad in [
+            "", "proxy", "10.0.0.0/33", "2001:db8::/129", "10.0.0.0/0", "::/0", "10.0.0.0/x",
+            "10.0.0.0/", "::ffff:10.0.0.0/104",
+        ] {
+            assert_eq!(Proxy::parse(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn the_forwarded_header_is_trusted_from_every_address_of_a_trusted_block() {
+        let block = Proxy::parse("10.0.0.0/8").expect("a block");
+        let client: IpAddr = "198.51.100.4".parse().expect("ip");
+        // Two proxies in the block: the right-most address outside it is the client.
+        let header = "203.0.113.50, 198.51.100.4, 10.1.2.3";
+        let peer: IpAddr = "10.9.9.9".parse().expect("ip");
+        assert_eq!(client_ip(peer, Some(header), &[block]), client);
+        let outsider: IpAddr = "11.0.0.1".parse().expect("ip");
+        assert_eq!(client_ip(outsider, Some(header), &[block]), outsider);
+    }
+    #[test]
     fn an_ipv4_mapped_peer_is_keyed_as_its_ipv4_address() {
         // A dual-stack listener (ROCKET_ADDRESS="::") shows IPv4 peers like this.
         let a: IpAddr = "::ffff:192.0.2.7".parse().expect("ip");
@@ -617,13 +738,13 @@ mod tests {
         let mapped_proxy: IpAddr = "::ffff:10.0.0.1".parse().expect("ip");
         let client: IpAddr = "198.51.100.4".parse().expect("ip");
         let header = "::ffff:198.51.100.4, ::ffff:10.0.0.1";
-        assert_eq!(client_ip(mapped_proxy, Some(header), &[proxy]), client);
+        assert_eq!(client_ip(mapped_proxy, Some(header), &[proxy.into()]), client);
         // The other way round: a mapped entry in the list, an IPv4 peer.
-        assert_eq!(client_ip(proxy, Some(header), &[mapped_proxy]), client);
+        assert_eq!(client_ip(proxy, Some(header), &[mapped_proxy.into()]), client);
         // An untrusted mapped peer is returned canonical, so it keys per IPv4 address.
         let outsider: IpAddr = "::ffff:203.0.113.9".parse().expect("ip");
         assert_eq!(
-            client_ip(outsider, Some(header), &[proxy]),
+            client_ip(outsider, Some(header), &[proxy.into()]),
             "203.0.113.9".parse::<IpAddr>().expect("ip")
         );
     }
@@ -634,10 +755,10 @@ mod tests {
         let outsider: IpAddr = "203.0.113.9".parse().expect("ip");
         let client: IpAddr = "198.51.100.4".parse().expect("ip");
         let header = "198.51.100.4, 10.0.0.1";
-        assert_eq!(client_ip(proxy, Some(header), &[proxy]), client);
-        assert_eq!(client_ip(outsider, Some(header), &[proxy]), outsider);
-        assert_eq!(client_ip(proxy, None, &[proxy]), proxy);
-        assert_eq!(client_ip(proxy, Some("garbage"), &[proxy]), proxy);
+        assert_eq!(client_ip(proxy, Some(header), &[proxy.into()]), client);
+        assert_eq!(client_ip(outsider, Some(header), &[proxy.into()]), outsider);
+        assert_eq!(client_ip(proxy, None, &[proxy.into()]), proxy);
+        assert_eq!(client_ip(proxy, Some("garbage"), &[proxy.into()]), proxy);
     }
 
     #[test]
@@ -655,12 +776,12 @@ mod tests {
         let proxy: IpAddr = "10.0.0.1".parse().expect("ip");
         let real: IpAddr = "198.51.100.4".parse().expect("ip");
         let joined = joined_header(&headers, "x-forwarded-for");
-        assert_eq!(client_ip(proxy, joined.as_deref(), &[proxy]), real);
+        assert_eq!(client_ip(proxy, joined.as_deref(), &[proxy.into()]), real);
         let first_only = headers
             .get("x-forwarded-for")
             .and_then(|value| value.to_str().ok());
         assert_eq!(
-            client_ip(proxy, first_only, &[proxy]),
+            client_ip(proxy, first_only, &[proxy.into()]),
             "1.2.3.4".parse::<IpAddr>().expect("ip"),
             "the first line alone is only the client's own claim"
         );
@@ -672,7 +793,7 @@ mod tests {
         let real: IpAddr = "198.51.100.4".parse().expect("ip");
         // The client sent "X-Forwarded-For: 1.2.3.4"; the proxy appended the real address.
         assert_eq!(
-            client_ip(proxy, Some("1.2.3.4, 198.51.100.4"), &[proxy]),
+            client_ip(proxy, Some("1.2.3.4, 198.51.100.4"), &[proxy.into()]),
             real
         );
     }

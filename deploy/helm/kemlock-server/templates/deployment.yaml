@@ -70,13 +70,21 @@ spec:
               value: {{ .Values.logLevel | quote }}
             - name: KEMLOCK_LOG_FORMAT
               value: {{ .Values.logFormat | quote }}
-            {{- if .Values.ipHeader }}
-            - name: IP_HEADER
-              value: {{ .Values.ipHeader | quote }}
+            {{- /* Behind an ingress controller every client would look like the controller, so one
+                   rate-limit budget and one connection allowance would be shared by all. With the
+                   ingress on, the header and the private ranges are trusted unless set. */}}
+            {{- $header := .Values.ipHeader | default (ternary "X-Forwarded-For" "" .Values.ingress.enabled) }}
+            {{- $proxies := .Values.trustedProxies | default (ternary (list "10.0.0.0/8" "172.16.0.0/12" "192.168.0.0/16" "fc00::/7") (list) .Values.ingress.enabled) }}
+            {{- if and $header (not $proxies) }}
+            {{- fail "ipHeader is set but trustedProxies is empty: the header is believed only from the proxies listed there" }}
             {{- end }}
-            {{- if .Values.trustedProxies }}
+            {{- if $header }}
+            - name: IP_HEADER
+              value: {{ $header | quote }}
+            {{- end }}
+            {{- if $proxies }}
             - name: KEMLOCK_TRUSTED_PROXIES
-              value: {{ join "," .Values.trustedProxies | quote }}
+              value: {{ join "," $proxies | quote }}
             {{- end }}
             {{- if eq .Values.database.type "postgres" }}
             - name: DATABASE_URL
