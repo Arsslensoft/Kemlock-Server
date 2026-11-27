@@ -400,15 +400,26 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/arsslensoft/kemlock-serv
   -- --domain https://vault.example.com
 ```
 
-It makes an unprivileged Debian 12 container, installs the release binary after checking its
-`SHA256SUMS`, and runs it as the systemd unit in `deploy/systemd/`. Update later with
-`kemlock-lxc.sh --update <ctid>`.
+It makes an unprivileged Debian 12 container, installs the release binary and runs it as the
+systemd unit in `deploy/systemd/`. Before it installs anything it checks the archive's `SHA256SUMS`
+and its cosign signature against this repository's `release.yml` at the release tag; a signature
+that is missing or does not verify stops the install. cosign is in no Debian package, so the script
+downloads a pinned cosign release from Sigstore and checks it against that release's checksum file
+(`/usr/local/lib/kemlock` in the container). Update later with `kemlock-lxc.sh --update <ctid>`,
+which checks the same way. The community-scripts version (`deploy/proxmox/`, see its README) does
+the same check, with the same pinned cosign, on install and on update.
 
 ## Home Assistant
 
 Add `https://github.com/arsslensoft/kemlock-server` under Settings, Add-ons, Add-on Store, Repositories (the
 add-on repository is `deploy/home-assistant/`). Install Kemlock Server, set the `domain` option and
 start it. Stop the add-on while taking a backup (the add-on sets `backup: cold`).
+
+The add-on starts as root only to read its options and take ownership of its data, then runs the
+server as an unprivileged user (uid 10001) that owns `/data/kemlock`. On every start it gives any
+file in that folder that someone else owns (a restored backup, or data an earlier version wrote as
+root) to that user. Everything the server writes must be inside `/data/kemlock`: if you set
+`database_url` to a SQLite file, put the file in that folder.
 
 ## Synology Container Manager
 
@@ -645,6 +656,12 @@ cosign verify ghcr.io/arsslensoft/kemlock-server:1.4.2 \
 Use the exact version in the identity as above, or `v[0-9].*` to accept any release. The
 `edge` and `testing` tags are signed by the same workflow at `@refs/heads/main`. For the FIPS image use the
 `-fips` tag with the same identity.
+
+A release is a version tag on a commit of the default branch (`main`). `release.yml` fails a tag on
+any other commit before it builds anything, but that is only a guard against a slip: a tag on an old
+commit runs that commit's own copy of the workflow. What stops a tag from a write token is the
+repository ruleset `tools/repo-settings.sh` creates, which lets only administrators create, move or
+delete a version tag. Do not tag a release from a branch.
 
 Binaries, with the bundle that sits beside each file:
 
