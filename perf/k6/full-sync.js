@@ -6,7 +6,7 @@
 //   kemlock-loadgen seed --accounts 4 --items 5000 --prefix big --out big.json
 //   k6 run -e ACCOUNTS=$PWD/big.json -e RIG=vps perf/k6/full-sync.js
 import exec from 'k6/execution';
-import { check } from 'k6';
+import { check, sleep } from 'k6';
 import { Trend } from 'k6/metrics';
 import { ENFORCE, RIG, ACCOUNT_COUNT, signed, summary, trendStats } from './lib.js';
 
@@ -16,6 +16,10 @@ const firstByte = new Trend('full_sync_first_byte_ms', true);
 // [p50, p95] full walk, and the first-byte p95, by rig.
 const WALK = RIG === 'vps' ? [200, 400] : [500, 1000];
 const FIRST_BYTE = RIG === 'vps' ? 30 : 50;
+// Each VU is one device, which may make 240 signed-in requests a minute, 4 a second (the
+// per-device limit). A walk of 5,000 items is 10 pages: it runs at full speed within the limit's
+// burst, and the next one waits until the walk's requests are back within the rate.
+const SECONDS_PER_PAGE = 0.3;
 
 export const options = {
   summaryTrendStats: trendStats,
@@ -50,6 +54,7 @@ export default function () {
     since = page.cursor;
   }
   fullSync.add(Date.now() - started);
+  sleep(Math.max(0, pages * SECONDS_PER_PAGE - (Date.now() - started) / 1000));
 }
 
 export function handleSummary(data) {

@@ -4,13 +4,17 @@
 //
 //   k6 run -e ACCOUNTS=$PWD/accounts.json -e RIG=vps perf/k6/delta100.js
 import exec from 'k6/execution';
-import { check } from 'k6';
+import { check, sleep } from 'k6';
 import {
   ACCOUNT_COUNT, ITEMS_PER_ACCOUNT, accounts, cursorOf, itemBody, limit, signed, summary,
   trendStats,
 } from './lib.js';
 
 const CHANGES = 100;
+// Each VU is one device of one account, and a device may make 240 signed-in requests a minute (the
+// per-device limit), 4 a second; an iteration makes two, so it takes at least this long. Past the
+// limit the server answers the batch 429 before reading its body, and the client's write breaks.
+const MIN_ITERATION_SECONDS = 0.6;
 
 export const options = {
   summaryTrendStats: trendStats,
@@ -31,6 +35,7 @@ const cursors = {};
 const rounds = {};
 
 export default function () {
+  const began = Date.now();
   const a = exec.vu.idInTest - 1;
   const account = accounts[a];
   const round = rounds[a] || 0;
@@ -60,6 +65,7 @@ export default function () {
   check(res, { 'the delta is 200': (r) => r && r.status === 200 });
   const next = res && cursorOf(res);
   if (next) cursors[a] = next;
+  sleep(Math.max(0, MIN_ITERATION_SECONDS - (Date.now() - began) / 1000));
 }
 
 export function handleSummary(data) {
