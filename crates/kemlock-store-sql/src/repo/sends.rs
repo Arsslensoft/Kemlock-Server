@@ -98,6 +98,10 @@ impl SendRepo for SqlStore {
     }
 
     async fn update_send(&self, send: &SendRecord) -> Result<(), StoreError> {
+        // An edit writes the Send's `meta`, which is sealed under the key a rotation's install
+        // replaces. Under the owner's lock like `add_send`, it either commits before the install
+        // reads (and is re-sealed by it) or waits for the install and then writes the new meta.
+        let txn = begin_locked(self, send.owner).await?;
         let row = sends::ActiveModel {
             meta: Set(send.meta.clone()),
             payload: Set(send.payload.clone()),
@@ -114,12 +118,14 @@ impl SendRepo for SqlStore {
         let result = sends::Entity::update_many()
             .set(row)
             .filter(sends::Column::Id.eq(send.id.0))
-            .exec(self.writer())
+            .exec(&txn)
             .await
             .store()?;
         if result.rows_affected == 0 {
+            // The transaction is dropped, which rolls it back.
             return Err(StoreError::NotFound);
         }
+        txn.commit().await.store()?;
         Ok(())
     }
 
