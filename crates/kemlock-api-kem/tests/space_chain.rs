@@ -17,12 +17,14 @@ use axum::http::StatusCode;
 use chain_kit::{Chain, Person, Step, request};
 use common::{App, Client, Reply, Req, Session, b64, register_and_sign_in_with};
 use kemlock_api_kem::testing::DpopSigner;
-use kemlock_api_kem::{space_chain_router, spaces_router};
+use kemlock_api_kem::{ChainLargeBodies, space_chain_router_with, spaces_router};
 use kemlock_app::notices::{BoxFuture, InvitationNotice, Notice, Outbox};
 use kemlock_app::ports::Clock as _;
 use kemlock_app::ports::ItemStore;
 use kemlock_app::spaces::SpaceRepo;
-use kemlock_crypto::space_chain::{KeyRef, Role, b64 as chain_b64, link};
+use kemlock_crypto::space_chain::{
+    Body, CollectionPerm, Grantee, KeyRef, Role, b64 as chain_b64, link,
+};
 use kemlock_domain::spaces::MemberState;
 use kemlock_domain::{ItemId, SpaceId, UserId};
 use serde_json::{Value, json};
@@ -91,11 +93,20 @@ impl Rig {
     }
 
     fn over(app: App) -> Rig {
+        Rig::over_with(app, ChainLargeBodies::default())
+    }
+
+    /// A rig whose router keeps the places for large bodies in `places`, which a test may fill.
+    fn over_with(app: App, places: ChainLargeBodies) -> Rig {
         let spaces = FakeSpaces::new(app.store.clone());
         let router = app
             .router_with(spaces.clone())
             .merge(spaces_router(app.api.clone(), spaces.clone()))
-            .merge(space_chain_router(app.api.clone(), spaces.clone()));
+            .merge(space_chain_router_with(
+                app.api.clone(),
+                spaces.clone(),
+                places,
+            ));
         Rig {
             app,
             router,
@@ -1085,12 +1096,73 @@ async fn post_as(who: &Who, space: Uuid, request: Req<'static>) -> Reply {
         .await
 }
 
+/// A space in which Ana, who could edit General, lost her grant, so General's key is marked and
+/// Sam (an owner, with manage on it) may replace it, and Lee, a member with view only, may not.
+async fn a_marked_collection_key(rig: &Rig, sam: &Who, ana: &Who, lee: &Who) -> (Uuid, Uuid) {
+    let (space, collection, mut chain, _) = make(rig, sam).await;
+    let general = *collection.as_bytes();
+    let invite_ana = chain.invite(&sam.person, ana.person.id, Role::Member);
+    let invite_lee = chain.invite(&sam.person, lee.person.id, Role::Member);
+    let reply = sam
+        .post(&uri(space), request(&[&invite_ana, &invite_lee]))
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+    ana.accept(space).await;
+    lee.accept(space).await;
+    let grant = |chain: &mut Chain, who: &Who, permission| {
+        chain.record(
+            &sam.person,
+            Body::Grant {
+                collection: general,
+                grantee: Grantee::User(who.person.id),
+                permission,
+            },
+        )
+    };
+    let grant_ana = grant(&mut chain, ana, CollectionPerm::Edit);
+    let confirm_ana = chain.confirm(&sam.person, &ana.person);
+    let seal_ana = chain.seal_collection_key(&sam.person, general, &ana.person);
+    let grant_lee = grant(&mut chain, lee, CollectionPerm::View);
+    let confirm_lee = chain.confirm(&sam.person, &lee.person);
+    let seal_lee = chain.seal_collection_key(&sam.person, general, &lee.person);
+    let reply = sam
+        .post(
+            &uri(space),
+            request(&[
+                &grant_ana,
+                &confirm_ana,
+                &seal_ana,
+                &grant_lee,
+                &confirm_lee,
+                &seal_lee,
+            ]),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+    let ungrant = chain.record(
+        &sam.person,
+        Body::Ungrant {
+            collection: general,
+            grantee: Grantee::User(ana.person.id),
+            replace: vec![KeyRef::Collection(general)],
+        },
+    );
+    let reply = sam.post(&uri(space), request(&[&ungrant])).await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+    (space, collection)
+}
+
 #[tokio::test]
-async fn a_body_over_8_mib_is_read_only_from_a_member_who_may_replace_keys() {
-    let rig = Rig::new();
+async fn a_body_over_8_mib_is_read_only_for_a_member_who_may_replace_a_marked_key() {
+    // No wait after a refusal here: that is the next test's.
+    let rig = Rig::over_with(App::new(true), ChainLargeBodies::new(2, 0));
     let sam = rig.person("sam@example.org", 1).await;
     let zed = rig.person("zed@example.org", 2).await;
-    let (space, _collection, _chain, _) = make(&rig, &sam).await;
+    let ana = rig.person("ana@example.org", 3).await;
+    let lee = rig.person("lee@example.org", 4).await;
+    let (quiet, _, _, _) = make(&rig, &sam).await;
+    let (space, _) = a_marked_collection_key(&rig, &sam, &ana, &lee).await;
+
     // Nobody signed in is refused before the body is read.
     let anon = Client::new(
         rig.router.clone(),
@@ -1100,22 +1172,95 @@ async fn a_body_over_8_mib_is_read_only_from_a_member_who_may_replace_keys() {
     let reply = anon.send("POST", &uri(space), padding(9)).await;
     assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
 
-    // Someone who is no member of the space gets the ordinary limit: 413 past 8 MiB, and nothing
-    // of the space.
+    // A stranger gets the ordinary limit: 413 past 8 MiB, with nothing said of the space.
     let reply = post_as(&zed, space, padding(9)).await;
     assert_eq!(reply.status, StatusCode::PAYLOAD_TOO_LARGE);
     assert_eq!(reply.problem(), "payload-too-large");
 
-    // A member who may replace keys is read to 32 MiB: 9 MiB passes the size check and fails as
-    // the JSON it isn't, and 33 MiB is too large.
+    // So does a confirmed member who may only view the collection whose key is marked.
+    let reply = post_as(&lee, space, padding(9)).await;
+    assert_eq!(reply.status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(reply.problem(), "payload-too-large");
+
+    // And an owner of a space in which no key waits to be replaced: nothing needs a body that large.
+    let reply = post_as(&sam, quiet, padding(9)).await;
+    assert_eq!(reply.status, StatusCode::PAYLOAD_TOO_LARGE);
+
+    // The owner who may replace the marked key is read to 32 MiB: 9 MiB passes the size check and
+    // fails as the JSON it isn't, and 33 MiB is too large.
     let reply = post_as(&sam, space, padding(9)).await;
     assert_eq!(reply.status, StatusCode::BAD_REQUEST);
     let reply = post_as(&sam, space, padding(33)).await;
     assert_eq!(reply.status, StatusCode::PAYLOAD_TOO_LARGE);
 
-    // Its place among the large bodies came back with each answer: one more still passes.
+    // The pending-answer route reads 8 MiB from anyone.
+    let pending = Uuid::new_v4();
+    let reply = sam
+        .client
+        .send(
+            "POST",
+            &format!("{}/pending/{pending}", uri(space)),
+            Req {
+                access_token: Some(sam.session.access_token.as_str()),
+                ..padding(9)
+            },
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::PAYLOAD_TOO_LARGE);
+
+    // Nobody's place was kept: Sam's next large body is read as well.
     let reply = post_as(&sam, space, padding(9)).await;
     assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn large_bodies_are_limited_for_the_server_each_space_and_each_account_and_wait_after_a_refusal()
+ {
+    let places = ChainLargeBodies::new(2, 60);
+    let rig = Rig::over_with(App::new(true), places.clone());
+    let sam = rig.person("sam@example.org", 1).await;
+    let ana = rig.person("ana@example.org", 3).await;
+    let lee = rig.person("lee@example.org", 4).await;
+    let (space, _) = a_marked_collection_key(&rig, &sam, &ana, &lee).await;
+    let (other_space, other_account) = ([0x51u8; 16], [0x52u8; 16]);
+
+    // The space has a large body in hand already: 429, and Sam's own turn is not spent.
+    let busy = places
+        .occupy(other_account, *space.as_bytes())
+        .expect("a place");
+    let reply = post_as(&sam, space, padding(9)).await;
+    assert_eq!(reply.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(reply.problem(), "rate-limited");
+    drop(busy);
+
+    // So has the account, in another space.
+    let busy = places
+        .occupy(*sam.id.as_bytes(), other_space)
+        .expect("a place");
+    let reply = post_as(&sam, space, padding(9)).await;
+    assert_eq!(reply.status, StatusCode::TOO_MANY_REQUESTS);
+    drop(busy);
+
+    // And so has the server: both of its places are taken by others.
+    let one = places.occupy([0x61; 16], [0x62; 16]).expect("a place");
+    let two = places.occupy([0x63; 16], [0x64; 16]).expect("a place");
+    let reply = post_as(&sam, space, padding(9)).await;
+    assert_eq!(reply.status, StatusCode::TOO_MANY_REQUESTS);
+    drop((one, two));
+
+    // With the places free, the body is read, and it ends in a refusal (it is no JSON)...
+    let reply = post_as(&sam, space, padding(9)).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+    // ...so the account waits before another: 429 with a Retry-After, whatever the body.
+    let reply = post_as(&sam, space, padding(9)).await;
+    assert_eq!(reply.status, StatusCode::TOO_MANY_REQUESTS);
+    assert!(reply.header("retry-after").is_some());
+    // The wait is the account's: Ana, who may not send a large body, is still told 413, not 429.
+    let reply = post_as(&ana, space, padding(9)).await;
+    assert_eq!(reply.status, StatusCode::PAYLOAD_TOO_LARGE);
+    // A small request is not held up by it.
+    let reply = sam.get(&uri(space)).await;
+    assert_eq!(reply.status, StatusCode::OK);
 }
 
 #[tokio::test]
