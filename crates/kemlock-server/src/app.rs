@@ -55,10 +55,29 @@ impl<B> MakeSpan<B> for PathOnlySpan {
 /// How long a request may take before it is answered 408. WebSockets are upgraded long before.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// How long a request to the space chain may take. A key replacement is one request of up to
-/// 32 MiB, which the route reads at 256 KiB a second or faster once it is above 8 MiB (two minutes
-/// for the most), so the chain routes have a timeout of their own and enforce the rate themselves.
+/// How long a POST to the space chain may take. A key replacement is one request of up to 32 MiB,
+/// which the route reads at 256 KiB a second or faster (a little over two minutes for the most),
+/// so the two chain POST routes have a timeout of their own and enforce the rate themselves. The
+/// other chain routes keep [`REQUEST_TIMEOUT`].
 const CHAIN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+
+/// The timeout of the chain routes: [`CHAIN_TIMEOUT`] for a POST (an append, or the answer to a
+/// queued change), [`REQUEST_TIMEOUT`] for the reads and the dismissal.
+async fn chain_timeout(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let limit = if request.method() == axum::http::Method::POST {
+        CHAIN_TIMEOUT
+    } else {
+        REQUEST_TIMEOUT
+    };
+    match tokio::time::timeout(limit, next.run(request)).await {
+        Ok(response) => response,
+        Err(_) => StatusCode::REQUEST_TIMEOUT.into_response(),
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
@@ -438,8 +457,8 @@ where
             StatusCode::REQUEST_TIMEOUT,
             REQUEST_TIMEOUT,
         ))
-        // After the timeout above: the chain routes have a longer one of their own, under the same
-        // layers as the routes above.
+        // After the timeout above: the two chain POST routes have a longer one of their own, under
+        // the same layers as the routes above.
         .merge(
             kemlock_api_kem::space_chain_router(api.clone(), store.clone())
                 .layer(axum::middleware::from_fn_with_state(
@@ -447,10 +466,7 @@ where
                     kemlock_api_fed::home_gate::<SqlStore>,
                 ))
                 .layer(axum::Extension(federated.view))
-                .layer(TimeoutLayer::with_status_code(
-                    StatusCode::REQUEST_TIMEOUT,
-                    CHAIN_TIMEOUT,
-                )),
+                .layer(axum::middleware::from_fn(chain_timeout)),
         )
         // And the file routes.
         .merge(files_router)
