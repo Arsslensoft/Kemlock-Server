@@ -539,7 +539,7 @@ WebSocket through it. Kemlock serves the API, the web vault and both WebSocket r
   `upstream` block defaults to 60 seconds; if you raise those past 125 seconds, a request can be
   sent down a connection that is closing and fail with a 502). One client address may hold
   `KEMLOCK_MAX_CONNECTIONS_PER_IP` connections at once (default 64, `max_connections_per_ip` in
-  `kemlock.toml`, 0 for no limit; an IPv6 address counts by its /56), and further connections from
+  `kemlock.toml`, 0 for no limit; an IPv6 address counts by its /48), and further connections from
   it are closed. The addresses in `KEMLOCK_TRUSTED_PROXIES` are exempt, because behind a proxy
   every connection comes from the proxy. `KEMLOCK_MAX_CONNECTIONS` caps all connections together
   (default 4096, and never more than three quarters of the open-file limit the server runs under,

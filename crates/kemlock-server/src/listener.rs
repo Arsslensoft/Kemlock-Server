@@ -11,7 +11,7 @@
 //!   ends an idle connection, and no request is sent down one that is about to close;
 //! - a write-progress timeout: a write that moves no data for 60 seconds fails the connection, so a
 //!   client that never reads its response doesn't hold the connection (and its buffers) for ever;
-//! - a cap on the connections one client address holds (an IPv6 address by its /56), with the
+//! - a cap on the connections one client address holds (an IPv6 address by its /48), with the
 //!   trusted proxies exempt, because behind a proxy every connection comes from the proxy;
 //! - a cap on all connections (4096 by default, and at most three quarters of the open-file limit);
 //! - for HTTP/2, which has no header-read timeout in hyper, pings that drop a dead peer, a bound on
@@ -134,14 +134,14 @@ struct TrackerState {
     per_address: HashMap<IpAddr, usize>,
 }
 
-/// What a client is counted under: its address, an IPv6 one by its /56 (one subscriber holds a
-/// whole /56 or more, so counting single addresses or /64s would count it as many).
+/// What a client is counted under: its address, an IPv6 one by its /48 (one site holds a whole /48
+/// or more, so counting single addresses, /64s or /56s would count it as many, and one /48 could
+/// take every slot).
 fn address_key(ip: IpAddr) -> IpAddr {
     match ip.to_canonical() {
         IpAddr::V6(v6) => {
             let mut segments = v6.segments();
-            segments[3] &= 0xff00;
-            for segment in &mut segments[4..] {
+            for segment in &mut segments[3..] {
                 *segment = 0;
             }
             IpAddr::V6(Ipv6Addr::from(segments))
@@ -418,6 +418,14 @@ impl Activity {
         self.in_flight.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Counts a request in flight until the returned guard is dropped. A request that never
+    /// finishes (a client's RST_STREAM drops its future part way) still ends, so the count can't
+    /// stay above zero and keep an HTTP/2 connection from ever being found idle.
+    fn enter(self: &Arc<Self>) -> InFlight {
+        self.begin();
+        InFlight(Arc::clone(self))
+    }
+
     fn end(&self) {
         self.in_flight.fetch_sub(1, Ordering::Relaxed);
         *self.last.lock().unwrap_or_else(PoisonError::into_inner) = tokio::time::Instant::now();
@@ -432,6 +440,17 @@ impl Activity {
                 .unwrap_or_else(PoisonError::into_inner)
                 .elapsed()
                 >= idle
+    }
+}
+
+/// One request in flight on a connection; it ends when this is dropped, however the request's
+/// future ends.
+#[derive(Debug)]
+struct InFlight(Arc<Activity>);
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.0.end();
     }
 }
 
@@ -474,10 +493,10 @@ async fn serve_connection(
             let router = router.clone();
             let activity = Arc::clone(&activity);
             async move {
-                activity.begin();
-                let answer = router.oneshot(request).await;
-                activity.end();
-                answer
+                // Held for the whole request, and dropped with it if the client resets the
+                // stream and hyper drops this future.
+                let _in_flight = activity.enter();
+                router.oneshot(request).await
             }
         }
     });
@@ -796,7 +815,7 @@ mod tests {
     }
 
     #[test]
-    fn addresses_are_counted_per_address_and_ipv6_per_56() {
+    fn addresses_are_counted_per_address_and_ipv6_per_48() {
         let mut limits = limits();
         limits.max_connections_per_ip = 2;
         limits.max_connections = 3;
@@ -819,18 +838,19 @@ mod tests {
         assert_eq!(tracker.lock().total, 0);
         assert!(tracker.lock().per_address.is_empty());
 
-        // One /56 is one client: a site holds 256 /64s, and a /48 holds 256 /56s.
+        // One /48 is one client: a site holds 65,536 /64s, and a /48 holds 256 /56s.
         let x = tracker.admit(ip("2001:db8:1:2::1")).expect("one");
         let y = tracker.admit(ip("2001:db8:1:2:ffff::9")).expect("two");
         assert!(tracker.admit(ip("2001:db8:1:2::3")).is_none());
         assert!(
             tracker.admit(ip("2001:db8:1:3::1")).is_none(),
-            "another /64 of the /56"
+            "another /64 of the /48"
         );
         assert!(
-            tracker.admit(ip("2001:db8:1:100::1")).is_some(),
-            "the next /56"
+            tracker.admit(ip("2001:db8:1:100::1")).is_none(),
+            "another /56 of the /48"
         );
+        let _next = tracker.admit(ip("2001:db8:2::1")).expect("the next /48");
         // An IPv4 address mapped into IPv6 is that IPv4 address.
         let _z = tracker.admit(ip("192.0.2.9")).expect("one");
         let _w = tracker.admit(ip("::ffff:192.0.2.9")).expect("two");
@@ -874,6 +894,19 @@ mod tests {
         assert!(!activity.idle_for(idle));
         tokio::time::sleep(pause).await;
         assert!(activity.idle_for(idle));
+    }
+
+    #[tokio::test]
+    async fn a_request_dropped_part_way_is_no_longer_in_flight() {
+        let idle = Duration::from_millis(40);
+        let activity = Arc::new(Activity::new());
+        let request = activity.enter();
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert!(!activity.idle_for(idle), "in flight while it is held");
+        // A reset stream drops the request's future without finishing it.
+        drop(request);
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert!(activity.idle_for(idle), "dropping it ends it");
     }
 
     #[tokio::test]
