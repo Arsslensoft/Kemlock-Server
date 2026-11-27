@@ -149,7 +149,8 @@ pub struct Inner<S> {
     pub(crate) notices: Notices,
     pub(crate) require_device_email: bool,
     pub(crate) erasure: Option<Arc<dyn OwnErasure>>,
-    /// Keys the KDF settings of unknown emails, derived from the token key like Vaultwarden's.
+    /// The server's own MAC key (a subkey of `server.key`): it picks the KDF settings of unknown
+    /// emails, salts the decoy hash, keys the hashing gate by account and makes refresh successors.
     pub(crate) prelogin_key: [u8; 32],
     /// Held from the check of a storage quota to the save of what it covers, so announces that
     /// arrive together can't each read the same sum and all pass. One server owns the data, so one
@@ -190,7 +191,12 @@ impl<S> std::fmt::Debug for App<S> {
 
 impl<S: BwStore> App<S> {
     pub fn new(parts: AppParts<S>) -> Self {
-        let prelogin_key = hash::hmac_sha256(parts.keys.pem().as_bytes(), b"prelogin-kdf");
+        // Made from `server.key` (the secret only this server has), not from `rsa_key.pem`, which an
+        // old copy of a Vaultwarden server may share.
+        let prelogin_key = parts
+            .seal
+            .subkey("bitwarden-prelogin")
+            .map_or_else(|_| hash::hmac_sha256(parts.keys.pem().as_bytes(), b"prelogin-kdf"), |key| *key);
         let login_limit = crate::ip_limit::IpLimit::new(
             parts.settings.login_ratelimit_max_burst,
             parts.settings.login_ratelimit_seconds,
