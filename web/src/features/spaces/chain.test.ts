@@ -146,6 +146,112 @@ describe('checking a space’s chain', () => {
     expect(await checkSpaceChain({ ...deps, crypto: fresh }, THEO, ME)).toEqual({ kind: 'unchained' });
   });
 
+  it('keeps the owners of the verified chain with the anchor, and passes them back next time', async () => {
+    const owned = view({ owners: { [ME]: 'aA', [LEE]: 'bB' } });
+    const { deps, anchors, crypto, api } = setup(owned);
+    expect((await checkSpaceChain(deps, SPACE, ME)).kind).toBe('verified');
+    expect(await anchors.load(ME, SPACE)).toEqual({ seq: 4, epoch: 1, links: owned.links, owners: { [ME]: 'aA', [LEE]: 'bB' } });
+    // The next check, from a fresh unlock, hands the kept anchor to the worker as it was kept.
+    const fresh = fakeSpaceCrypto();
+    fresh.chain = owned;
+    const spy = vi.spyOn(fresh, 'verifySpaceChain');
+    await checkSpaceChain({ api, crypto: fresh, anchors }, SPACE, ME);
+    expect(spy).toHaveBeenCalledWith(
+      expect.objectContaining({ anchor: expect.objectContaining({ owners: { [ME]: 'aA', [LEE]: 'bB' } }) }),
+    );
+    expect(crypto.calls).toContain(`verifySpaceChain:${SPACE}`);
+  });
+
+  it('keeps the promotions it was given when the chain view reports none, and takes new ones', async () => {
+    const { deps, anchors } = setup(view({ owners: { [ME]: 'aA' } }));
+    await anchors.save(ME, SPACE, { seq: 3, epoch: 1, links: ['l0', 'l1', 'l2', 'l3'], promotions: [[LEE, 'aA']] });
+    await checkSpaceChain(deps, SPACE, ME);
+    expect((await anchors.load(ME, SPACE))?.promotions).toEqual([[LEE, 'aA']]);
+    const later = setup(view({ owners: { [ME]: 'aA' }, promotions: [[THEO, 'Yg']] }));
+    await checkSpaceChain({ ...later.deps, anchors }, SPACE, ME);
+    expect((await anchors.load(ME, SPACE))?.promotions).toEqual([[THEO, 'Yg']]);
+  });
+
+  it('writes an anchor kept before owners existed again, with the owners of the first verified chain', async () => {
+    const owned = view({ owners: { [ME]: 'aA', [LEE]: 'bB' }, promotions: [[LEE, 'cC']] });
+    const { deps, anchors } = setup(owned);
+    await anchors.save(ME, SPACE, { seq: 4, epoch: 1, links: owned.links });
+    expect((await checkSpaceChain(deps, SPACE, ME)).kind).toBe('verified');
+    expect(await anchors.load(ME, SPACE)).toEqual({
+      seq: 4,
+      epoch: 1,
+      links: owned.links,
+      owners: { [ME]: 'aA', [LEE]: 'bB' },
+      promotions: [[LEE, 'cC']],
+    });
+  });
+
+  it('writes it again too when this unlock already holds the chain and nothing came past its head', async () => {
+    const owned = view({ owners: { [ME]: 'aA' } });
+    const { deps, anchors } = setup(owned);
+    await checkSpaceChain(deps, SPACE, ME);
+    // The stored anchor is the old one again (a store from before the upgrade, say).
+    await anchors.save(ME, SPACE, { seq: 4, epoch: 1, links: owned.links }, true);
+    expect((await anchors.load(ME, SPACE))?.owners).toBeUndefined();
+    expect((await checkSpaceChain(deps, SPACE, ME)).kind).toBe('verified');
+    expect((await anchors.load(ME, SPACE))?.owners).toEqual({ [ME]: 'aA' });
+  });
+
+  it('still reads an anchor kept without owners', async () => {
+    const { deps, anchors } = setup(view());
+    await anchors.save(ME, SPACE, { seq: 2, epoch: 1, links: ['l0', 'l1', 'l2'] });
+    expect((await checkSpaceChain(deps, SPACE, ME)).kind).toBe('verified');
+    // A chain view with no owners keeps an anchor with none, as before.
+    expect((await anchors.load(ME, SPACE))?.owners).toBeUndefined();
+  });
+
+  it('does not read a space the account’s signed manifest lists as chained as one with none', async () => {
+    // A browser with no history of the space: nothing seen, no anchor. The server serves no chain.
+    const { deps, crypto } = setup();
+    const listed: SpaceDeps = { ...deps, chainedSpaces: async () => new Set([SPACE]) };
+    expect(await checkSpaceChain(listed, SPACE, ME)).toEqual({
+      kind: 'unverified',
+      reason: 'chain withheld',
+      seq: null,
+    });
+    expect(crypto.calls).toContain(`expectChained:${SPACE}`);
+    // The worker was told before it read what the server served.
+    expect(crypto.calls.indexOf(`expectChained:${SPACE}`)).toBeLessThan(
+      crypto.calls.indexOf(`verifySpaceChain:${SPACE}`),
+    );
+    // A space the list does not name is as before, and so is one when the list is empty.
+    expect(await checkSpaceChain(listed, THEO, ME)).toEqual({ kind: 'unchained' });
+    expect(await checkSpaceChain({ ...deps, chainedSpaces: async () => new Set() }, THEO, ME)).toEqual({
+      kind: 'unchained',
+    });
+  });
+
+  it('is not taken for a space with none when the list can not be read', async () => {
+    const { deps } = setup();
+    const unreadable: SpaceDeps = {
+      ...deps,
+      chainedSpaces: async () => {
+        throw new Error('offline');
+      },
+    };
+    expect(await checkSpaceChain(unreadable, SPACE, ME)).toEqual({
+      kind: 'unverified',
+      reason: 'unreachable',
+      seq: null,
+    });
+  });
+
+  it('tells the manifest of a chain it verified and first-contacted, and of nothing else', async () => {
+    const noted = vi.fn();
+    const { deps } = setup(view());
+    expect((await checkSpaceChain({ ...deps, noteChained: noted }, SPACE, ME)).kind).toBe('verified');
+    expect(noted).toHaveBeenCalledWith(SPACE);
+    noted.mockClear();
+    const waiting = setup(view({ trusted: false, firstContact: { kind: 'pick', owners: [] } }));
+    await checkSpaceChain({ ...waiting.deps, noteChained: noted }, SPACE, ME);
+    expect(noted).not.toHaveBeenCalled();
+  });
+
   it('remembers a refused chain too', async () => {
     const { deps, anchors, crypto } = setup({ ok: false, reason: 'forked', seq: 3 });
     await checkSpaceChain(deps, SPACE, ME);

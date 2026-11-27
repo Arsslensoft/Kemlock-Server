@@ -633,6 +633,12 @@ const CONFIRM: &str = include_str!("../../../test-vectors/confirm.json");
 
 /// A session for a freshly made account, unlocked with its private keys, and its public bundle.
 fn open_account(account_id: [u8; 16]) -> (Session, Bundle) {
+    let (session, bundle, _) = open_account_signed(account_id);
+    (session, bundle)
+}
+
+/// As [`open_account`], with the bundle's own signature as the server would hold it.
+fn open_account_signed(account_id: [u8; 16]) -> (Session, Bundle, Vec<u8>) {
     let mut session = Session::new();
     let master = session.insert_master([1; 32]).expect("handle");
     let export = session.insert_export([2; 64]).expect("handle");
@@ -652,7 +658,7 @@ fn open_account(account_id: [u8; 16]) -> (Session, Bundle) {
         )
         .expect("unlock");
     let bundle = Bundle::from_bytes(&account.public_bundle).expect("bundle");
-    (session, bundle)
+    (session, bundle, account.bundle_signature)
 }
 
 /// A session unlocked with the given private keys, as the vectors have them.
@@ -746,41 +752,218 @@ fn the_root_key_is_sealed_to_a_device_for_one_request_only() {
 }
 
 #[wasm_bindgen_test]
-fn the_root_key_is_sealed_to_an_emergency_contact_by_their_id() {
+fn the_root_key_is_sealed_to_an_emergency_contact_only_from_their_signed_bundle() {
     let (grantor, _) = open_account([0x41; 16]);
-    let (_, contact) = open_account([0x42; 16]);
+    let (_, contact, signature) = open_account_signed([0x42; 16]);
+    let bundle = contact.to_bytes();
     let boxed = grantor
-        .seal_root_key(
-            contact.kx1_public.as_bytes(),
-            "emergency-access",
-            &contact.account_id,
-        )
+        .seal_emergency_key(&bundle, &signature, &contact.account_id)
         .expect("seal");
     assert_eq!(boxed.len(), sealed_box::OVERHEAD + 64);
-    // 16 bytes only: the request id of a device approval has no place here.
+
+    // The generic op no longer seals under this context, whatever key it is given.
     assert_eq!(
         grantor.seal_root_key(
             contact.kx1_public.as_bytes(),
             "emergency-access",
-            &[contact.account_id, [0; 16]].concat()
+            &contact.account_id
         ),
+        Err(Error::Invalid)
+    );
+    // A signature that is not the bundle's own, a bundle that was changed after it was signed and
+    // one that isn't a bundle all fail.
+    let mut flipped = signature.clone();
+    flipped[0] ^= 1;
+    assert_eq!(
+        grantor.seal_emergency_key(&bundle, &flipped, &contact.account_id),
+        Err(Error::Invalid)
+    );
+    let (_, other, other_signature) = open_account_signed([0x43; 16]);
+    assert_eq!(
+        grantor.seal_emergency_key(&bundle, &other_signature, &contact.account_id),
+        Err(Error::Invalid)
+    );
+    let mut changed = bundle.clone();
+    let last = changed.len() - 1;
+    changed[last] ^= 1;
+    assert!(
+        grantor
+            .seal_emergency_key(&changed, &signature, &contact.account_id)
+            .is_err()
+    );
+    assert!(
+        grantor
+            .seal_emergency_key(&bundle[1..], &signature, &contact.account_id)
+            .is_err()
+    );
+    // The bundle must be the grantee's: another person's signed bundle, a short id and the
+    // grantor's own account are refused.
+    assert_eq!(
+        grantor.seal_emergency_key(&other.to_bytes(), &other_signature, &contact.account_id),
+        Err(Error::Invalid)
+    );
+    assert_eq!(
+        grantor.seal_emergency_key(&bundle, &signature, &contact.account_id[..15]),
+        Err(Error::Invalid)
+    );
+    let (self_grantor, own, own_signature) = open_account_signed([0x44; 16]);
+    assert_eq!(
+        self_grantor.seal_emergency_key(&own.to_bytes(), &own_signature, &own.account_id),
         Err(Error::Invalid)
     );
     let locked = Session::new();
     assert_eq!(
-        locked.seal_root_key(
-            contact.kx1_public.as_bytes(),
-            "emergency-access",
-            &contact.account_id
-        ),
+        locked.seal_emergency_key(&bundle, &signature, &contact.account_id),
         Err(Error::Locked)
     );
+}
+
+
+#[wasm_bindgen_test]
+fn keys_opened_from_an_unsigned_box_wait_for_a_person_before_anything_is_sealed_under_them() {
+    let (mut maker, _) = open_account([0x71; 16]);
+    let (mut member, member_bundle) = open_account([0x72; 16]);
+    let (space, collection) = ([0x73; 16], [0x74; 16]);
+    let made = maker
+        .new_space(&space, &collection, "Family", "Everyone")
+        .expect("make the space");
+    let member_kx = member_bundle.kx1_public.as_bytes();
+    let member_id = member_bundle.account_id;
+    let for_space = maker
+        .seal_space_key_to(&space, member_kx, &member_id)
+        .expect("seal the space key");
+    let for_collection = maker
+        .seal_collection_key_to(&space, &collection, member_kx, &member_id)
+        .expect("seal the collection key");
+
+    // Keys taken on first sight from boxes that carry no signature open for reading ...
+    member
+        .open_space_unsigned(&space, 1, &for_space.sealed)
+        .expect("open the space key");
+    member
+        .open_collection_unsigned(&space, &collection, 1, &for_collection.sealed)
+        .expect("open the collection key");
+    assert_eq!(
+        member
+            .open_name(&space, 1, NameKind::Space, &space, &made.name)
+            .expect("the name opens"),
+        "Family"
+    );
+    // ... and nothing is sealed or written under them.
+    assert_eq!(
+        member.seal_name(&space, 1, NameKind::Space, &space, "Mine"),
+        Err(Error::Invalid)
+    );
+    assert!(
+        member
+            .seal_space_item(&space, &collection, &[0x75; 16], "login", 1, b"{}")
+            .is_err()
+    );
+    assert!(member.new_collection(&space, &[0x76; 16], "Other").is_err());
+    assert!(
+        member
+            .seal_space_key_to(&space, member_kx, &[0x77; 16])
+            .is_err()
+    );
+    assert!(
+        member
+            .seal_collection_key_to(&space, &collection, member_kx, &[0x77; 16])
+            .is_err()
+    );
+
+    // The person is shown the fingerprint of each key; a wrong last group changes nothing.
+    let shown = member
+        .provisional_fingerprints(&space)
+        .expect("fingerprints")
+        .expect("the space waits");
+    assert_eq!(shown.len(), 2);
+    assert!(shown[0].collection.is_none());
+    assert_eq!(shown[1].collection, Some(collection));
+    assert_ne!(shown[0].fingerprint, shown[1].fingerprint);
+    assert_eq!(shown[0].fingerprint.split(' ').count(), 12);
+    assert_eq!(
+        member.accept_provisional_keys(&space, "not the digits"),
+        Err(Error::Invalid)
+    );
+    assert!(
+        member
+            .seal_name(&space, 1, NameKind::Space, &space, "Mine")
+            .is_err()
+    );
+    // A space that waits for nobody has nothing to accept.
+    assert_eq!(
+        member.accept_provisional_keys(&[0x99; 16], "12345"),
+        Err(Error::Invalid)
+    );
+
+    let last = shown[0]
+        .fingerprint
+        .rsplit(' ')
+        .next()
+        .expect("a group")
+        .to_owned();
+    member
+        .accept_provisional_keys(&space, &format!(" {last} "))
+        .expect("the right last group settles the space");
+    assert_eq!(member.provisional_fingerprints(&space), Ok(None));
+    member
+        .seal_name(&space, 1, NameKind::Space, &space, "Mine")
+        .expect("settled keys seal");
+    member
+        .seal_space_item(&space, &collection, &[0x75; 16], "login", 1, b"{}")
+        .expect("settled keys write");
+
+    // Keys opened from signed boxes never wait.
+    let (mut other, other_bundle) = open_account([0x78; 16]);
+    let signed = maker
+        .seal_space_key_to(&space, other_bundle.kx1_public.as_bytes(), &other_bundle.account_id)
+        .expect("seal");
+    other.open_space(&space, 1, &signed.sealed).expect("open");
+    assert_eq!(other.provisional_fingerprints(&space), Ok(None));
+}
+
+#[wasm_bindgen_test]
+fn a_space_the_account_knows_is_chained_is_not_taken_as_unchained_when_no_chain_is_served() {
+    let (mut maker, _) = open_account([0x61; 16]);
+    let (mut member, member_bundle) = open_account([0x62; 16]);
+    let (space, collection) = ([0x63; 16], [0x64; 16]);
+    maker
+        .new_space(&space, &collection, "Family", "Everyone")
+        .expect("make the space");
+    let boxed = maker
+        .seal_space_key_to(
+            &space,
+            member_bundle.kx1_public.as_bytes(),
+            &member_bundle.account_id,
+        )
+        .expect("seal");
+
+    // Not known to be chained: a server that serves no chain is a space with none.
+    let view = verdict_json(&mut member, &space, &[]);
+    assert_eq!(view["ok"], true);
+    assert_eq!(view["chained"], false);
+
+    member.expect_chained(&space).expect("expect");
+    // Known to be chained: serving none is the chain withheld, and the keys stay shut.
+    let refused = verdict_json(&mut member, &space, &[]);
+    assert_eq!(refused["ok"], false);
+    assert_eq!(refused["reason"], "chain withheld");
+    assert_eq!(
+        member.open_space(&space, 1, &boxed.sealed),
+        Err(Error::Invalid)
+    );
+    assert_eq!(
+        member.open_space_unsigned(&space, 1, &boxed.sealed),
+        Err(Error::Invalid)
+    );
+    let locked = Session::new();
+    assert!(locked.provisional_fingerprints(&space).is_err());
 }
 
 #[wasm_bindgen_test]
 fn a_released_emergency_key_opens_the_grantors_items_and_nothing_else() {
     let (grantor, _) = open_account([0x51; 16]);
-    let (mut grantee, grantee_bundle) = open_account([0x52; 16]);
+    let (mut grantee, grantee_bundle, grantee_signature) = open_account_signed([0x52; 16]);
     let item_id = [0x53u8; 16];
     let owner = Owner::user([0x51; 16]);
     let sealed = grantor
@@ -797,9 +980,9 @@ fn a_released_emergency_key_opens_the_grantors_items_and_nothing_else() {
     };
 
     let released = grantor
-        .seal_root_key(
-            grantee_bundle.kx1_public.as_bytes(),
-            "emergency-access",
+        .seal_emergency_key(
+            &grantee_bundle.to_bytes(),
+            &grantee_signature,
             &grantee_bundle.account_id,
         )
         .expect("seal");
@@ -842,13 +1025,9 @@ fn a_released_emergency_key_opens_the_grantors_items_and_nothing_else() {
             .is_err()
     );
     // A box sealed for another contact does not open.
-    let (_, other) = open_account([0x54; 16]);
+    let (_, other, other_signature) = open_account_signed([0x54; 16]);
     let not_mine = grantor
-        .seal_root_key(
-            other.kx1_public.as_bytes(),
-            "emergency-access",
-            &other.account_id,
-        )
+        .seal_emergency_key(&other.to_bytes(), &other_signature, &other.account_id)
         .expect("seal");
     assert!(grantee.open_emergency_key(&not_mine).is_err());
 
@@ -2974,6 +3153,36 @@ fn marked_keys_are_replaced_with_their_names_and_items_sealed_again() {
     );
     let view = verdict_json(&mut owner, &space, &chain);
     assert_eq!(view["space"]["marked"], true);
+
+    // While the keys are marked an item opens only when it is one this browser accepted before the
+    // mark (`accepted`): a revision that is not is held, not opened, because the member who was taken
+    // out still holds the key and could have made it.
+    {
+        let owner_ref = Owner::space(space);
+        let held = SealedItemRef {
+            id: &item,
+            owner: &owner_ref,
+            kind: "login",
+            revision: 1,
+            ciphertext: &sealed.ciphertext,
+            item_key: &sealed.item_key,
+            key_version: Some(sealed.key_version),
+        };
+        assert_eq!(
+            owner
+                .open_space_item_as(&space, &general, &held, true)
+                .expect("accepted before the mark: it opens")
+                .as_slice(),
+            br#"{"name":"vpn"}"#
+        );
+        assert_eq!(
+            owner.open_space_item_as(&space, &general, &held, false),
+            Err(Error::Invalid)
+        );
+        // The way the page reads what it already holds, and a key replacement reads items to seal
+        // again, is as accepted.
+        assert!(owner.open_space_item(&space, &general, &held).is_ok());
+    }
 
     // An item that doesn't open, beside the one sealed above.
     let junk = [0xC6u8; 16];

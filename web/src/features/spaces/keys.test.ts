@@ -56,6 +56,8 @@ function deps(spaceView: SpaceViewDto) {
     verifySpaceChain: vi.fn(async () => NO_CHAIN),
     openSpace: vi.fn(async () => undefined),
     openCollection: vi.fn(async () => undefined),
+    // Nothing waits for a person to compare it.
+    provisionalKeys: vi.fn(async () => null),
     openName: vi.fn(async ({ ciphertext }: { ciphertext: Uint8Array }) =>
       new TextDecoder().decode(ciphertext).replace('name:', 'collection '),
     ),
@@ -135,6 +137,16 @@ describe('loadWritableCollections', () => {
     // C2 is view only, and C3 has no key copy for this account.
     expect(list.map((c) => c.collectionId)).toEqual([C1]);
     expect(list[0]).toMatchObject({ spaceId: SPACE, collectionName: `collection ${C1}` });
+  });
+
+  it('offers nothing of a space whose keys were taken on the server’s word and nobody compared', async () => {
+    const d = deps(view('owner', []));
+    vi.mocked(d.crypto.provisionalKeys).mockResolvedValueOnce([
+      { collection: null, version: 1, fingerprint: '11111 22222 33333 44444 55555 66666 77777 88888 99999 00000 12345 67890' },
+    ]);
+    expect(await loadWritableCollections(d)).toEqual([]);
+    // Compared (nothing waits any more): the same space offers its collections.
+    expect((await loadWritableCollections(d)).length).toBeGreaterThan(0);
   });
 
   it('skips a space that is not confirmed yet, and one whose keys do not open', async () => {

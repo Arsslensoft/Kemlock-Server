@@ -14,7 +14,7 @@ import { type PreparedPasskey, preparePasskey } from '@/lib/webauthn';
 import { type Fingerprint, checkedFingerprint } from '@/sharing/bundle';
 import { sharingCrypto } from '@/sharing/crypto';
 import type { EmergencyConfirmState } from './EmergencyCard';
-import { confirmEmergencyContact } from './emergencyModel';
+import { bundleIsGranteesOwn, confirmEmergencyContact } from './emergencyModel';
 import { useApiKey } from './useApiKey';
 import { useDeleteAccount } from './useDeleteAccount';
 import { useRecoveryKit } from './useRecoveryKit';
@@ -78,11 +78,15 @@ export default function Security() {
     setConfirming({ view, fingerprint: undefined });
     let fingerprint: Fingerprint | null = null;
     try {
-      fingerprint = view.contactKeys
-        ? await checkedFingerprint(decodeB64(view.contactKeys.publicBundle), (bundle) =>
-            vaultCrypto.fingerprint(bundle),
-          )
-        : null;
+      const keys = view.contactKeys;
+      // A bundle that isn't signed by its own key, or isn't the grantee's, gets no fingerprint to
+      // compare: nothing is sealed to it.
+      fingerprint =
+        keys &&
+        bundleIsGranteesOwn(view) &&
+        (await vaultCrypto.verifyBundle(decodeB64(keys.publicBundle), decodeB64(keys.bundleSignature)))
+          ? await checkedFingerprint(decodeB64(keys.publicBundle), (bundle) => vaultCrypto.fingerprint(bundle))
+          : null;
     } catch {
       fingerprint = null;
     }

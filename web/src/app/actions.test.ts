@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fakeCalls } from '@/test/fake-crypto';
-import { SERVER_SIGN_OUT_MS, forgetEndedSession, lockVault, signOut } from './actions';
+import { ApiError } from '@/api/errors';
+import { REVOKE_RETRY_MS, SERVER_SIGN_OUT_MS, forgetEndedSession, keepRevoking, lockVault, signOut } from './actions';
 import { api, queryClient, session } from './services';
 
 beforeEach(() => queryClient.clear());
@@ -99,5 +100,79 @@ describe('signing out', () => {
       expect(send).not.toHaveBeenCalled();
       send.mockRestore();
     });
+  });
+});
+
+describe('a sign-out the server did not answer', () => {
+  const held = () => ({
+    access: 'at-1',
+    refresh: 'rt-1',
+    accessExpiresAt: Date.now() + 3_600_000,
+    refreshExpiresAt: Date.now() + 7_200_000,
+  });
+
+  it('asks the server again in the background, with the tokens the session had', async () => {
+    vi.useFakeTimers();
+    const fetched = vi.fn(async (_url: string, _init?: RequestInit) => new Response(null, { status: 204 }));
+    vi.stubGlobal('fetch', fetched);
+    const send = vi.spyOn(api, 'send').mockImplementation(() => new Promise<void>(() => undefined));
+    try {
+      session.signedIn({ email: 'sam@example.co', userId: 'u', deviceId: 'device-1', admin: false });
+      session.tokenStore.set(held());
+      const done = signOut();
+      await vi.advanceTimersByTimeAsync(SERVER_SIGN_OUT_MS);
+      await done;
+      // Signed out here at once, with the tokens gone from the page's own client.
+      expect(session.getState().status).toBe('signed-out');
+      expect(session.tokenStore.get()).toBeUndefined();
+      expect(fetched).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(REVOKE_RETRY_MS[0] ?? 0);
+      expect(fetched).toHaveBeenCalledOnce();
+      const [url, init] = fetched.mock.calls[0] ?? [];
+      expect(url).toBe('/kem/v1/auth/sign-out');
+      expect((init?.headers as Record<string, string>)['Authorization']).toBe('DPoP at-1');
+      // It worked: nothing more is asked.
+      await vi.advanceTimersByTimeAsync(REVOKE_RETRY_MS.reduce((a, b) => a + b, 0));
+      expect(fetched).toHaveBeenCalledOnce();
+    } finally {
+      send.mockRestore();
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps trying after a failure, and stops at the server’s answer', async () => {
+    vi.useFakeTimers();
+    try {
+      const attempt = vi
+        .fn<() => Promise<unknown>>()
+        .mockRejectedValueOnce(new Error('offline'))
+        .mockRejectedValueOnce(new ApiError(503, undefined))
+        .mockRejectedValueOnce(new ApiError(401, undefined));
+      keepRevoking(attempt, [10, 20, 30, 40]);
+      await vi.advanceTimersByTimeAsync(10);
+      expect(attempt).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(20);
+      expect(attempt).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(30);
+      expect(attempt).toHaveBeenCalledTimes(3);
+      // A 401 says the session is gone: that is the end.
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(attempt).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('gives up when the delays run out', async () => {
+    vi.useFakeTimers();
+    try {
+      const attempt = vi.fn<() => Promise<unknown>>().mockRejectedValue(new Error('offline'));
+      keepRevoking(attempt, [10, 10]);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(attempt).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

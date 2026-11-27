@@ -8,6 +8,7 @@
 // below adapts it, and under Vitest `@/crypto-port` is aliased to the fake in src/test.
 import { crypto as worker } from '@/crypto';
 import type {
+  BitwardenHashInput,
   CryptoApi,
   Handle,
   ItemWriteFields,
@@ -118,6 +119,12 @@ export interface OpenSpaceItemInput {
   keyVersion: number;
   ciphertext: Uint8Array;
   itemKey: Uint8Array;
+  /**
+   * Whether this revision is one this browser accepted before the key was marked (at or below its
+   * signed floor or the accepted manifest). An item under a marked key that is not is held, not
+   * opened. Left out, it is taken as accepted.
+   */
+  accepted?: boolean;
 }
 
 /** A new device's one-time key for an approval request. */
@@ -187,6 +194,8 @@ export interface CryptoPort {
   /** The password proof the server checks (32 bytes): Argon2id bound to the Send. */
   sendProof(id: string, linkKey: string, password: string): Promise<Uint8Array>;
   /** A file as the `KMA1` file a file Send stores. */
+  /** The Bitwarden master password hash (standard base64) for an invitation's accept: the password stays in the worker. */
+  bitwardenPasswordHash(input: BitwardenHashInput): Promise<string>;
   sealSendFile(linkKey: string, bytes: Uint8Array): Promise<Uint8Array>;
   openSendFile(linkKey: string, file: Uint8Array): Promise<Uint8Array>;
   /** A public bundle's fingerprint: 12 groups of 5 digits (docs/crypto.md). */
@@ -520,6 +529,7 @@ export function fromWorker(api: CryptoApi): CryptoPort {
     sealSendFile: (linkKey, bytes) => api.sealSendFile(linkKey, bytes),
     openSendFile: (linkKey, file) => api.openSendFile(linkKey, file),
     fingerprint: (publicBundle) => api.fingerprint(encodeB64(publicBundle)),
+    bitwardenPasswordHash: (input) => api.bitwardenPasswordHash(input),
     verifyBundle: (publicBundle, bundleSignature) =>
       api.verifyBundle(encodeB64(publicBundle), encodeB64(bundleSignature)),
     lock: () => api.lock(),

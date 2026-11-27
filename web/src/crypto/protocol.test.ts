@@ -2,6 +2,7 @@
 // The worker's protocol, with the WebAssembly module mocked: what the dispatcher passes to the
 // vault, how it shapes the answers, how it fails, and that requests are served one at a time.
 
+import { pbkdf2Sync } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { Dpop } from './dpop';
@@ -35,6 +36,7 @@ const REWRITE = {
 function mockVault(overrides: Partial<WasmVault> = {}): WasmVault {
   return {
     masterKey: vi.fn(() => 7),
+    bitwardenArgonHash: vi.fn(() => 'YWJj'),
     release: vi.fn(),
     opaqueRegisterStart: vi.fn(() => JSON.stringify({ state: 8, request: 'cmVxdWVzdA' })),
     opaqueRegisterFinish: vi.fn(() => JSON.stringify({ upload: 'dXA', exportKey: 9 })),
@@ -70,6 +72,7 @@ function mockVault(overrides: Partial<WasmVault> = {}): WasmVault {
     sendSealFile: vi.fn((_key: string, plain: Uint8Array) => new Uint8Array([...plain, 1])),
     sendOpenFile: vi.fn((_key: string, file: Uint8Array) => file.slice(0, -1)),
     sealRootKey: vi.fn(() => 'cm9vdC1ib3g'),
+    sealEmergencyKey: vi.fn(() => 'ZW1lcmdlbmN5'),
     sealRootKeyForRecovery: vi.fn(() => 'cmVjb3Zlcnk'),
     confirmationStatement: vi.fn(() => 'c3RhdGVtZW50'),
     signStatement: vi.fn(() => 'c2ln'),
@@ -145,6 +148,9 @@ function mockVault(overrides: Partial<WasmVault> = {}): WasmVault {
     sealLocal: vi.fn(() => 'c2VhbGVk'),
     openLocal: vi.fn(() => '{"seq":1}'),
     acceptFirstContact: vi.fn(),
+    expectChained: vi.fn(),
+    provisionalKeys: vi.fn((): string | undefined => undefined),
+    acceptProvisionalKeys: vi.fn(),
     openChainKey: vi.fn(),
     rotationStart: vi.fn(() =>
       JSON.stringify({
@@ -229,6 +235,55 @@ describe('the dispatcher', () => {
     const handle = await dispatch('masterKey', ['café', KDF]);
     expect(handle).toBe(7);
     expect(vault.masterKey).toHaveBeenCalledWith('café', 65536, 3, 4, KDF.salt);
+  });
+
+  it('makes the Bitwarden hash of a PBKDF2 account as the server checks it, in the worker', async () => {
+    const { dispatch } = setup([mockVault()]);
+    // The master key is PBKDF2(password, lower-cased email, n); the hash is PBKDF2(master key, password, 1).
+    const master = pbkdf2Sync('pässword', 'sam@example.co', 5000, 32, 'sha256');
+    const expected = pbkdf2Sync(master, 'pässword', 1, 32, 'sha256').toString('base64');
+    const kdf = { type: 0 as const, iterations: 5000 };
+    expect(await dispatch('bitwardenPasswordHash', [{ password: 'pässword', email: ' Sam@Example.CO ', kdf }])).toBe(
+      expected,
+    );
+    // The password is not NFC-normalised here: it is hashed as typed, as Bitwarden's clients do.
+    const decomposed = 'pau0308ssword';
+    const other = pbkdf2Sync(pbkdf2Sync(decomposed, 'sam@example.co', 5000, 32, 'sha256'), decomposed, 1, 32, 'sha256');
+    expect(await dispatch('bitwardenPasswordHash', [{ password: decomposed, email: 'sam@example.co', kdf }])).toBe(
+      other.toString('base64'),
+    );
+  });
+
+  it('passes an Argon2id account to the module in KiB with the address lower-cased, and answers standard base64', async () => {
+    const vault = mockVault();
+    const { dispatch } = setup([vault]);
+    const kdf = { type: 1 as const, iterations: 3, memory: 64, parallelism: 4 };
+    expect(await dispatch('bitwardenPasswordHash', [{ password: 'pw', email: 'Sam@Example.CO', kdf }])).toBe('YWJj');
+    expect(vault.bitwardenArgonHash).toHaveBeenCalledWith('pw', 'sam@example.co', 65536, 3, 4);
+    vault.bitwardenArgonHash = vi.fn(() => '-_-_');
+    expect(await dispatch('bitwardenPasswordHash', [{ password: 'pw', email: 'a@b.c', kdf }])).toBe('+/+/');
+  });
+
+  it('refuses a KDF a hostile prelogin could ask for, before any work is done', async () => {
+    const vault = mockVault();
+    const { dispatch } = setup([vault]);
+    const bad = [
+      { type: 0 as const, iterations: 4999 },
+      { type: 0 as const, iterations: 2_000_001 },
+      { type: 0 as const, iterations: 1.5 },
+      { type: 2 as unknown as 0, iterations: 600000 },
+      { type: 1 as const, iterations: 3 },
+      { type: 1 as const, iterations: 3, memory: 64 },
+    ];
+    for (const kdf of bad) {
+      await expect(dispatch('bitwardenPasswordHash', [{ password: 'pw', email: 'a@b.c', kdf }])).rejects.toMatchObject({
+        code: 'invalid',
+      });
+    }
+    await expect(
+      dispatch('bitwardenPasswordHash', [{ password: 'pw', email: '  ', kdf: { type: 0, iterations: 600000 } }]),
+    ).rejects.toMatchObject({ code: 'invalid' });
+    expect(vault.bitwardenArgonHash).not.toHaveBeenCalled();
   });
 
   it('wipes a byte password after reading it', async () => {
@@ -347,6 +402,8 @@ describe('the dispatcher', () => {
     const { dispatch } = setup([vault]);
     expect(await dispatch('sealRootKey', ['a2V5', 'device-approval', 'YWFk'])).toBe('cm9vdC1ib3g');
     expect(vault.sealRootKey).toHaveBeenCalledWith('a2V5', 'device-approval', 'YWFk');
+    expect(await dispatch('sealEmergencyKey', ['YnVu', 'c2ln', UUID])).toBe('ZW1lcmdlbmN5');
+    expect(vault.sealEmergencyKey).toHaveBeenCalledWith('YnVu', 'c2ln', UUID);
 
     const facts = { space: UUID, member: UUID, memberKeyVersion: 2, fingerprint: 'ZnA' };
     expect(await dispatch('confirmationStatement', [facts])).toBe('c3RhdGVtZW50');
@@ -425,9 +482,15 @@ describe('the dispatcher', () => {
     });
 
     await dispatch('openSpace', [{ spaceId: UUID, keyVersion: 1, sealed: 'c2s' }]);
-    expect(vault.openSpace).toHaveBeenCalledWith(UUID, 1, 'c2s');
+    expect(vault.openSpace).toHaveBeenCalledWith(UUID, 1, 'c2s', undefined);
+    await dispatch('openSpace', [{ spaceId: UUID, keyVersion: 1, sealed: 'c2s', unsigned: true }]);
+    expect(vault.openSpace).toHaveBeenLastCalledWith(UUID, 1, 'c2s', true);
     await dispatch('openCollection', [{ spaceId: UUID, collectionId: UUID, keyVersion: 2, sealed: 'Y2s' }]);
-    expect(vault.openCollection).toHaveBeenCalledWith(UUID, UUID, 2, 'Y2s');
+    expect(vault.openCollection).toHaveBeenCalledWith(UUID, UUID, 2, 'Y2s', undefined);
+    await dispatch('openCollection', [
+      { spaceId: UUID, collectionId: UUID, keyVersion: 2, sealed: 'Y2s', unsigned: true },
+    ]);
+    expect(vault.openCollection).toHaveBeenLastCalledWith(UUID, UUID, 2, 'Y2s', true);
 
     // A new chained space and one change to it: the request comes back parsed, and the time is checked.
     const created = await dispatch('newChainedSpace', [
@@ -491,6 +554,13 @@ describe('the dispatcher', () => {
     expect(vault.openLocal).toHaveBeenCalledWith('anchor/x', 'c2VhbGVk');
     await dispatch('acceptFirstContact', [UUID]);
     expect(vault.acceptFirstContact).toHaveBeenCalledWith(UUID);
+    await dispatch('expectChained', [UUID]);
+    expect(vault.expectChained).toHaveBeenCalledWith(UUID);
+    expect(await dispatch('provisionalKeys', [UUID])).toBeNull();
+    vault.provisionalKeys = vi.fn(() => JSON.stringify([{ collection: null, version: 1, fingerprint: '12345' }]));
+    expect(await dispatch('provisionalKeys', [UUID])).toEqual([{ collection: null, version: 1, fingerprint: '12345' }]);
+    await dispatch('acceptProvisionalKeys', [UUID, '12345']);
+    expect(vault.acceptProvisionalKeys).toHaveBeenCalledWith(UUID, '12345');
     await dispatch('openChainKey', [{ spaceId: UUID, key: 'space', servedVersion: 2, sealed: 'Ym94' }]);
     expect(vault.openChainKey).toHaveBeenCalledWith(UUID, 'space', 2, 'Ym94', undefined);
     const list = [{ bundleVersion: 1, key: 'space', member: UUID, sealHash: 'aGFzaA', version: 2 }];
@@ -556,10 +626,10 @@ describe('the dispatcher', () => {
       }),
     });
     const { dispatch } = setup([vault]);
-    await expect(dispatch('sealRootKey', ['a2V5', 'emergency-access', 'YWFk'])).rejects.toBeInstanceOf(Error);
+    await expect(dispatch('sealRootKey', ['a2V5', 'device-approval', 'YWFk'])).rejects.toBeInstanceOf(Error);
     const codes: string[] = [];
     for (const call of [
-      () => dispatch('sealRootKey', ['a2V5', 'emergency-access', 'YWFk']),
+      () => dispatch('sealRootKey', ['a2V5', 'device-approval', 'YWFk']),
       () =>
         dispatch('openName', [{ spaceId: UUID, keyVersion: 1, kind: 'space', id: UUID, ciphertext: 'Y3Q' }]),
     ]) {
@@ -797,7 +867,22 @@ describe('the dispatcher', () => {
       },
     ]);
     expect(json).toBe('{"name":"vpn"}');
-    expect(vault.openSpaceItem).toHaveBeenCalledWith(UUID, UUID, UUID, 'login', 3n, 'c2k', 'a2s', 2);
+    expect(vault.openSpaceItem).toHaveBeenCalledWith(UUID, UUID, UUID, 'login', 3n, 'c2k', 'a2s', 2, undefined);
+    // A revision not known to be accepted is passed on as such, so a marked key holds it.
+    await dispatch('openSpaceItem', [
+      {
+        spaceId: UUID,
+        collectionId: UUID,
+        id: UUID,
+        kind: 'login',
+        revision: 4,
+        keyVersion: 2,
+        ciphertext: 'c2k',
+        itemKey: 'a2s',
+        accepted: false,
+      },
+    ]);
+    expect(vault.openSpaceItem).toHaveBeenLastCalledWith(UUID, UUID, UUID, 'login', 4n, 'c2k', 'a2s', 2, false);
   });
 
   it('signs and checks manifests in the module, with the manifest and signature as they are', async () => {

@@ -110,18 +110,19 @@ describe('the link mailed to a new address', () => {
 });
 
 describe('the links of an invitation or a sign-up', () => {
-  it('need no sign-in and keep what they carry', async () => {
+  it('need no sign-in and keep their values in the fragment', async () => {
     for (const status of ['signed-out', 'locked', 'unlocked'] as const) {
-      const org = await visit('/accept-organization?organizationId=o&organizationUserId=u&token=a.b', status);
+      const org = await visit('/accept-organization#organizationId=o&organizationUserId=u&token=a.b', status);
       expect(org.pathname, status).toBe('/accept-organization');
-      expect(org.search['organizationUserId'], status).toBe('u');
-      expect(org.search['token'], status).toBe('a.b');
-      const emergency = await visit('/accept-emergency?id=g&token=t', status);
+      expect(org.router.state.location.hash, status).toContain('token=a.b');
+      // The page reads the fragment itself; nothing of it is read as a search.
+      expect(org.search['token'], status).toBeUndefined();
+      const emergency = await visit('/accept-emergency#id=g&token=t', status);
       expect(emergency.pathname, status).toBe('/accept-emergency');
-      expect(emergency.search['id'], status).toBe('g');
-      const signup = await visit('/finish-signup?email=a%40b.c&token=t', status);
+      expect(emergency.router.state.location.hash, status).toContain('id=g');
+      const signup = await visit('/finish-signup#email=a%40b.c&token=t', status);
       expect(signup.pathname, status).toBe('/finish-signup');
-      expect(signup.search['email'], status).toBe('a@b.c');
+      expect(signup.router.state.location.hash, status).toContain('email=a%40b.c');
     }
   });
 });

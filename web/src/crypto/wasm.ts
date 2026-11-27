@@ -5,6 +5,8 @@
 /** The `Vault` class of crates/kemlock-wasm/src/wasm.rs. Methods that return several values
  * return one JSON string. Failures throw an `Error` whose message is `invalid` or `locked`. */
 export interface WasmVault {
+  /** The Bitwarden hash for an Argon2id account, base64url (the worker makes the PBKDF2 ones itself). */
+  bitwardenArgonHash(password: string, email: string, memoryKib: number, iterations: number, parallelism: number): string;
   masterKey(
     password: string,
     memoryKib: number,
@@ -69,6 +71,7 @@ export interface WasmVault {
   sendOpenFile(linkKey: string, file: Uint8Array): Uint8Array;
   sealRootKey(recipientKx1: string, context: string, aad: string): string;
   sealRootKeyForRecovery(spaceId: string, recoveryKx1: string, keySeq: number): string;
+  sealEmergencyKey(publicBundle: string, bundleSignature: string, granteeId: string): string;
   confirmationStatement(
     spaceId: string,
     memberId: string,
@@ -160,10 +163,17 @@ export interface WasmVault {
     ciphertext: string,
     itemKey: string,
     keyVersion: number,
+    accepted?: boolean,
   ): string;
   newSpace(spaceId: string, collectionId: string, spaceName: string, collectionName: string): string;
-  openSpace(spaceId: string, keyVersion: number, sealed: string): void;
-  openCollection(spaceId: string, collectionId: string, keyVersion: number, sealed: string): void;
+  openSpace(spaceId: string, keyVersion: number, sealed: string, unsigned?: boolean): void;
+  openCollection(
+    spaceId: string,
+    collectionId: string,
+    keyVersion: number,
+    sealed: string,
+    unsigned?: boolean,
+  ): void;
   openName(spaceId: string, keyVersion: number, kind: string, id: string, ciphertext: string): string;
   sealName(spaceId: string, keyVersion: number, kind: string, id: string, name: string): string;
   newCollection(spaceId: string, collectionId: string, name: string): string;
@@ -203,6 +213,10 @@ export interface WasmVault {
   sealLocal(label: string, text: string): string;
   openLocal(label: string, sealed: string): string;
   acceptFirstContact(spaceId: string): void;
+  expectChained(spaceId: string): void;
+  /** JSON `[{collection, version, fingerprint}]`, or `undefined` when no key waits for a person. */
+  provisionalKeys(spaceId: string): string | undefined;
+  acceptProvisionalKeys(spaceId: string, typed: string): void;
   openChainKey(
     spaceId: string,
     key: string,

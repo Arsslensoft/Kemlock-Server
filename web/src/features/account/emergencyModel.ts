@@ -15,10 +15,19 @@ export function confirmEmergencyContact(
       throw new Error('the fingerprint worked out here differs from the worker’s');
     }
     if (!view.contactKeys) throw new Error('the contact has not shared their keys yet');
-    const parsed = parseBundle(decodeB64(view.contactKeys.publicBundle));
+    // The grant says who the contact is; without that there is nobody to hold the bundle against.
+    const granteeId = view.grant.granteeId;
+    if (!granteeId) throw new Error('the contact has no account yet');
+    const bundle = decodeB64(view.contactKeys.publicBundle);
+    const parsed = parseBundle(bundle);
     if (!parsed) throw new Error("the contact's key bundle can't be read");
-    const recipient = view.grant.granteeId ? uuidBytes(view.grant.granteeId) : parsed.accountId;
-    const sealed = await deps.crypto.sealRootKey(parsed.kx1, 'emergency-access', recipient);
+    const grantee = uuidBytes(granteeId);
+    if (!parsed.accountId.every((byte, i) => byte === grantee[i])) {
+      throw new Error("the contact's key bundle is another account's");
+    }
+    // The worker checks the bundle's own signature and the account again before it seals: it seals
+    // to no key the page chose.
+    const sealed = await deps.crypto.sealEmergencyKey(bundle, decodeB64(view.contactKeys.bundleSignature), granteeId);
     return deps.api.confirm(view.grant.id, encodeB64(sealed));
   })();
 }
@@ -34,4 +43,16 @@ export function daysLeft(dueAt: string | null, now: Date): number | null {
   const due = new Date(dueAt).getTime();
   if (Number.isNaN(due)) return null;
   return Math.max(0, Math.ceil((due - now.getTime()) / 86_400_000));
+}
+
+/** Whether the bundle the server holds for a contact is the grantee's: the account id in it is the grant's. */
+export function bundleIsGranteesOwn(view: GrantViewDto): boolean {
+  if (!view.contactKeys || !view.grant.granteeId) return false;
+  try {
+    const parsed = parseBundle(decodeB64(view.contactKeys.publicBundle));
+    const grantee = uuidBytes(view.grant.granteeId);
+    return parsed !== null && parsed.accountId.every((byte, i) => byte === grantee[i]);
+  } catch {
+    return false;
+  }
 }

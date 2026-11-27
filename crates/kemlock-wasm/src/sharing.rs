@@ -2,7 +2,8 @@
 //!
 //! - **Sealing the root key** (`docs/crypto.md`, sealed box): to a new device's one-time `kx1` key
 //!   under `"device-approval"`, with `aad = account id ‖ approval request id`, to an emergency
-//!   contact under `"emergency-access"`, with `aad = the contact's account id`, or to a space's
+//!   contact under `"emergency-access"` (`seal_emergency_key`, from a bundle it verifies), with
+//!   `aad = the contact's account id`, or to a space's
 //!   recovery key under `"account-recovery"`, with `aad = space id ‖ account id ‖ u64be(keySeq)`.
 //!   Only these three contexts, so the page can't have the root key sealed under a context that means something
 //!   else.
@@ -99,7 +100,8 @@ impl Session {
     /// - `"device-approval"`: `aad` is the account id followed by the approval request id (32
     ///   bytes), and the account id must be this account's, so an approval can't carry another
     ///   account's key.
-    /// - `"emergency-access"`: `aad` is the contact's account id (16 bytes).
+    /// - `"emergency-access"` is not sealed here: [`Session::seal_emergency_key`] does it, from a
+    ///   bundle it verifies itself, so the page can't have the root key sealed to a key of its choice.
     /// - `"account-recovery"`: `aad` is the space id, this account's id and `u64be(keySeq)` (40
     ///   bytes), and the account id must be this account's; the key is the space's recovery key.
     pub(crate) fn seal_root_key(
@@ -112,11 +114,6 @@ impl Session {
         match box_context {
             context::DEVICE_APPROVAL => {
                 if aad.len() != 32 || aad[..16] != unlocked.account_id {
-                    return Err(Error::Invalid);
-                }
-            }
-            context::EMERGENCY_ACCESS => {
-                if aad.len() != 16 {
                     return Err(Error::Invalid);
                 }
             }
@@ -151,6 +148,34 @@ impl Session {
         aad.extend_from_slice(&account);
         aad.extend_from_slice(&key_seq.to_be_bytes());
         self.seal_root_key(recovery_kx1, context::ACCOUNT_RECOVERY, &aad)
+    }
+
+    /// Seals the unlocked account's root key to an emergency contact, under `"emergency-access"`
+    /// with the aad `grantee` (the contact's account id, 16 bytes). The key sealed to is the one in
+    /// `bundle`, which must carry its own `sig1` signature (`bundle_signature`) and name `grantee`
+    /// as its account, and the grantee can't be this account. A page that holds no bundle of
+    /// the contact's making can therefore not have the root key sealed to a key it chose.
+    pub(crate) fn seal_emergency_key(
+        &self,
+        bundle: &[u8],
+        bundle_signature: &[u8],
+        grantee: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        let unlocked = self.unlocked()?;
+        let parsed = Bundle::from_bytes(bundle)?;
+        if grantee.len() != 16
+            || parsed.account_id.as_slice() != grantee
+            || parsed.account_id == unlocked.account_id
+            || parsed.verify_self_signature(bundle_signature).is_err()
+        {
+            return Err(Error::Invalid);
+        }
+        Ok(sealed_box::seal(
+            &parsed.kx1_public,
+            context::EMERGENCY_ACCESS,
+            grantee,
+            unlocked.root.as_bytes(),
+        )?)
     }
 
     /// The statement the unlocked account would sign: the confirmation of `facts`, with this

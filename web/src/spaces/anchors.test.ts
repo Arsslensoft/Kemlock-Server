@@ -63,6 +63,37 @@ describe('the anchors this browser keeps', () => {
     expect(await pins.load(B, A)).toBeUndefined();
   });
 
+  it('reads an anchor kept before owners and promotions existed, and one that has them', () => {
+    // An old anchor has neither, and is still an anchor.
+    expect(parseAnchor('{"seq":2,"epoch":1,"links":["a","b","c"]}')).toEqual({ seq: 2, epoch: 1, links: ['a', 'b', 'c'] });
+    const full = { ...at(1), owners: { [A]: 'aGFzaDE', [B]: 'aGFzaDI' }, promotions: [[A, 'aGFzaA']] as Array<[string, string]> };
+    expect(parseAnchor(JSON.stringify(full))).toEqual(full);
+    for (const bad of [
+      '{"seq":1,"epoch":1,"links":[],"owners":"x"}',
+      '{"seq":1,"epoch":1,"links":[],"owners":["a"]}',
+      '{"seq":1,"epoch":1,"links":[],"owners":null}',
+      '{"seq":1,"epoch":1,"links":[],"owners":{"a":1}}',
+      '{"seq":1,"epoch":1,"links":[],"promotions":[["a"]]}',
+      '{"seq":1,"epoch":1,"links":[],"promotions":[["a",1]]}',
+      '{"seq":1,"epoch":1,"links":[],"promotions":"x"}',
+    ]) {
+      expect(() => parseAnchor(bad), bad).toThrow();
+    }
+  });
+
+  it('keeps the owners and promotions with the anchor, through the sealed store too', async () => {
+    const full = { ...at(2), owners: { [A]: 'aGFzaDE' }, promotions: [[B, 'aGFzaA']] as Array<[string, string]> };
+    const store = memoryAnchorStore();
+    await store.save(A, SPACE, full);
+    expect(await store.load(A, SPACE)).toEqual(full);
+    const { anchors } = defaultStores({
+      sealLocal: async (_label: string, text: string) => text,
+      openLocal: async (_label: string, sealed: string) => sealed,
+    });
+    await anchors.save(A, SPACE, full);
+    expect(await anchors.load(A, SPACE)).toEqual(full);
+  });
+
   it('reads a kept anchor strictly: a damaged one is an error, never "none"', () => {
     expect(parseAnchor(JSON.stringify(at(2)))).toEqual(at(2));
     for (const bad of ['', 'null', '[]', '{"seq":1}', '{"seq":"1","epoch":1,"links":[]}', '{"seq":1,"epoch":1,"links":[1]}']) {

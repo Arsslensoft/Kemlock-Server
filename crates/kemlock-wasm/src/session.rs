@@ -728,6 +728,38 @@ mod tests {
     // `kx1` runs in WebAssembly (src/tests.rs); what is left here is backend-independent.
 
     #[test]
+    fn the_bitwarden_argon_hash_is_one_hmac_of_the_master_key_over_the_password() {
+        // Small settings keep it quick; 8 MiB is the floor.
+        let hash = bitwarden_argon_hash(b"pässword", b"sam@example.co", 8 * 1024, 2, 1).expect("hash");
+        let salt = kemlock_crypto::hash::sha256(b"sam@example.co");
+        let key = argon2id::master_key("pässword".as_bytes(), &salt, 8 * 1024, 2, 1).expect("key");
+        let mut data = "pässword".as_bytes().to_vec();
+        data.extend_from_slice(&[0, 0, 0, 1]);
+        assert_eq!(hash, kemlock_crypto::hash::hmac_sha256(&key, &data));
+        // The password and the address both matter.
+        assert_ne!(
+            hash,
+            bitwarden_argon_hash(b"password", b"sam@example.co", 8 * 1024, 2, 1).expect("hash")
+        );
+        assert_ne!(
+            hash,
+            bitwarden_argon_hash(b"pässword", b"alex@example.co", 8 * 1024, 2, 1).expect("hash")
+        );
+    }
+
+    #[test]
+    fn the_bitwarden_argon_hash_refuses_settings_a_hostile_server_could_ask_for() {
+        for (m, t, p) in [(1024, 2, 1), (8 * 1024, 1, 1), (8 * 1024, 11, 1), (8 * 1024, 2, 0), (8 * 1024, 2, 17), (1024 * 1024 + 1, 2, 1)] {
+            assert_eq!(
+                bitwarden_argon_hash(b"pw", b"a@b.c", m, t, p),
+                Err(Error::Invalid),
+                "{m} {t} {p}"
+            );
+        }
+        assert_eq!(bitwarden_argon_hash(b"pw", b"", 8 * 1024, 2, 1), Err(Error::Invalid));
+    }
+
+    #[test]
     fn weak_and_absurd_kdf_settings_are_refused() {
         let mut session = Session::new();
         let salt = [7u8; 16];
@@ -923,6 +955,44 @@ mod send_tests {
     }
 }
 
+
+/// The Argon2id settings a Bitwarden account may have, in KiB, passes and lanes: wider than a
+/// Kemlock account's (Bitwarden allows 15 MiB), and bounded so a hostile server's prelogin can't ask
+/// a browser for more than a gigabyte or an absurd run time.
+const BW_MEMORY_KIB: core::ops::RangeInclusive<u32> = 8 * 1024..=1024 * 1024;
+
+/// The Bitwarden master password hash of an account whose KDF is Argon2id, as the server checks it:
+/// the master key is `Argon2id(password, SHA-256(email), m, t, p)`, and the hash is the one PBKDF2
+/// round `PBKDF2-HMAC-SHA256(master key, password, 1)`, which for one 32-byte block is
+/// `HMAC-SHA256(master key, password ‖ 00000001)`. `email` is already trimmed and lower-cased. The
+/// password is never returned or kept; the master key is wiped.
+pub(crate) fn bitwarden_argon_hash(
+    password: &[u8],
+    email: &[u8],
+    memory_kib: u32,
+    iterations: u32,
+    parallelism: u32,
+) -> Result<[u8; 32], Error> {
+    if !BW_MEMORY_KIB.contains(&memory_kib)
+        || !ITERATIONS.contains(&iterations)
+        || !PARALLELISM.contains(&parallelism)
+        || email.is_empty()
+    {
+        return Err(Error::Invalid);
+    }
+    let salt = kemlock_crypto::hash::sha256(email);
+    let key = Zeroizing::new(argon2id::master_key(
+        password,
+        &salt,
+        memory_kib,
+        iterations,
+        parallelism,
+    )?);
+    let mut data = Zeroizing::new(Vec::with_capacity(password.len() + 4));
+    data.extend_from_slice(password);
+    data.extend_from_slice(&1u32.to_be_bytes());
+    Ok(kemlock_crypto::hash::hmac_sha256(key.as_slice(), &data))
+}
 #[cfg(test)]
 mod rewrap_tests {
     use super::*;

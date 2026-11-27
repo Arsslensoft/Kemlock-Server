@@ -14,6 +14,7 @@ const COLLECTION = '10111213-1415-1617-1819-1a1b1c1d1e1f';
 function worker() {
   return {
     sealRootKey: vi.fn(async (_kx: string, _context: string, _aad: string) => encodeB64(utf8('root-box'))),
+    sealEmergencyKey: vi.fn(async (_bundle: string, _signature: string, _grantee: string) => encodeB64(utf8('emergency-box'))),
     signStatement: vi.fn(async (_statement: string, _context: string) => encodeB64(utf8('signature'))),
     newSpace: vi.fn(async () => ({
       name: encodeB64(utf8('name')),
@@ -91,6 +92,17 @@ describe('sharing over the worker', () => {
     expect(api.sealRootKey).toHaveBeenCalledWith(encodeB64(kx), 'device-approval', encodeB64(aad));
   });
 
+  it('seals the root key to an emergency contact from their bundle, never from a bare key', async () => {
+    const api = worker();
+    const sharing = createSharingCrypto(api);
+    const bundle = new Uint8Array(8).fill(5);
+    const signature = new Uint8Array(4).fill(6);
+    const grantee = '00010203-0405-0607-0809-0a0b0c0d0e0f';
+    expect(fromUtf8(await sharing.sealEmergencyKey(bundle, signature, grantee))).toBe('emergency-box');
+    expect(api.sealEmergencyKey).toHaveBeenCalledWith(encodeB64(bundle), encodeB64(signature), grantee);
+    expect(api.sealRootKey).not.toHaveBeenCalled();
+  });
+
   it('signs a statement and returns the signature as bytes', async () => {
     const api = worker();
     const sharing = createSharingCrypto(api);
@@ -131,7 +143,7 @@ describe('sharing over the worker', () => {
     const api = worker();
     api.sealRootKey.mockRejectedValueOnce(new CryptoError('locked'));
     await expect(
-      createSharingCrypto(api).sealRootKey(new Uint8Array(1600), 'emergency-access', new Uint8Array(16)),
+      createSharingCrypto(api).sealRootKey(new Uint8Array(1600), 'device-approval', new Uint8Array(32)),
     ).rejects.toMatchObject({ code: 'locked' });
   });
 });
@@ -341,7 +353,7 @@ describe('spaces over the worker', () => {
   it('carries the sharing operations too', async () => {
     const spaces = createSpaceCrypto(worker());
     expect(spaces.available).toBe(true);
-    expect(fromUtf8(await spaces.sealRootKey(new Uint8Array(1600), 'emergency-access', new Uint8Array(16)))).toBe(
+    expect(fromUtf8(await spaces.sealRootKey(new Uint8Array(1600), 'device-approval', new Uint8Array(32)))).toBe(
       'root-box',
     );
     expect(decodeB64(encodeB64(new Uint8Array([1, 2, 3])))).toEqual(new Uint8Array([1, 2, 3]));

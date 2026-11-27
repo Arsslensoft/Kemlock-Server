@@ -32,6 +32,13 @@ export interface ChainDeps {
   anchors?: AnchorStore;
   /** Where it keeps the members whose fingerprint a person compared; in memory when left out. */
   pins?: PinStore;
+  /**
+   * The spaces the account's own signed manifest says have a chain: a space on the list that is
+   * served no chain is a chain withheld, not a space without one. Throws when it can't be read.
+   */
+  chainedSpaces?: (() => Promise<ReadonlySet<string>>) | undefined;
+  /** Told of a chain verified and trusted here, so that list gains the space. */
+  noteChained?: ((spaceId: string) => void) | undefined;
 }
 
 export type SpaceTrust =
@@ -53,9 +60,41 @@ function classify(view: ChainView): SpaceTrust {
   return view.trusted ? { kind: 'verified', view } : { kind: 'first-contact', view };
 }
 
-function anchorOf(view: ChainView): ChainAnchor | undefined {
+/**
+ * The anchor a verified chain gives: its head, epoch and links, with the owners at the head. The
+ * promotions are the view's when it reports them, else those of the anchor kept before, so the
+ * verifier gets back what it was told (`kept` is what this browser held when the chain was read).
+ */
+function anchorOf(view: ChainView, kept?: ChainAnchor): ChainAnchor | undefined {
   if (!view.head) return undefined;
-  return { seq: view.head.seq, epoch: view.epoch, links: view.links };
+  const promotions = view.promotions ?? kept?.promotions;
+  return {
+    seq: view.head.seq,
+    epoch: view.epoch,
+    links: view.links,
+    ...(view.owners ? { owners: view.owners } : {}),
+    ...(promotions ? { promotions } : {}),
+  };
+}
+
+/**
+ * An anchor kept before anchors carried the space's owners is written again, with the owners and
+ * promotions of the chain view the worker verified, as soon as that view is at the same head. It is
+ * the first chance after an upgrade, and it comes before any fence is met: the verifier moves a chain
+ * over a fence only for an anchor that has owners to compare the fence's signer with. Never throws:
+ * the next verified chain writes it too.
+ */
+async function upgradeAnchor(deps: ChainDeps, me: string, spaceId: string, view: ChainView): Promise<void> {
+  try {
+    if (!view.trusted || !view.owners || !view.head) return;
+    const store = storeOf(deps);
+    const kept = await store.load(me, spaceId);
+    if (!kept || kept.owners || kept.seq !== view.head.seq) return;
+    const next = anchorOf(view, kept);
+    if (next) await store.save(me, spaceId, next);
+  } catch {
+    // Not written now; a later verified chain does it.
+  }
 }
 
 /**
@@ -73,10 +112,20 @@ export async function checkSpaceChain(
     const held = await deps.crypto.spaceChainView(spaceId);
     if (held?.chained && held.head) {
       const tail = await deps.api.chain(spaceId, held.head.seq + 1);
-      if (tail.length === 0) return classify(held);
+      if (tail.length === 0) {
+        await upgradeAnchor(deps, me, spaceId, held);
+        return classify(held);
+      }
     }
     const store = storeOf(deps);
-    const [records, anchor] = await Promise.all([deps.api.chain(spaceId), store.load(me, spaceId)]);
+    const [records, anchor, listed] = await Promise.all([
+      deps.api.chain(spaceId),
+      store.load(me, spaceId),
+      deps.chainedSpaces?.(),
+    ]);
+    // The account's own signed record says this space has a chain: the worker is told before it
+    // reads what the server serves, so none served is a refusal there and its keys stay shut.
+    if (listed?.has(spaceId)) await deps.crypto.expectChained(spaceId);
     const verdict = await deps.crypto.verifySpaceChain({
       spaceId,
       records,
@@ -95,7 +144,8 @@ export async function checkSpaceChain(
       return { kind: 'unverified', reason: 'rolled back', seq: null };
     }
     // The anchor is kept once first contact is done, and moves forward with every chain verified.
-    const next = verdict.chained && verdict.trusted ? anchorOf(verdict) : undefined;
+    const next = verdict.chained && verdict.trusted ? anchorOf(verdict, anchor) : undefined;
+    if (next) deps.noteChained?.(spaceId);
     if (next) await store.save(me, spaceId, next, verdict.divergence !== undefined);
     return classify(verdict);
   } catch {

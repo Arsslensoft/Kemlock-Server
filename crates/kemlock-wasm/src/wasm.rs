@@ -154,6 +154,16 @@ struct NewSpaceOut {
     collection: CollectionOut,
 }
 
+/// One key of a space opened from an unsigned box on first sight, with its fingerprint to compare.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProvisionalKeyOut {
+    /// The collection's id; `null` for the space key.
+    collection: Option<String>,
+    version: u32,
+    fingerprint: String,
+}
+
 /// A key sealed to a member and the signature of the account that sealed it.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -292,6 +302,30 @@ impl Vault {
         });
         password.zeroize();
         result.map_err(fail)
+    }
+
+    /// The Bitwarden master password hash of an account whose KDF is Argon2id, base64url: the master
+    /// key is `Argon2id(password, SHA-256(email), m, t, p)` and the hash `PBKDF2-HMAC-SHA256(master
+    /// key, password, 1)`. `email` is trimmed and lower-cased by the caller. The password is wiped
+    /// here. No session is needed, and nothing is kept.
+    #[wasm_bindgen(js_name = bitwardenArgonHash)]
+    pub fn bitwarden_argon_hash(
+        &self,
+        mut password: String,
+        email: &str,
+        memory_kib: u32,
+        iterations: u32,
+        parallelism: u32,
+    ) -> Result<String, JsError> {
+        let hash = session::bitwarden_argon_hash(
+            password.as_bytes(),
+            email.as_bytes(),
+            memory_kib,
+            iterations,
+            parallelism,
+        );
+        password.zeroize();
+        hash.map(|hash| b64::encode(&hash)).map_err(fail)
     }
 
     /// Drops a handle; unknown handles are ignored.
@@ -674,9 +708,9 @@ impl Vault {
 
     /// Seals the unlocked account's root key to a `kx1` public key (base64url, 1,600 bytes) as a
     /// sealed box. `context` is `device-approval` (`aad`: the account id then the approval
-    /// request id, 32 bytes), `emergency-access` (`aad`: the contact's account id, 16 bytes) or
-    /// `account-recovery` (`aad`: space id, account id, `u64be(keySeq)`, 40 bytes; see
-    /// `sealRootKeyForRecovery`); no other context is sealed. Returns the box, base64url.
+    /// request id, 32 bytes) or `account-recovery` (`aad`: space id, account id,
+    /// `u64be(keySeq)`, 40 bytes; see `sealRootKeyForRecovery`); no other context is sealed, and
+    /// `emergency-access` only through `sealEmergencyKey`. Returns the box, base64url.
     #[wasm_bindgen(js_name = sealRootKey)]
     pub fn seal_root_key(
         &self,
@@ -689,6 +723,27 @@ impl Vault {
         let sealed = self
             .session
             .seal_root_key(&recipient, context, &aad)
+            .map_err(fail)?;
+        Ok(b64::encode(&sealed))
+    }
+
+    /// Seals the unlocked account's root key to an emergency contact under `emergency-access`, with
+    /// the contact's account id (`granteeId`, a UUID) as the aad. The key sealed to is the one in
+    /// `publicBundle` (base64url), which must carry a valid self-signature (`bundleSignature`,
+    /// base64url) and name `granteeId` as its account. Returns the box, base64url.
+    #[wasm_bindgen(js_name = sealEmergencyKey)]
+    pub fn seal_emergency_key(
+        &self,
+        public_bundle: &str,
+        bundle_signature: &str,
+        grantee_id: &str,
+    ) -> Result<String, JsError> {
+        let bundle = b64::decode(public_bundle).map_err(fail)?;
+        let signature = b64::decode(bundle_signature).map_err(fail)?;
+        let grantee = ids::parse_uuid(grantee_id).map_err(fail)?;
+        let sealed = self
+            .session
+            .seal_emergency_key(&bundle, &signature, &grantee)
             .map_err(fail)?;
         Ok(b64::encode(&sealed))
     }
@@ -1031,7 +1086,9 @@ impl Vault {
         })
     }
 
-    /// Opens an item of a space's collection and returns its JSON. `key_version` is the
+    /// Opens an item of a space's collection and returns its JSON. `accepted` says the revision is one
+    /// this browser accepted before its key was marked (default true): without it an item under a
+    /// marked key is held, not opened. `key_version` is the
     /// collection key version the item says.
     #[wasm_bindgen(js_name = openSpaceItem)]
     #[allow(clippy::too_many_arguments)]
@@ -1045,6 +1102,7 @@ impl Vault {
         ciphertext: &str,
         item_key: &str,
         key_version: u32,
+        accepted: Option<bool>,
     ) -> Result<String, JsError> {
         let space = ids::parse_uuid(space_id).map_err(fail)?;
         let collection = ids::parse_uuid(collection_id).map_err(fail)?;
@@ -1054,7 +1112,7 @@ impl Vault {
         let owner = kemlock_crypto::owner::Owner::space(space);
         let plain = self
             .session
-            .open_space_item(
+            .open_space_item_as(
                 &space,
                 &collection,
                 &SealedItemRef {
@@ -1066,6 +1124,7 @@ impl Vault {
                     item_key: &item_key,
                     key_version: Some(key_version),
                 },
+                accepted.unwrap_or(true),
             )
             .map_err(fail)?;
         String::from_utf8(plain.to_vec()).map_err(|_| fail(Error::Invalid))
@@ -1097,21 +1156,27 @@ impl Vault {
     }
 
     /// Opens the space key sealed to this account and keeps it for the space at `key_version`.
+    /// `unsigned` is for a box that carried no signature and that this browser had not accepted
+    /// before: the space is then held back from sealing and writing until `acceptProvisionalKeys`.
     #[wasm_bindgen(js_name = openSpace)]
     pub fn open_space(
         &mut self,
         space_id: &str,
         key_version: u32,
         sealed: &str,
+        unsigned: Option<bool>,
     ) -> Result<(), JsError> {
         let space = ids::parse_uuid(space_id).map_err(fail)?;
         let sealed = b64::decode(sealed).map_err(fail)?;
-        self.session
-            .open_space(&space, key_version, &sealed)
-            .map_err(fail)
+        let opened = if unsigned == Some(true) {
+            self.session.open_space_unsigned(&space, key_version, &sealed)
+        } else {
+            self.session.open_space(&space, key_version, &sealed)
+        };
+        opened.map_err(fail)
     }
 
-    /// Opens a collection key sealed to this account and keeps it.
+    /// Opens a collection key sealed to this account and keeps it. `unsigned` as for `openSpace`.
     #[wasm_bindgen(js_name = openCollection)]
     pub fn open_collection(
         &mut self,
@@ -1119,13 +1184,19 @@ impl Vault {
         collection_id: &str,
         key_version: u32,
         sealed: &str,
+        unsigned: Option<bool>,
     ) -> Result<(), JsError> {
         let space = ids::parse_uuid(space_id).map_err(fail)?;
         let collection = ids::parse_uuid(collection_id).map_err(fail)?;
         let sealed = b64::decode(sealed).map_err(fail)?;
-        self.session
-            .open_collection(&space, &collection, key_version, &sealed)
-            .map_err(fail)
+        let opened = if unsigned == Some(true) {
+            self.session
+                .open_collection_unsigned(&space, &collection, key_version, &sealed)
+        } else {
+            self.session
+                .open_collection(&space, &collection, key_version, &sealed)
+        };
+        opened.map_err(fail)
     }
 
     /// Decrypts the name of a space (`kind` `space`), a collection or a group under the space
@@ -1503,6 +1574,46 @@ impl Vault {
     pub fn space_chain_view(&self, space_id: &str) -> Result<Option<String>, JsError> {
         let space = ids::parse_uuid(space_id).map_err(fail)?;
         self.session.space_chain_view(&space).map_err(fail)
+    }
+
+    /// Says the account's own signed record names the space as chained: until a verified chain is
+    /// held for it, its keys open only through a chain, and a chain served empty is refused as
+    /// withheld. Call it before `verifySpaceChain` for every space the record lists.
+    #[wasm_bindgen(js_name = expectChained)]
+    pub fn expect_chained(&mut self, space_id: &str) -> Result<(), JsError> {
+        let space = ids::parse_uuid(space_id).map_err(fail)?;
+        self.session.expect_chained(&space).map_err(fail)
+    }
+
+    /// The fingerprints of the keys of a space opened from unsigned boxes this browser had not
+    /// accepted (`openSpace` with `unsigned`), as JSON `[{collection, version, fingerprint}]` (the
+    /// space key first, `collection` null), or nothing when the space has none to compare.
+    #[wasm_bindgen(js_name = provisionalKeys)]
+    pub fn provisional_keys(&self, space_id: &str) -> Result<Option<String>, JsError> {
+        let space = ids::parse_uuid(space_id).map_err(fail)?;
+        let Some(keys) = self.session.provisional_fingerprints(&space).map_err(fail)? else {
+            return Ok(None);
+        };
+        let out: Vec<ProvisionalKeyOut> = keys
+            .into_iter()
+            .map(|key| ProvisionalKeyOut {
+                collection: key.collection.map(|id| kemlock_crypto::space_chain::uuid_text(&id)),
+                version: key.version,
+                fingerprint: key.fingerprint,
+            })
+            .collect();
+        json(&out).map(Some)
+    }
+
+    /// Says the person compared those fingerprints and typed the last group of the space key's:
+    /// right, and the space's keys may be sealed and written under again; anything else is
+    /// refused and changes nothing.
+    #[wasm_bindgen(js_name = acceptProvisionalKeys)]
+    pub fn accept_provisional_keys(&mut self, space_id: &str, typed: &str) -> Result<(), JsError> {
+        let space = ids::parse_uuid(space_id).map_err(fail)?;
+        self.session
+            .accept_provisional_keys(&space, typed)
+            .map_err(fail)
     }
 
     /// Says the person compared the fingerprint first contact asked for and it matched: the

@@ -83,8 +83,14 @@ export interface SpaceSignerDeps {
   trace: { crypto: SpaceCrypto; pins?: PinStore | undefined };
 }
 
+/** A signer's bundle and whether the space has taken them out: a former member's write counts only up to what was accepted before (`writes.ts`). */
+interface Standing {
+  bundle: Uint8Array;
+  removed: boolean;
+}
+
 /** The bundle the chain records for `signer`, null unless it shows them confirmed with `edit`. A write signed before the member was taken out is still theirs (docs/crypto.md, "Signed item writes"), so for `former` a revoked member counts too; whether they could edit then isn't known. */
-function chained(view: ChainView, signer: string, former: boolean): Uint8Array | null {
+function chained(view: ChainView, signer: string, former: boolean): Standing | null {
   const member = view.members.find((candidate) => candidate.id === signer);
   if (!member || !member.bundle) return null;
   if (member.status === 'confirmed') {
@@ -100,7 +106,7 @@ function chained(view: ChainView, signer: string, former: boolean): Uint8Array |
   }
   const parsed = parseBundle(bundle);
   if (!parsed || uuidText(parsed.accountId) !== signer) return null;
-  return bundle;
+  return { bundle, removed: member.status === 'removed' };
 }
 
 /** The member list's view of who may sign for a space with no chain: the bundle of `signer`, or null. */
@@ -110,7 +116,7 @@ async function unchained(
   signer: string,
   me: string,
   former: boolean,
-): Promise<Uint8Array | null> {
+): Promise<Standing | null> {
   const [members, view]: [MemberViewDto[], SpaceViewDto] = await Promise.all([
     deps.spaces.members(space),
     deps.spaces.get(space),
@@ -142,7 +148,7 @@ async function unchained(
     if (error instanceof MemberNotVerified) return null;
     throw error;
   }
-  return bundle;
+  return { bundle, removed: member.state === 'revoked' };
 }
 
 /** Who may sign for `space`: the bundle of `signer`, or null. */
@@ -151,7 +157,7 @@ async function lookup(
   space: string,
   signer: string,
   former: boolean,
-): Promise<Uint8Array | null> {
+): Promise<Standing | null> {
   const me = deps.accountId();
   if (me === null) return null;
   const trust = await deps.chain(space, me);
@@ -161,18 +167,25 @@ async function lookup(
 }
 
 export function createSpaceSigner(deps: SpaceSignerDeps): SpaceSigner {
+  /** What the last answer for each (space, signer) found: removed, or a member. */
+  const standings = new Map<string, 'member' | 'removed'>();
   const answer: SpaceSigner = async (space, signer, options) => {
-    const bundle = await lookup(deps, space, signer, options?.former === true);
-    if (!bundle) return null;
+    const found = await lookup(deps, space, signer, options?.former === true);
+    if (!found) return null;
+    const { bundle } = found;
     if (signer === deps.accountId()) {
       // Our own keys are known for certain: the bundle must be the one they make.
       const own = await deps.crypto.ownFingerprint().catch(() => null);
       if (own === null || own !== (await deps.crypto.fingerprint(bundle))) return null;
     }
+    standings.set(`${space}/${signer}`, found.removed ? 'removed' : 'member');
     return bundle;
   };
   // What it answers is the verified chain's, or keys traced to a confirmation this browser can follow:
   // vouched, so the write checker may pin a bundle taken from it (`writes.ts`).
   answer.vouched = true;
+  // Whether the member it last answered for was taken out of the space; a write of theirs counts
+  // only up to what this browser accepted before.
+  answer.standing = (space, signer) => standings.get(`${space}/${signer}`);
   return answer;
 }

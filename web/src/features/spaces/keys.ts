@@ -103,6 +103,9 @@ export async function loadWritableCollections(deps: SpaceDeps): Promise<Writable
     const spaceId = summary.space.id;
     try {
       const view = await openSpaceKeys(deps, spaceId);
+      // Keys taken on the server's word (an unsigned box on first sight) are read, not written under,
+      // until a person compared them: no collection of such a space is offered for writing.
+      if (await deps.crypto.provisionalKeys(spaceId)) continue;
       const held = new Set(view.collectionKeys.map((copy) => copy.collection));
       const name = (kind: 'space' | 'collection', id: string, sealed: string) =>
         deps.crypto.openName({

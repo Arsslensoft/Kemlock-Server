@@ -7,6 +7,7 @@ import { type MessageId, useT } from '@/i18n';
 import { describeError } from '@/lib/errors';
 import { thisDevice } from '@/lib/device';
 import { TextInput } from '@/features/account/controls';
+import { lastGroup } from '@/ui/TypeLastGroup';
 import { AuthPage } from '@/ui/AuthPage';
 import { Button } from '@/ui/Button';
 import { Notice } from '@/ui/Notice';
@@ -23,10 +24,7 @@ const route = getRouteApi('/sign-in/device');
 
 type Ended = Exclude<ApprovalOutcome, { status: 'signed-in' }>;
 
-/** The last group of digits of a fingerprint: what the person types to say they compared it. */
-export function lastGroup(fingerprint: string): string {
-  return fingerprint.trim().split(/\s+/).at(-1) ?? '';
-}
+export { lastGroup };
 
 /**
  * The answer to the comparison. "Same" is a deliberate act: it opens only when the person has

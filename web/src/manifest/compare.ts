@@ -16,6 +16,7 @@
 //
 // Items at their entry's revision with another hash (a sibling written by two devices at once) and
 // items newer than or absent from the manifest are accepted; the next signed manifest lists them.
+import { isChainedMark } from './chained';
 import { TOMBSTONE_HASH, type Manifest, type ManifestEntry } from './format';
 
 /** What the server served of one item: its revision and the hash of its ciphertext (hex). */
@@ -68,7 +69,9 @@ export type FlaggedVerdict =
   /** A revision whose write signature fails: never taken in. */
   | 'forged'
   /** A newer revision, without a signature, of an item of an owner whose writes are signed. */
-  | 'unsigned';
+  | 'unsigned'
+  /** A revision signed by a member the space has taken out, above what was accepted before: never taken in. */
+  | 'after-removal';
 
 export interface Finding {
   id: string;
@@ -153,7 +156,8 @@ export function recordDeleted(
       out[id] = { revision, seenAt: existing?.seenAt ?? now };
     }
   };
-  for (const entry of manifest?.entries ?? []) if (entry.deleted) see(entry.id, entry.revision);
+  // A chained-space mark is a tombstone at revision 0 that no item has (chained.ts): not an id seen deleted.
+  for (const entry of manifest?.entries ?? []) if (entry.deleted && !isChainedMark(entry)) see(entry.id, entry.revision);
   for (const [id, item] of ledger) if (item.deleted) see(id, item.revision);
   for (const [id, seen] of Object.entries(out)) {
     if (seen.seenAt < now - DELETED_RETENTION_MS) delete out[id];
@@ -208,7 +212,8 @@ export function mergeEntries(
     }
   }
   return [...byId.values()].filter(
-    (entry) => !entry.deleted || ledger.has(entry.id) || deleted[entry.id] !== undefined,
+    // A chained-space mark is no item's tombstone: it stays (manifest/chained.ts).
+    (entry) => !entry.deleted || ledger.has(entry.id) || deleted[entry.id] !== undefined || isChainedMark(entry),
   );
 }
 

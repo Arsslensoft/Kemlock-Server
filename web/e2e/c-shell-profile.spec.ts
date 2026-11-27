@@ -229,6 +229,8 @@ test('Profile: the name, the address and the master password', async ({ page }) 
 test('the link mailed to a new address says so when it is no good', async ({ page }) => {
   await page.goto('/confirm-email?token=not-a-token-the-server-knows');
   await expect(page.getByRole('heading', { name: 'New email address' })).toBeVisible();
+  // The link only asks: nothing is spent until the button is pressed.
+  await page.getByRole('button', { name: 'Confirm the new address' }).click();
   await expect(page.getByText(/expired or was already used/)).toBeVisible({ timeout: 30_000 });
   await expectAccessible(page);
 

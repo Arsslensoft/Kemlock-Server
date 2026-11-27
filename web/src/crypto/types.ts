@@ -19,6 +19,24 @@ export type DeviceKeyHandle = Handle<'device-key'>;
 export type ApprovedKeyHandle = Handle<'approved-key'>;
 
 /** The account's Argon2id settings, as the server returns them (`KdfDto`). */
+/** A Bitwarden account's KDF as its prelogin gives it (`kdf` 0 is PBKDF2-SHA256, 1 is Argon2id). */
+export interface BitwardenKdf {
+  type: 0 | 1;
+  iterations: number;
+  /** Argon2id only: memory in MiB, as Bitwarden counts it. */
+  memory?: number;
+  /** Argon2id only. */
+  parallelism?: number;
+}
+
+/** What the Bitwarden master password hash is made from: the typed password and the account's address. */
+export interface BitwardenHashInput {
+  password: string;
+  /** The account's email; the worker trims and lower-cases it. */
+  email: string;
+  kdf: BitwardenKdf;
+}
+
 export interface KdfSettings {
   memoryKib: number;
   iterations: number;
@@ -180,7 +198,17 @@ export interface TotpOptions {
 }
 
 /** The sealed-box contexts under which the worker seals the root key (docs/crypto.md). */
-export type RootKeyContext = 'device-approval' | 'emergency-access';
+/** What `sealRootKey` seals under. An emergency contact's box is made by `sealEmergencyKey`, which checks the contact's bundle. */
+export type RootKeyContext = 'device-approval';
+
+/** One key of a space opened from an unsigned box, with the fingerprint a person compares. */
+export interface ProvisionalKey {
+  /** The collection's id; null for the space key. */
+  collection: string | null;
+  version: number;
+  /** 12 groups of 5 digits. */
+  fingerprint: string;
+}
 
 /** What a space name names. */
 export type NameKind = 'space' | 'collection' | 'group';
@@ -220,6 +248,18 @@ export interface ChainAnchor {
   epoch: number;
   /** base64url of each record's link, from seq 0. */
   links: string[];
+  /**
+   * The space's owners at `seq`, as the verified chain gives them: each owner's id to the hash of the
+   * bundle the chain records for them. The verifier lets a fence move the chain only when it is
+   * signed by one of them. An anchor kept before this field has none, and is written again with
+   * it from the first verified chain after the upgrade.
+   */
+  owners?: Record<string, string>;
+  /**
+   * The promotions this browser has seen, as `[owner id, base64url of the record's hash]`. Kept as
+   * the verifier gave them and passed back; an anchor kept before this field has none.
+   */
+  promotions?: Array<[string, string]>;
 }
 
 /** A chain the verifier refused: the spec's reason ("Verification") and the record's seq. */
@@ -277,6 +317,10 @@ export interface ChainView {
   /** Whether first contact is done, so keys open. */
   trusted: boolean;
   firstContact?: FirstContactAsk;
+  /** The space's owners at the head, owner id to bundle hash: kept in the anchor (`ChainAnchor.owners`). */
+  owners?: Record<string, string>;
+  /** The promotions the verifier tracks, when it reports them: kept in the anchor like `owners`. */
+  promotions?: Array<[string, string]>;
   /** The seq of the fence where the chain parted from the kept anchor. */
   divergence?: number;
   members: ChainMember[];
@@ -473,6 +517,8 @@ export interface OpenSpaceItemInput {
   keyVersion: number;
   ciphertext: string;
   itemKey: string;
+  /** See `CryptoPort`'s: false holds an item under a marked key; left out, it is taken as accepted. */
+  accepted?: boolean;
 }
 
 /** A collection's name and its key sealed to its maker (base64url). */
@@ -603,6 +649,14 @@ export class CryptoError extends Error {
 export interface CryptoApi {
   /** `Argon2id(password, salt, m, t, p)`. A `Uint8Array` is transferred and wiped. */
   masterKey(password: string | Uint8Array, kdf: KdfSettings): Promise<MasterKeyHandle>;
+  /**
+   * The Bitwarden master password hash, standard base64: the master key is PBKDF2-SHA256(password,
+   * lower-cased email, iterations) or Argon2id(password, SHA-256(email), memory, iterations,
+   * parallelism), and the hash PBKDF2-SHA256(master key, password, 1). It is what a Bitwarden
+   * server checks in place of the password, which never leaves the worker. Nothing is kept. Settings
+   * outside the bounds a browser should honour are refused.
+   */
+  bitwardenPasswordHash(input: BitwardenHashInput): Promise<string>;
   opaqueRegisterStart(masterKey: MasterKeyHandle): Promise<OpaqueStart>;
   opaqueRegisterFinish(
     state: OpaqueStateHandle,
@@ -738,11 +792,17 @@ export interface CryptoApi {
   // Sharing: the account's keys given to someone else. Binary values are base64url.
 
   /**
-   * Seals the unlocked account's root key to a kx1 public key as a sealed box. `device-approval`
-   * takes `aad` = account id ‖ approval request id (32 bytes), `emergency-access` the contact's
-   * account id (16 bytes); no other context is sealed.
+   * Seals the unlocked account's root key to a kx1 public key as a sealed box under
+   * `device-approval`, with `aad` = account id ‖ approval request id (32 bytes); no other context
+   * is sealed (an emergency contact's box is `sealEmergencyKey`).
    */
   sealRootKey(recipientKx1: string, context: RootKeyContext, aad: string): Promise<string>;
+  /**
+   * Seals the unlocked account's root key to an emergency contact (`emergency-access`, `aad` their
+   * account id) from their public bundle: the worker checks the bundle's own signature and that it
+   * names `granteeId` (a UUID) before it seals, so a key the page made up is never sealed to.
+   */
+  sealEmergencyKey(publicBundle: string, bundleSignature: string, granteeId: string): Promise<string>;
   /** The 134-byte confirmation statement, the unlocked account as the confirmer. */
   confirmationStatement(facts: ConfirmationFacts): Promise<string>;
   /** A sig1 signature over a confirmation statement of this account; context `confirm` only. */
@@ -758,14 +818,19 @@ export interface CryptoApi {
 
   /** A new space: a space key and first collection key sealed to the maker, names under the key. */
   newSpace(input: NewSpaceInput): Promise<NewSpaceResult>;
-  /** Opens the space key sealed to me and keeps it for `spaceId` at `keyVersion`. */
-  openSpace(input: { spaceId: string; keyVersion: number; sealed: string }): Promise<void>;
-  /** Opens a collection key sealed to me and keeps it. */
+  /**
+   * Opens the space key sealed to me and keeps it for `spaceId` at `keyVersion`. `unsigned` is for a
+   * box that carried no signature and that this browser had not accepted before: the space is then
+   * held back from sealing and writing until `acceptProvisionalKeys`.
+   */
+  openSpace(input: { spaceId: string; keyVersion: number; sealed: string; unsigned?: boolean }): Promise<void>;
+  /** Opens a collection key sealed to me and keeps it; `unsigned` as for `openSpace`. */
   openCollection(input: {
     spaceId: string;
     collectionId: string;
     keyVersion: number;
     sealed: string;
+    unsigned?: boolean;
   }): Promise<void>;
   openName(input: NameAddress & { ciphertext: string }): Promise<string>;
   sealName(input: NameAddress & { name: string }): Promise<string>;
@@ -950,6 +1015,23 @@ export interface CryptoApi {
   /** The person compared the fingerprint first contact asked for and it matched. */
   acceptFirstContact(spaceId: string): Promise<void>;
   /**
+   * Tells the worker the account's own signed record names a space as chained: until a chain is
+   * verified for it, its keys open only through one, and a chain served empty is refused as withheld.
+   * Call it before `verifySpaceChain` for each space the record lists.
+   */
+  expectChained(spaceId: string): Promise<void>;
+  /**
+   * The fingerprints of the keys of a space opened from unsigned boxes this browser had not accepted,
+   * for a person to compare with a member who holds them (the space key first), or null when the
+   * space has none waiting.
+   */
+  provisionalKeys(spaceId: string): Promise<ProvisionalKey[] | null>;
+  /**
+   * Says the person compared them and typed the last group of the space key's fingerprint: right,
+   * and the space's keys may be sealed and written under again; anything else is refused.
+   */
+  acceptProvisionalKeys(spaceId: string, typed: string): Promise<void>;
+  /**
    * Opens the space key ("space") or a collection key ("collection:<uuid>") of a chained space at
    * the chain's current version. servedVersion and sealed are what the server served; list is the
    * seal hash list of the record that committed the seal, when the chain says it is needed.
@@ -1012,6 +1094,7 @@ export interface CryptoApi {
 /** Every operation the worker answers, with its arguments and result. */
 export interface Ops {
   masterKey: { args: [password: string | Uint8Array, kdf: KdfSettings]; result: MasterKeyHandle };
+  bitwardenPasswordHash: { args: [input: BitwardenHashInput]; result: string };
   opaqueRegisterStart: { args: [masterKey: MasterKeyHandle]; result: OpaqueStart };
   opaqueRegisterFinish: {
     args: [state: OpaqueStateHandle, masterKey: MasterKeyHandle, response: string];
@@ -1060,6 +1143,10 @@ export interface Ops {
   ownKeyVersion: { args: []; result: number };
   release: { args: [handle: number]; result: void };
   dpopReset: { args: []; result: void };
+  sealEmergencyKey: {
+    args: [publicBundle: string, bundleSignature: string, granteeId: string];
+    result: string;
+  };
   sealRootKey: {
     args: [recipientKx1: string, context: RootKeyContext, aad: string];
     result: string;
@@ -1074,11 +1161,13 @@ export interface Ops {
   };
   newSpace: { args: [input: NewSpaceInput]; result: NewSpaceResult };
   openSpace: {
-    args: [input: { spaceId: string; keyVersion: number; sealed: string }];
+    args: [input: { spaceId: string; keyVersion: number; sealed: string; unsigned?: boolean }];
     result: void;
   };
   openCollection: {
-    args: [input: { spaceId: string; collectionId: string; keyVersion: number; sealed: string }];
+    args: [
+      input: { spaceId: string; collectionId: string; keyVersion: number; sealed: string; unsigned?: boolean },
+    ];
     result: void;
   };
   openName: { args: [input: NameAddress & { ciphertext: string }]; result: string };
@@ -1179,6 +1268,9 @@ export interface Ops {
   openLocal: { args: [label: string, sealed: string]; result: string };
   spaceChainView: { args: [spaceId: string]; result: ChainView | null };
   acceptFirstContact: { args: [spaceId: string]; result: void };
+  expectChained: { args: [spaceId: string]; result: void };
+  provisionalKeys: { args: [spaceId: string]; result: ProvisionalKey[] | null };
+  acceptProvisionalKeys: { args: [spaceId: string, typed: string]; result: void };
   openChainKey: {
     args: [
       input: {

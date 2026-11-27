@@ -86,6 +86,7 @@ export function createCryptoClient(factory: () => WorkerPort): CryptoApi {
   }
 
   return {
+    bitwardenPasswordHash: (input) => call('bitwardenPasswordHash', [input]),
     masterKey: (password, kdf) =>
       call('masterKey', [password, kdf], typeof password === 'string' ? [] : [password.buffer as ArrayBuffer]),
     opaqueRegisterStart: (masterKey) => call('opaqueRegisterStart', [masterKey]),
@@ -136,6 +137,8 @@ export function createCryptoClient(factory: () => WorkerPort): CryptoApi {
     release: (handle) => call('release', [handle]),
     dpopReset: () => call('dpopReset', []),
     sealRootKey: (recipientKx1, context, aad) => call('sealRootKey', [recipientKx1, context, aad]),
+    sealEmergencyKey: (publicBundle, bundleSignature, granteeId) =>
+      call('sealEmergencyKey', [publicBundle, bundleSignature, granteeId]),
     confirmationStatement: (facts) => call('confirmationStatement', [facts]),
     signStatement: (statement, context) => call('signStatement', [statement, context]),
     verifyConfirmation: (check) => call('verifyConfirmation', [check]),
@@ -196,6 +199,9 @@ export function createCryptoClient(factory: () => WorkerPort): CryptoApi {
     openLocal: (label, sealed) => call('openLocal', [label, sealed]),
     spaceChainView: (spaceId) => call('spaceChainView', [spaceId]),
     acceptFirstContact: (spaceId) => call('acceptFirstContact', [spaceId]),
+    expectChained: (spaceId) => call('expectChained', [spaceId]),
+    provisionalKeys: (spaceId) => call('provisionalKeys', [spaceId]),
+    acceptProvisionalKeys: (spaceId, typed) => call('acceptProvisionalKeys', [spaceId, typed]),
     openChainKey: (input) => call('openChainKey', [input]),
   };
 }

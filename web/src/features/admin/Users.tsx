@@ -201,7 +201,7 @@ function Issued({ issued }: { issued: InviteIssued }) {
       </p>
       <div className="with-action">
         <span className="mono">{issued.link}</span>
-        <CopyButton value={issued.link} label={t('admin.invites.copy')} />
+        <CopyButton value={issued.link} label={t('admin.invites.copy')} secret />
       </div>
     </Notice>
   );
@@ -226,6 +226,8 @@ export interface UsersViewProps {
   onInviteAction: (action: InviteAction, invite: AdminInvite) => void;
   onAction: (action: UserAction, user: AdminUser) => Promise<boolean> | void;
   onChangeOwner: (space: AdminSpace, userId: string) => Promise<boolean> | void;
+  /** The space whose last change of owner was only queued: its owners must sign it (a chained space). */
+  ownerQueuedFor?: string | undefined;
   /**
    * The link that accepts a member's invitation to a Bitwarden organization: the link, or undefined
    * when the request failed. Left out where the console has no such route, and it isn't offered.
@@ -476,6 +478,13 @@ export function UsersView(props: UsersViewProps) {
             </table>
           </div>
         )}
+        {props.ownerQueuedFor ? (
+          <div className="adm-pad">
+            <Notice tone="info" live>
+              <p>{t('admin.users.owner.queued', { space: props.ownerQueuedFor.slice(0, 8) })}</p>
+            </Notice>
+          </div>
+        ) : null}
         <p className="hint adm-pad">{t('admin.users.spaces.nameNote')}</p>
         {ownerOf ? (
           <OwnerPanel
@@ -587,10 +596,15 @@ export default function Users() {
       return refresh();
     },
   });
+  const [ownerQueuedFor, setOwnerQueuedFor] = useState<string | undefined>(undefined);
   const owner = useMutation({
     mutationFn: ({ space, userId }: { space: AdminSpace; userId: string }) =>
       guard((token) => admin.changeOwner(space.id, { newOwner: userId }, token)),
-    onSuccess: refresh,
+    onSuccess: (result, { space }) => {
+      // On a chained space the change is queued for its owners to sign: said, not shown as done.
+      setOwnerQueuedFor(result.ownerChangeQueued === true ? space.id : undefined);
+      return refresh();
+    },
   });
   const inviteLink = useMutation({
     mutationFn: ({ space, userId }: { space: AdminSpace; userId: string }) =>
@@ -614,6 +628,7 @@ export default function Users() {
         onInviteAction={(action, target) => inviteAct.mutate({ action, target })}
         onAction={(action, user) => act.mutateAsync({ action, user }).then(ok, failed)}
         onChangeOwner={(space, userId) => owner.mutateAsync({ space, userId }).then(ok, failed)}
+        ownerQueuedFor={ownerQueuedFor}
         onInviteLink={(space, userId) =>
           inviteLink.mutateAsync({ space, userId }).then((result) => result.link, () => undefined)
         }

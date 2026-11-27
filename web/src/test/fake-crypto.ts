@@ -172,6 +172,11 @@ export const crypto: CryptoPort = {
     const sum = [...text].reduce((a, c) => (a * 31 + (c.codePointAt(0) ?? 0)) >>> 0, 11);
     return Array.from({ length: 12 }, (_, i) => String((sum + i * 7919) % 100000).padStart(5, '0')).join(' ');
   },
+  async bitwardenPasswordHash({ password, email, kdf }) {
+    calls.push('bitwardenPasswordHash');
+    // Not the real derivation: a stand-in that depends on exactly what the real one does.
+    return btoa(`${kdf.type}:${kdf.iterations}:${email.trim().toLowerCase()}:${password.length}`);
+  },
   async verifyBundle(publicBundle, bundleSignature) {
     calls.push('verifyBundle');
     return (

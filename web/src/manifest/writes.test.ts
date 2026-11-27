@@ -92,6 +92,27 @@ describe('the verdict on a write signature', () => {
     expect(await checker().verdict({ ...signed, revision: 9 })).toBe('invalid');
   });
 
+  it('is former for a write signed by a member the space has taken out, and signed for a member', async () => {
+    resetFakeCrypto();
+    await crypto.unlock(MEMBER, utf8(`wrapped:${MEMBER}`), new Uint8Array(), new Uint8Array());
+    const signed = await signedItem(crypto, item(SPACE));
+    resetFakeCrypto();
+    await crypto.unlock(ACCOUNT, utf8(`wrapped:${ACCOUNT}`), new Uint8Array(), new Uint8Array());
+    let standing: 'member' | 'removed' | undefined = 'removed';
+    const signer = Object.assign(
+      vi.fn(async (_space: string, who: string) => (who === MEMBER ? fakeBundleOf(MEMBER, 1) : null)),
+      { standing: () => standing },
+    );
+    const gone = createWriteChecker({ crypto, accountId: () => ACCOUNT, spaceSigner: signer });
+    expect(await gone.verdict(signed)).toBe('former');
+    // A signature that does not verify is invalid whoever signed it.
+    expect(await gone.verdict({ ...signed, revision: 9 })).toBe('invalid');
+    standing = 'member';
+    expect(await createWriteChecker({ crypto, accountId: () => ACCOUNT, spaceSigner: signer }).verdict(signed)).toBe(
+      'signed',
+    );
+  });
+
   it('is unknown for a space writer the space does not vouch for', async () => {
     const signed = await signedItem(crypto, item(SPACE));
     expect(signed.writer).toBe(ACCOUNT);
