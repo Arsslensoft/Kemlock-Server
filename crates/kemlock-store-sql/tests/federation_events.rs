@@ -135,8 +135,12 @@ async fn what_a_peer_sent_is_kept_once_and_goes_with_the_peer() {
         .await
         .expect("events");
     assert_eq!(held.len(), 4);
-    assert_eq!(held[0].entry.id, entry(3).id, "newest first");
-    assert_eq!(held[0].entry.target.as_deref(), Some("target 3"));
+    // Newest first by when this server took them (0d357263); within one page, the later id. The
+    // two peers' pages can land in the same millisecond, so only one peer's order is fixed.
+    let from_peer: Vec<_> = held.iter().filter(|e| e.from == peer).collect();
+    assert_eq!(from_peer[0].entry.id, entry(3).id, "newest first");
+    assert_eq!(from_peer[0].entry.target.as_deref(), Some("target 3"));
+    assert_eq!(held.iter().filter(|e| e.from == other).count(), 1);
     assert_eq!(
         EventSync::peer_events(&store, vault, 2)
             .await
