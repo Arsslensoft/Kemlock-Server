@@ -16,7 +16,7 @@ use crate::ports::{
 };
 use crate::privacy::ensure_not_pending;
 use crate::register::MAX_NAME_LEN;
-use crate::sealed::{Challenge, PURPOSE_CHALLENGE};
+use crate::sealed::{Challenge, PURPOSE_CHALLENGE, SsoOrigin};
 use crate::session::{DeviceInfo, Sessions};
 use crate::sign_in::{SecondStep, SignedIn};
 use crate::sso::claims::{EmailTrust, amr_shows_mfa, email_domain, email_trust};
@@ -203,6 +203,13 @@ where
                 device_name: input.device.name,
                 device_kind: input.device.kind,
                 jkt: input.jkt,
+                // The second step that finishes this sign-in records the session under this
+                // identity, so a logout for it ends the device.
+                sso: Some(SsoOrigin {
+                    issuer: claims.issuer.clone(),
+                    subject: claims.subject.clone(),
+                    session_id: claims.session_id.clone(),
+                }),
             };
             return Ok(SsoSignedIn {
                 outcome: SignedIn::SecondStep(SecondStep {
@@ -229,9 +236,8 @@ where
             session_id: claims.session_id.clone(),
             started_at: now,
         };
-        if let Err(error) = self.repos.record_sso_session(&started).await {
-            tracing::warn!(user = %user.id, %error, "couldn't record the SSO session of a device");
-        }
+        // A session no logout could end is not one to hand out: a failed write fails the sign-in.
+        self.repos.record_sso_session(&started).await?;
         let tokens = self
             .sessions
             .issue(&user, &device, &input.jkt, None)

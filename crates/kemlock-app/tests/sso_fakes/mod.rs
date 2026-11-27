@@ -45,6 +45,16 @@ impl FakeSsoRepos {
         self.lock().settings.clone()
     }
 
+    /// Takes in sessions another port recorded: the SQL store keeps one table for both, the fakes
+    /// keep two.
+    pub(crate) fn adopt_sessions(&self, sessions: Vec<SsoSession>) {
+        for session in sessions {
+            let mut g = self.lock();
+            g.sessions.retain(|s| s.device != session.device);
+            g.sessions.push(session);
+        }
+    }
+
     pub(crate) fn sessions(&self) -> Vec<SsoSession> {
         self.lock().sessions.clone()
     }
@@ -157,7 +167,11 @@ impl SsoIdentityRepo for FakeSsoRepos {
             .iter()
             .filter(|s| s.issuer == issuer)
             .filter(|s| subject.is_none_or(|v| s.subject == v))
-            .filter(|s| session_id.is_none_or(|v| s.session_id.as_deref() == Some(v)))
+            .filter(|s| {
+                session_id.is_none_or(|v| {
+                    s.session_id.as_deref() == Some(v) || (subject.is_some() && s.session_id.is_none())
+                })
+            })
             .cloned()
             .collect())
     }

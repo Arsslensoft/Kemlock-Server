@@ -3,8 +3,10 @@
 use crate::convert::utc;
 use crate::error::{StoreResult, is_unique_violation, map_db};
 use crate::store::SqlStore;
+use crate::tables::sso::sessions as sso_sessions;
 use crate::tables::{devices, refresh_tokens};
 use kemlock_app::ports::{DeviceRepo, StoreError};
+use kemlock_app::sso::SsoSession;
 use kemlock_domain::{Device, DeviceId, UserId};
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, TransactionTrait};
@@ -82,6 +84,18 @@ impl DeviceRepo for SqlStore {
             .collect()
     }
 
+    async fn record_sso_session(&self, session: &SsoSession) -> Result<(), StoreError> {
+        self.put_sso_session(session).await
+    }
+
+    async fn forget_sso_session(&self, id: DeviceId) -> Result<(), StoreError> {
+        sso_sessions::Entity::delete_by_id(id.0)
+            .exec(self.writer())
+            .await
+            .store()?;
+        Ok(())
+    }
+
     async fn remove(&self, id: DeviceId) -> Result<(), StoreError> {
         // The foreign key cascades too; deleting the tokens first keeps this right on a database
         // where it was created without the cascade.
@@ -89,6 +103,10 @@ impl DeviceRepo for SqlStore {
         let outcome = async {
             refresh_tokens::Entity::delete_many()
                 .filter(refresh_tokens::Column::DeviceId.eq(id.0))
+                .exec(&txn)
+                .await
+                .store()?;
+            sso_sessions::Entity::delete_by_id(id.0)
                 .exec(&txn)
                 .await
                 .store()?;

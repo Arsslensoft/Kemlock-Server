@@ -1485,6 +1485,93 @@ async fn a_logout_naming_a_provider_session_ends_the_devices_that_session_signed
     assert!(sso.world.store.refresh_tokens().is_empty());
 }
 
+
+#[tokio::test]
+async fn a_device_that_passed_a_second_step_after_sso_is_ended_by_a_logout() {
+    let sso = Sso::new();
+    let existing = make_user(&sso.world, "ada@example.org").await;
+    enable_totp(&sso.world, existing).await;
+    let signed_in = sso.sign_in("provider-code-1").await.expect("owes a second step");
+    let SignedIn::SecondStep(step) = &signed_in.outcome else {
+        panic!("a second step expected");
+    };
+    // Nothing is recorded until the second step is passed.
+    assert!(sso.world.store.sso_sessions().is_empty());
+    let tokens = sso
+        .world
+        .sign_in()
+        .second_step(SecondStepInput {
+            challenge: step.challenge.clone(),
+            method: TwoFactorMethod::Totp,
+            code: totp_code(&sso.world, existing),
+            jkt: JKT.to_owned(),
+        })
+        .await
+        .expect("the second step completes");
+
+    // The device is an SSO session of this identity and provider session now.
+    let recorded = sso.world.store.sso_sessions();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].subject, "sub-1");
+    assert_eq!(recorded[0].session_id.as_deref(), Some("provider-session-1"));
+    sso.repos.adopt_sessions(recorded);
+
+    let outcome = sso.logout().execute("t").await.expect("logs out");
+    assert_eq!(
+        outcome,
+        LogoutOutcome::Revoked {
+            user: existing,
+            devices: 1
+        }
+    );
+    assert_eq!(
+        sso.world
+            .authenticate()
+            .execute(&tokens.access_token, JKT)
+            .await,
+        Err(AppError::SessionEnded("signed-out"))
+    );
+    assert!(sso.world.store.refresh_tokens().is_empty());
+}
+
+#[tokio::test]
+async fn a_password_sign_in_of_the_same_device_is_no_longer_an_sso_session() {
+    use kemlock_app::ports::DeviceRepo;
+    let sso = Sso::new();
+    let signed_in = sso.sign_in("provider-code-1").await.expect("signs in");
+    let device = sso.world.store.devices_of(signed_in.user)[0].id;
+    DeviceRepo::record_sso_session(
+        &sso.world.store,
+        &kemlock_app::sso::SsoSession {
+            device,
+            user: signed_in.user,
+            issuer: ISSUER.to_owned(),
+            subject: "sub-1".to_owned(),
+            session_id: None,
+            started_at: sso.world.env.now(),
+        },
+    )
+    .await
+    .expect("recorded");
+    assert_eq!(sso.world.store.sso_sessions().len(), 1);
+
+    // The same device signs in some other way: it registers again, and the record goes.
+    sso.world
+        .sessions()
+        .register_device(
+            signed_in.user,
+            &DeviceInfo {
+                id: Some(device),
+                name: "Pixel".to_owned(),
+                kind: DeviceKind::KemlockAndroid,
+                bitwarden_identifier: None,
+            },
+            JKT,
+        )
+        .await
+        .expect("registers");
+    assert!(sso.world.store.sso_sessions().is_empty());
+}
 #[tokio::test]
 async fn a_logout_for_another_account_leaves_this_one_signed_in() {
     let sso = Sso::new();

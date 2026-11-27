@@ -51,6 +51,7 @@ pub(crate) mod unlock;
 
 #[derive(Default)]
 struct StoreInner {
+    sso_sessions: Vec<kemlock_app::sso::SsoSession>,
     users: HashMap<UserId, User>,
     devices: HashMap<DeviceId, Device>,
     tokens: HashMap<[u8; 32], RefreshToken>,
@@ -115,6 +116,11 @@ impl FakeStore {
 
     fn lock(&self) -> MutexGuard<'_, StoreInner> {
         self.inner.lock().expect("the store lock isn't poisoned")
+    }
+
+    /// The devices an SSO sign-in started that a second step finished.
+    pub(crate) fn sso_sessions(&self) -> Vec<kemlock_app::sso::SsoSession> {
+        self.lock().sso_sessions.clone()
     }
 
     pub(crate) fn user(&self, id: UserId) -> Option<User> {
@@ -469,6 +475,21 @@ impl DeviceRepo for FakeStore {
         let mut g = self.lock();
         g.devices.remove(&id);
         g.tokens.retain(|_, t| t.device != id);
+        Ok(())
+    }
+
+    async fn record_sso_session(
+        &self,
+        session: &kemlock_app::sso::SsoSession,
+    ) -> Result<(), StoreError> {
+        let mut g = self.lock();
+        g.sso_sessions.retain(|s| s.device != session.device);
+        g.sso_sessions.push(session.clone());
+        Ok(())
+    }
+
+    async fn forget_sso_session(&self, id: DeviceId) -> Result<(), StoreError> {
+        self.lock().sso_sessions.retain(|s| s.device != id);
         Ok(())
     }
 }

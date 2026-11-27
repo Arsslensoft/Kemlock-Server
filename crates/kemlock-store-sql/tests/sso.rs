@@ -245,6 +245,10 @@ async fn sessions(store: &SqlStore) {
     assert_eq!(find(None, Some("sid-2")).await, vec![laptop.device]);
     assert_eq!(find(Some("sub-a"), Some("sid-9")).await, Vec::new());
     assert_eq!(find(Some("sub-b"), None).await, vec![other.device]);
+    // A session recorded with no id matches a subject-and-session token too.
+    assert_eq!(find(Some("sub-b"), Some("sid-x")).await, vec![other.device]);
+    // But a session id alone names only that session.
+    assert_eq!(find(None, Some("sid-x")).await, Vec::new());
     // A token that names neither names no one; another issuer's sessions are not these.
     assert_eq!(find(None, None).await, Vec::new());
     assert_eq!(
@@ -265,6 +269,17 @@ async fn sessions(store: &SqlStore) {
         .expect("record again");
     assert_eq!(find(Some("sub-a"), None).await, vec![laptop.device]);
     assert_eq!(find(Some("sub-c"), None).await, vec![phone.device]);
+
+    // A device that signs in some other way, or is removed, has no record.
+    use kemlock_app::ports::DeviceRepo;
+    DeviceRepo::forget_sso_session(store, phone.device)
+        .await
+        .expect("forgotten");
+    assert_eq!(find(Some("sub-c"), None).await, Vec::new());
+    DeviceRepo::record_sso_session(store, &laptop)
+        .await
+        .expect("recorded through the device port");
+    assert_eq!(find(Some("sub-a"), None).await, vec![laptop.device]);
 }
 
 async fn domains(store: &SqlStore) {

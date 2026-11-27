@@ -32,11 +32,11 @@ pub struct SsoLogout<U, D, T, R, O, S, E, V> {
 pub enum LogoutOutcome {
     /// The subject's sessions are revoked: `devices` of them lost their refresh tokens.
     Revoked { user: UserId, devices: usize },
-    /// The token is valid but names no subject this server has linked. The provider is told
-    /// success anyway, as the specification asks, so it can't probe for accounts.
+    /// The token names a subject that signed no device in. The provider is told success anyway, as
+    /// the specification asks, so it can't probe for accounts.
     UnknownSubject,
-    /// The token names only a provider session id (`sid`), which this server doesn't track, so
-    /// there is no account to end. Valid, and answered with success.
+    /// The token names only a provider session id (`sid`) that began no device here, so there is
+    /// nothing to end. Valid, and answered with success.
     SessionOnly,
 }
 

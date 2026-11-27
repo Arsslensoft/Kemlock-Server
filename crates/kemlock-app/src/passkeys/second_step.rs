@@ -123,6 +123,9 @@ where
                 jkt,
             )
             .await?;
+        self.sessions
+            .start_sso_session(challenge.sso.as_ref(), user.id, &device)
+            .await?;
         let tokens = self.sessions.issue(&user, &device, jkt, None).await?;
         self.sessions
             .record("auth.sign_in", user.id, Some(device.id))

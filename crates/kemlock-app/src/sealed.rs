@@ -14,9 +14,9 @@ pub const PURPOSE_CHALLENGE: &str = "two-factor-challenge";
 pub const PURPOSE_TOTP: &str = "totp";
 
 /// The `settings` key that says the stored per-account secrets were sealed again, bound
-/// ([`bound_purpose`]), by the start-up pass. It is a record only: the pass runs at every start, so
-/// secrets a restored backup brings back sealed the old way are sealed again before the server
-/// serves.
+/// ([`bound_purpose`]), by the start-up pass. The pass runs once, for the migration it exists for, and
+/// does nothing once this is recorded: a bare-sealed blob that turns up later is not sealed to an
+/// account.
 pub const SECRETS_BOUND_KEY: &str = "secrets_bound";
 
 /// Whether [`open_bound`] still falls back to the bare purpose. On until the server has sealed every
@@ -194,7 +194,18 @@ impl LoginState {
     }
 }
 
-/// What a two-step challenge remembers: who passed the password, on which device and key.
+/// The SSO identity whose sign-in a challenge belongs to. Sealed with the challenge, so the second
+/// step that finishes it records the session under the issuer, subject and `sid` the ID token
+/// had, and a client can't name another.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SsoOrigin {
+    pub(crate) issuer: String,
+    pub(crate) subject: String,
+    pub(crate) session_id: Option<String>,
+}
+
+/// What a two-step challenge remembers: who passed the password (or the provider), on which device
+/// and key.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Challenge {
     pub(crate) expires_at: i64,
@@ -203,6 +214,8 @@ pub(crate) struct Challenge {
     pub(crate) device_name: String,
     pub(crate) device_kind: DeviceKind,
     pub(crate) jkt: String,
+    /// Set when the first step was a single sign-on.
+    pub(crate) sso: Option<SsoOrigin>,
 }
 
 fn kind_code(kind: DeviceKind) -> u8 {
@@ -235,19 +248,31 @@ fn kind_from_code(code: u8) -> Option<DeviceKind> {
 impl Challenge {
     pub(crate) fn encode(&self) -> Vec<u8> {
         let mut w = Writer::new();
-        w.u8(1);
+        w.u8(if self.sso.is_some() { 2 } else { 1 });
         w.u64(self.expires_at.max(0) as u64);
         w.raw(self.user.as_bytes());
         w.raw(self.device.as_bytes());
         w.lp(self.device_name.as_bytes());
         w.u8(kind_code(self.device_kind));
         w.lp(self.jkt.as_bytes());
+        if let Some(sso) = &self.sso {
+            w.lp(sso.issuer.as_bytes());
+            w.lp(sso.subject.as_bytes());
+            match &sso.session_id {
+                Some(sid) => {
+                    w.u8(1);
+                    w.lp(sid.as_bytes());
+                }
+                None => w.u8(0),
+            }
+        }
         w.0
     }
 
     pub(crate) fn decode(bytes: &[u8]) -> Option<Self> {
         let mut r = Reader(bytes);
-        if r.u8()? != 1 {
+        let version = r.u8()?;
+        if !matches!(version, 1 | 2) {
             return None;
         }
         let expires_at = i64::try_from(r.u64()?).ok()?;
@@ -256,6 +281,22 @@ impl Challenge {
         let device_name = String::from_utf8(r.lp()?.to_vec()).ok()?;
         let device_kind = kind_from_code(r.u8()?)?;
         let jkt = String::from_utf8(r.lp()?.to_vec()).ok()?;
+        let sso = if version == 2 {
+            let issuer = String::from_utf8(r.lp()?.to_vec()).ok()?;
+            let subject = String::from_utf8(r.lp()?.to_vec()).ok()?;
+            let session_id = match r.u8()? {
+                0 => None,
+                1 => Some(String::from_utf8(r.lp()?.to_vec()).ok()?),
+                _ => return None,
+            };
+            Some(SsoOrigin {
+                issuer,
+                subject,
+                session_id,
+            })
+        } else {
+            None
+        };
         r.done().then_some(Challenge {
             expires_at,
             user,
@@ -263,6 +304,7 @@ impl Challenge {
             device_name,
             device_kind,
             jkt,
+            sso,
         })
     }
 }

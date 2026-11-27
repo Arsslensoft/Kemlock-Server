@@ -176,6 +176,9 @@ where
                 &input.jkt,
             )
             .await?;
+        self.sessions
+            .start_sso_session(challenge.sso.as_ref(), user.id, &device)
+            .await?;
         let tokens = self
             .sessions
             .issue(&user, &device, &input.jkt, None)
@@ -271,6 +274,9 @@ where
                 },
                 jkt,
             )
+            .await?;
+        self.sessions
+            .start_sso_session(challenge.sso.as_ref(), user.id, &device)
             .await?;
         let tokens = self.sessions.issue(&user, &device, jkt, None).await?;
         self.sessions

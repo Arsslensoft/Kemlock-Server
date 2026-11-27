@@ -123,6 +123,23 @@ impl SsoIdentityRepo for SqlStore {
     }
 
     async fn record_sso_session(&self, session: &SsoSession) -> Result<(), StoreError> {
+        self.put_sso_session(session).await
+    }
+
+    async fn sso_sessions(
+        &self,
+        issuer: &str,
+        subject: Option<&str>,
+        session_id: Option<&str>,
+    ) -> Result<Vec<SsoSession>, StoreError> {
+        self.find_sso_sessions(issuer, subject, session_id).await
+    }
+}
+
+impl SqlStore {
+    /// One row per device: a later sign-in of the same device replaces it. Both `DeviceRepo` and
+    /// `SsoIdentityRepo` write through here (a second step signs the device in through the first).
+    pub(crate) async fn put_sso_session(&self, session: &SsoSession) -> Result<(), StoreError> {
         let conflict = OnConflict::column(sessions::Column::DeviceId)
             .update_columns([
                 sessions::Column::UserId,
@@ -145,7 +162,7 @@ impl SsoIdentityRepo for SqlStore {
         }
     }
 
-    async fn sso_sessions(
+    pub(crate) async fn find_sso_sessions(
         &self,
         issuer: &str,
         subject: Option<&str>,
@@ -160,7 +177,17 @@ impl SsoIdentityRepo for SqlStore {
             query = query.filter(sessions::Column::Subject.eq(subject));
         }
         if let Some(session_id) = session_id {
-            query = query.filter(sessions::Column::SessionId.eq(session_id));
+            // With a subject too: that session, or a device recorded with no session id (a provider
+            // that sent none then). With a session id alone: only that session.
+            query = if subject.is_some() {
+                query.filter(
+                    sea_orm::Condition::any()
+                        .add(sessions::Column::SessionId.eq(session_id))
+                        .add(sessions::Column::SessionId.is_null()),
+                )
+            } else {
+                query.filter(sessions::Column::SessionId.eq(session_id))
+            };
         }
         Ok(query
             .all(self.writer())

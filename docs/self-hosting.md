@@ -138,8 +138,14 @@ provider doesn't check) gets the Kemlock account of that address. Kemlock narrow
   only with a second step turned on, so linking to one by email asks for it before any token is
   issued;
 - a back-channel logout ends only the devices that identity (or that provider session, `sid`)
-  signed in, never the account's other devices. Devices SSO signed in before the update have no
-  record and are not ended by a logout.
+  signed in (a device that passed the account's second step after SSO included), never the
+  account's other devices. Devices SSO signed in before the update have no record and are not ended
+  by a logout. Signing a device in some other way takes its record away.
+
+To restore the old defaults of a server whose settings you want to behave like before this change
+(link by email on, no proven domain needed), set `SSO_SIGNUPS_MATCH_EMAIL=true` and
+`KEMLOCK_SSO_REQUIRE_VERIFIED_DOMAIN=false` for a new install, or tick the same two settings in the
+console (a stored setting is never changed by an update).
 
 Safer settings: set `SSO_SIGNUPS_MATCH_EMAIL=false` and let SSO make its own accounts (an existing
 account then stays out of SSO and the sign-in answers `sso-linking-off`); or keep it on, require a
