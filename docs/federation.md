@@ -903,8 +903,12 @@ The three pairing messages travel between the two servers as plain HTTP bodies, 
 the code alone: `POST /fed/v1/pair/start` (message 1 in, message 2 out) and
 `POST /fed/v1/pair/finish?initiator=<server id>` (message 3 in). The code is good for one attempt
 and 10 minutes, kept in memory. A message 1 that is malformed (not the CBOR map of the table above, a missing field, a version
-other than 1, the receiver's own id as the initiator) is refused without using the code up; one
-that is well formed uses it, right or wrong, so a stranger able to send one can still use the code up. The two routes answer 429 past 20 requests a minute
+other than 1, the receiver's own id as the initiator), and one whose key share the receiver can't
+read, is refused without using the code up: nothing about the code can make a message 1 fail, so
+the receiver keeps the code. The code is used up when an answer (message 2) is sent, right code or
+wrong. A message 3 that doesn't open leaves the pairing it names as it was, so junk sent in the
+initiator's name (its server id is no secret) can't cancel the pairing its admin is in the middle
+of; the pairing ends when a message 3 opens or after the 10 minutes. The two routes answer 429 past 20 requests a minute
 from one source address (the address the server's request layer settled, which honours a trusted
 proxy; an IPv6 address counts by its /64) and past 300 a minute from all of them together, so one
 host can't use up the limit of the admin who is pairing. After a successful exchange each side holds the other's verified
