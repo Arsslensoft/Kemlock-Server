@@ -5,12 +5,12 @@
 # options (/data/options.json) into settings. Its binaries are static, so this takes them from the
 # official image by version and runs them under the base image's s6 and bashio.
 #
-# The base images are pinned by digest where this can be done by hand: the default below and the
-# amd64 line of build.yaml. The digest in build.yaml is moved by hand. Dependabot (docker, this
-# directory) proposes the new tag and digest of the default; copy the new amd64 digest into
-# build.yaml yourself. The aarch64 and armv7 base images in build.yaml, and the kemlock-server
-# image copied from below (ghcr.io/arsslensoft/kemlock-server:${KEMLOCK_VERSION}), are still
-# tags, not digests.
+# The base images are pinned by digest where this can be done by hand: the BUILD_FROM default below
+# and the amd64 line of build.yaml. Both are moved by hand: Dependabot's docker parser most likely
+# ignores an ARG default (it reads FROM lines), so do not wait for it to propose a new base image.
+# When you move one, move the other, and look up the aarch64 and armv7 digests. The aarch64 and
+# armv7 base images in build.yaml, and the kemlock-server image copied from below
+# (ghcr.io/arsslensoft/kemlock-server:${KEMLOCK_VERSION}), are still tags, not digests.
 ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.22@sha256:1967b25b597a43fa46ce3eef5267b525e946d559d0b397c60af717dde15a2696
 ARG KEMLOCK_VERSION=1
 

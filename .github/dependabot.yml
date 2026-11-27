@@ -95,7 +95,9 @@ updates:
         update-types: [minor, patch]
 
   # The base images are pinned by digest in docker/Dockerfile (and Dockerfile.fips): Dependabot
-  # moves the tag and the digest together.
+  # moves the tag and the digest together. Not so in /deploy/home-assistant/kemlock-server: its base
+  # image is an ARG default (BUILD_FROM) and a line of build.yaml, which Dependabot most likely does
+  # not read, so that digest is moved by hand (see its Dockerfile).
   - package-ecosystem: docker
     directories:
       - /docker
