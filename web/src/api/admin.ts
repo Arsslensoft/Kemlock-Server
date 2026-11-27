@@ -1066,7 +1066,7 @@ export function createAdminApi(api: AdminTransport) {
     /**
      * `POST /admin/v1/federation/offers/{owner}/accept`: copy a vault its home offered. With
      * `rehome` it is `?rehome=true`: the account is a copy from another server, and this server
-     * takes over as the vault's home. The plain accept answers 409 when that is the case (see
+     * takes over as the vault's home. The plain accept answers 409 `account-copy-from-another-server` when that is the case (see
      * `isCopyFromAnotherServer`).
      */
     federate: (owner: string, token?: string, rehome = false) =>
@@ -1193,9 +1193,9 @@ export type AdminApi = ReturnType<typeof createAdminApi>;
 
 /**
  * Whether the plain accept of an offer was refused because the account is a copy from another
- * server (`409`, a problem whose slug names a copy): the admin may then accept and move the vault's
+ * server (`409`, slug `account-copy-from-another-server`): the admin may then accept and move the vault's
  * home here (`federate(owner, token, true)`).
  */
 export function isCopyFromAnotherServer(error: unknown): boolean {
-  return isApiError(error) && error.status === 409 && /copy/.test(error.slug);
+  return isApiError(error, 'account-copy-from-another-server') && error.status === 409;
 }

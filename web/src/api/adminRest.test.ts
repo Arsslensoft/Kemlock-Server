@@ -223,9 +223,10 @@ describe('accepting an offer', () => {
   it('is told apart when the plain accept is refused because the account is a copy', () => {
     const problem = (slug: string, status: number) =>
       new ApiError(status, { type: `urn:kemlock:problem:${slug}`, title: slug, status } as never);
-    expect(isCopyFromAnotherServer(problem('account-is-a-copy', 409))).toBe(true);
-    expect(isCopyFromAnotherServer(problem('account-is-a-copy', 403))).toBe(false);
+    expect(isCopyFromAnotherServer(problem('account-copy-from-another-server', 409))).toBe(true);
+    expect(isCopyFromAnotherServer(problem('account-copy-from-another-server', 403))).toBe(false);
     expect(isCopyFromAnotherServer(problem('something-else', 409))).toBe(false);
+    expect(isCopyFromAnotherServer(problem('account-is-a-copy', 409))).toBe(false);
     expect(isCopyFromAnotherServer(new Error('copy'))).toBe(false);
   });
 });
