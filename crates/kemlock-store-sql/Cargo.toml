@@ -25,14 +25,8 @@ time.workspace = true
 uuid.workspace = true
 tracing.workspace = true
 
-[features]
-# Test hooks (a held account lock for the race tests). Never enabled by the server; this crate's own
-# tests turn it on through the dev-dependency on itself below.
-test-support = []
-
 [dev-dependencies]
 tempfile = "3.27.0"
-kemlock-store-sql = { path = ".", features = ["test-support"] }
 
 [lints]
 workspace = true

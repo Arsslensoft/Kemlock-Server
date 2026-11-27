@@ -35,7 +35,6 @@ pub use bind_secrets::BindReport;
 pub use connect::{SqliteSync, StoreOptions};
 pub use fanout::{Dialect, NUDGE_CHANNEL, NudgeListener};
 pub use migrate::{pending_migrations, pre_migration_path};
-#[cfg(feature = "test-support")]
 #[doc(hidden)]
 pub use owner_lock::AccountHold;
 pub use request_ip::{request_ip, with_request_ip};

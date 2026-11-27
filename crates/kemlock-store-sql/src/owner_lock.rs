@@ -13,7 +13,8 @@ use crate::tables::users;
 use kemlock_app::ports::StoreError;
 use kemlock_domain::{Owner, UserId};
 use sea_orm::{
-    ConnectionTrait, DatabaseTransaction, DbBackend, EntityTrait, QuerySelect, TransactionTrait,
+    ColumnTrait, ConnectionTrait, DatabaseTransaction, DbBackend, EntityTrait, QueryFilter,
+    QuerySelect, TransactionTrait,
 };
 
 /// Locks the row of `owner` (an account or a space) until the transaction `db` ends. On SQLite,
@@ -101,17 +102,13 @@ pub(crate) async fn begin_locked_at(
 }
 
 /// A held account lock, for tests of the races it orders: the account's row is locked and its key
-/// version set, as a rotation's install does, until [`AccountHold::commit`]. Only built with the
-/// `test-support` feature, which only this crate's tests enable.
-#[cfg(feature = "test-support")]
+/// version set, as a rotation's install does, until [`AccountHold::commit`]. Not for production.
 #[doc(hidden)]
 pub struct AccountHold(DatabaseTransaction);
 
-#[cfg(feature = "test-support")]
 impl AccountHold {
     /// Takes the account's lock and sets its key version, uncommitted.
     pub async fn take(store: &SqlStore, user: UserId, key_version: u32) -> Result<Self, StoreError> {
-        use sea_orm::{ColumnTrait, QueryFilter};
         let txn = begin_locked(store, user).await?;
         users::Entity::update_many()
             .col_expr(
