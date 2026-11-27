@@ -466,57 +466,30 @@ async fn a_local_folder_has_no_presigned_urls() {
 }
 
 #[tokio::test]
-async fn a_bucket_signs_urls_only_when_the_setting_is_on() {
+async fn a_bucket_signs_download_urls_only_when_the_setting_is_on_and_never_upload_ones() {
     let blob = BlobId::random();
 
     let off = ObjectBlobStore::s3(&bucket(), None).expect("a bucket store");
     assert_eq!(off.presigned_upload(blob).await, Ok(None));
+    assert_eq!(off.presigned_download(blob).await, Ok(None));
 
     let on =
         ObjectBlobStore::s3(&bucket(), Some(Duration::from_secs(300))).expect("a bucket store");
-    // An upload URL is signed for one length: the unsized form gives none.
+    // A pre-signed `PUT` can't be held to the announced length, so there is none.
     assert_eq!(on.presigned_upload(blob).await, Ok(None));
-    for url in [
-        on.presigned_upload_sized(blob, 4096)
-            .await
-            .expect("signs")
-            .expect("a URL"),
-        on.presigned_download(blob)
-            .await
-            .expect("signs")
-            .expect("a URL"),
-    ] {
-        assert_eq!(url.expires_in, Duration::from_secs(300));
-        assert!(
-            url.url.starts_with("http://localhost:9000/kemlock/"),
-            "{}",
-            url.url
-        );
-        assert!(url.url.contains(&blob.to_string()), "{}", url.url);
-        assert!(url.url.contains("X-Amz-Signature="), "{}", url.url);
-    }
-}
-
-#[tokio::test]
-async fn an_upload_url_signs_the_files_exact_length() {
-    let on =
-        ObjectBlobStore::s3(&bucket(), Some(Duration::from_secs(300))).expect("a bucket store");
-    let blob = BlobId::random();
     let url = on
-        .presigned_upload_sized(blob, 4096)
+        .presigned_download(blob)
         .await
         .expect("signs")
-        .expect("a URL")
-        .url;
-    // It names the staging object, and the length is one of the headers the signature binds.
-    assert!(url.contains(&format!("/staging/{blob}")), "{url}");
-    let signed = url
-        .split("X-Amz-SignedHeaders=")
-        .nth(1)
-        .and_then(|rest| rest.split('&').next())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    assert!(signed.contains("content-length"), "{url}");
+        .expect("a URL");
+    assert_eq!(url.expires_in, Duration::from_secs(300));
+    assert!(
+        url.url.starts_with("http://localhost:9000/kemlock/"),
+        "{}",
+        url.url
+    );
+    assert!(url.url.contains(&blob.to_string()), "{}", url.url);
+    assert!(url.url.contains("X-Amz-Signature="), "{}", url.url);
 }
 
 #[tokio::test]
@@ -548,10 +521,7 @@ async fn the_purge_removes_only_the_staging_objects_past_the_grace_period() {
     // Past the grace period they go, and a finished blob is not under `staging/`.
     assert_eq!(store.purge_staging(Duration::ZERO).await, Ok(2));
     for blob in [a, b] {
-        assert_eq!(
-            store.get_raw(&format!("staging/{blob}")).await,
-            Ok(None)
-        );
+        assert_eq!(store.get_raw(&format!("staging/{blob}")).await, Ok(None));
     }
     assert!(store.get_blob_raw(a).await.expect("read").is_some());
 }
@@ -566,7 +536,6 @@ async fn the_settings_build_the_store_they_describe() {
         },
         max_size: 1000,
         presign: true,
-        staging_expiry_confirmed: true,
         presign_ttl: Duration::from_secs(60),
     };
     let store = ObjectBlobStore::from_config(&config).expect("a local store");
@@ -577,13 +546,13 @@ async fn the_settings_build_the_store_they_describe() {
         backend: Backend::S3(bucket()),
         max_size: 1000,
         presign: true,
-        staging_expiry_confirmed: true,
         presign_ttl: Duration::from_secs(60),
     };
     let store = ObjectBlobStore::from_config(&config).expect("a bucket store");
+    assert_eq!(store.presigned_upload(BlobId::random()).await, Ok(None));
     assert!(
         store
-            .presigned_upload(BlobId::random())
+            .presigned_download(BlobId::random())
             .await
             .expect("signs")
             .is_some()

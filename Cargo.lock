@@ -3561,7 +3561,6 @@ version = "0.1.4"
 dependencies = [
  "bytes",
  "futures-util",
- "http",
  "kemlock-app",
  "kemlock-domain",
  "object_store",

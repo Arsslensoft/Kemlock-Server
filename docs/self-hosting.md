@@ -547,20 +547,12 @@ holds keys only.
   migrations and file storage. The image's `HEALTHCHECK` runs `kemlock-server healthcheck`, because
   the image has no shell or curl.
 - Logs: text, or `KEMLOCK_LOG_FORMAT=json`.
-- Direct uploads to a bucket. With `KEMLOCK_ATTACHMENT_PRESIGN=true` (off by default; Kemlock API
-  only, bucket storage only) clients `PUT` files straight to the bucket through a pre-signed URL
-  that lives `KEMLOCK_ATTACHMENT_PRESIGN_TTL` seconds (default 300). The URL signs the exact
-  `Content-Length` the upload announced, so the bucket refuses a `PUT` of any other length (a bucket
-  or signer that can't bind the header gets no URL, and the upload goes through the server). It
-  names `staging/<blob id>`, not the file's own name. When the
-  client finishes the upload the server checks the object there (it must be the size announced
-  and a `KMA1` file), writes it again under the file's own name and deletes the staging object; a
-  `PUT` to the URL after that only makes a new staging object that nothing reads. Set a lifecycle
-  rule on the bucket that expires `staging/` after a day, so such objects, and the ones of
-  uploads that never finish, don't pile up. The server will not start with this on and a bucket
-  until `KEMLOCK_ATTACHMENT_STAGING_EXPIRY=true` says the rule is there. The orphan purge also
-  deletes the staging object of an upload nobody finished, and every object under `staging/` older
-  than the orphan grace period, including one a `PUT` made after its upload row was deleted.
+- Direct uploads to a bucket are off. `KEMLOCK_ATTACHMENT_PRESIGN` and
+  `KEMLOCK_ATTACHMENT_PRESIGN_TTL` are still accepted but ignored (one warning at start when it is
+  `true`), and every file goes through the server, which holds the size announced and the quota: a
+  pre-signed `PUT` can't be bound to that length. A POST policy with `content-length-range` could
+  bring direct uploads back (future work). Objects an earlier version left under `staging/` are
+  deleted by the orphan purge once they are older than the orphan grace period.
 - File permissions. On Unix a data folder the server creates is `0700`, and the SQLite database
   (with its `-wal` and `-shm` files and the copy made before a migration) and `server.key` are
   `0600`. A data folder that already exists keeps its mode, and the server warns at start-up when

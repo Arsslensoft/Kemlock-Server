@@ -211,14 +211,6 @@ impl<B: BlobStore> BlobStore for OnDemandBlobs<B> {
         self.inner.presigned_upload(blob).await
     }
 
-    async fn presigned_upload_sized(
-        &self,
-        blob: BlobId,
-        size: u64,
-    ) -> std::result::Result<Option<PresignedUrl>, BlobError> {
-        self.inner.presigned_upload_sized(blob, size).await
-    }
-
     async fn purge_staging(
         &self,
         older_than: std::time::Duration,

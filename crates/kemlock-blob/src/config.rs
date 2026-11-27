@@ -9,15 +9,12 @@
 //!   takes either) are read. A bucket should abort incomplete multipart uploads after a day by a
 //!   lifecycle rule: an upload cut off mid-way can't clean up after itself.
 //! - `KEMLOCK_ATTACHMENT_MAX_SIZE`: the most bytes one file may have, default 100 MiB.
-//! - `KEMLOCK_ATTACHMENT_PRESIGN` (default false): on the Kemlock API only, let clients send and
-//!   fetch files straight to and from the bucket through pre-signed URLs that live
-//!   `KEMLOCK_ATTACHMENT_PRESIGN_TTL` seconds (default 300). Needs a bucket the clients can
-//!   reach. The bytes arrive under `staging/<blob id>`, which the server checks and moves when the
-//!   client finishes the upload (see `BlobStore::verify`). The URL signs the file's exact length,
-//!   and the purge job removes what is left under `staging/` after the orphan grace period, but a
-//!   bucket must also expire `staging/` after a day by a lifecycle rule: with a bucket, the server
-//!   refuses to start with this on until `KEMLOCK_ATTACHMENT_STAGING_EXPIRY=true` says the rule is
-//!   there. The Bitwarden API always streams through the server.
+//! - `KEMLOCK_ATTACHMENT_PRESIGN` and `KEMLOCK_ATTACHMENT_PRESIGN_TTL`: accepted and ignored. Direct
+//!   uploads to a bucket are off until a size-bound signature is supported (a POST policy with
+//!   `content-length-range`): a pre-signed `PUT` can't be held to the length the upload announced.
+//!   Every upload and download goes through the server, which holds the size and the quota. Setting
+//!   `KEMLOCK_ATTACHMENT_PRESIGN=true` logs one warning at start. Objects an earlier version left
+//!   under `staging/` are removed by the orphan purge.
 //!
 //! A setting saved from the admin console will replace these when the console exists.
 
@@ -62,11 +59,9 @@ pub struct BlobConfig {
     /// The most bytes one `KMA1` file may have.
     pub max_size: u64,
     /// Whether to hand out pre-signed bucket URLs on the Kemlock API (a bucket only).
+    /// Always false: see the module docs. `KEMLOCK_ATTACHMENT_PRESIGN` is read and ignored.
     pub presign: bool,
     pub presign_ttl: Duration,
-    /// The operator's word that the bucket expires `staging/` after a day by a lifecycle rule
-    /// (`KEMLOCK_ATTACHMENT_STAGING_EXPIRY`). Pre-signed uploads with a bucket need it.
-    pub staging_expiry_confirmed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -127,6 +122,19 @@ fn number(name: &'static str, value: Option<String>, default: u64) -> Result<u64
     }
 }
 
+/// Says once that pre-signed uploads are off, when the setting asked for them, and gives `false`.
+fn ignored_presign(asked: bool) -> bool {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    if asked {
+        WARNED.call_once(|| {
+            tracing::warn!(
+                "KEMLOCK_ATTACHMENT_PRESIGN is ignored: presigned uploads are off until a size-bound \n                 signature is supported; files go through the server"
+            );
+        });
+    }
+    false
+}
+
 impl BlobConfig {
     /// Reads the settings through `get`, which returns a variable's non-empty value. Tests pass a
     /// map; the server calls [`BlobConfig::from_env`].
@@ -156,26 +164,6 @@ impl BlobConfig {
                     .map_or_else(|| data_folder.join("attachments"), PathBuf::from),
             },
         };
-        let presign = flag(
-            "KEMLOCK_ATTACHMENT_PRESIGN",
-            get("KEMLOCK_ATTACHMENT_PRESIGN"),
-            false,
-        )?;
-        let staging_expiry_confirmed = flag(
-            "KEMLOCK_ATTACHMENT_STAGING_EXPIRY",
-            get("KEMLOCK_ATTACHMENT_STAGING_EXPIRY"),
-            false,
-        )?;
-        // A pre-signed upload can leave an object under `staging/` that no row names (the row was
-        // deleted before the upload arrived). The purge job removes those, and the bucket's own rule
-        // is the second line: without it, a bucket takes no pre-signed uploads.
-        if presign && matches!(backend, Backend::S3(_)) && !staging_expiry_confirmed {
-            return Err(ConfigError::Missing {
-                name: "KEMLOCK_ATTACHMENT_STAGING_EXPIRY",
-                when: "KEMLOCK_ATTACHMENT_PRESIGN is on with a bucket: set it to true once the \
-                       bucket expires staging/ after a day by a lifecycle rule",
-            });
-        }
         Ok(BlobConfig {
             backend,
             max_size: number(
@@ -183,8 +171,11 @@ impl BlobConfig {
                 get("KEMLOCK_ATTACHMENT_MAX_SIZE"),
                 DEFAULT_MAX_SIZE,
             )?,
-            presign,
-            staging_expiry_confirmed,
+            presign: ignored_presign(flag(
+                "KEMLOCK_ATTACHMENT_PRESIGN",
+                get("KEMLOCK_ATTACHMENT_PRESIGN"),
+                false,
+            )?),
             presign_ttl: Duration::from_secs(number(
                 "KEMLOCK_ATTACHMENT_PRESIGN_TTL",
                 get("KEMLOCK_ATTACHMENT_PRESIGN_TTL"),
@@ -225,7 +216,6 @@ mod tests {
         );
         assert_eq!(c.max_size, 100 * 1024 * 1024);
         assert!(!c.presign);
-        assert!(!c.staging_expiry_confirmed);
         assert_eq!(c.presign_ttl, Duration::from_secs(300));
     }
 
@@ -283,42 +273,15 @@ mod tests {
     }
 
     #[test]
-    fn presigning_is_opt_in() {
+    fn presigning_is_accepted_and_ignored() {
         let c = config(&[
             ("KEMLOCK_ATTACHMENT_PRESIGN", "yes"),
             ("KEMLOCK_ATTACHMENT_PRESIGN_TTL", "60"),
         ])
         .expect("valid");
-        assert!(c.presign);
+        // Accepted and ignored: direct uploads are off.
+        assert!(!c.presign);
         assert_eq!(c.presign_ttl, Duration::from_secs(60));
-    }
-
-    #[test]
-    fn presigning_with_a_bucket_needs_the_staging_rule_confirmed() {
-        let bucket = [
-            ("KEMLOCK_S3_BUCKET", "kemlock"),
-            ("KEMLOCK_S3_ACCESS_KEY_ID", "id"),
-            ("KEMLOCK_S3_SECRET_ACCESS_KEY", "secret"),
-            ("KEMLOCK_ATTACHMENT_PRESIGN", "true"),
-        ];
-        let refused = config(&bucket).expect_err("no confirmed rule");
-        assert!(
-            matches!(
-                &refused,
-                ConfigError::Missing {
-                    name: "KEMLOCK_ATTACHMENT_STAGING_EXPIRY",
-                    ..
-                }
-            ),
-            "{refused}"
-        );
-        let mut confirmed = bucket.to_vec();
-        confirmed.push(("KEMLOCK_ATTACHMENT_STAGING_EXPIRY", "true"));
-        let c = config(&confirmed).expect("confirmed");
-        assert!(c.presign && c.staging_expiry_confirmed);
-        // A bucket without pre-signed uploads, and a local folder with them on, need no rule.
-        assert!(config(&bucket[..3]).is_ok());
-        assert!(config(&[("KEMLOCK_ATTACHMENT_PRESIGN", "true")]).is_ok());
     }
 
     #[test]
@@ -327,7 +290,6 @@ mod tests {
             ("KEMLOCK_ATTACHMENT_MAX_SIZE", "lots"),
             ("KEMLOCK_ATTACHMENT_MAX_SIZE", "0"),
             ("KEMLOCK_ATTACHMENT_PRESIGN", "maybe"),
-            ("KEMLOCK_ATTACHMENT_STAGING_EXPIRY", "later"),
             ("KEMLOCK_ATTACHMENT_PRESIGN_TTL", "-5"),
         ] {
             let error = config(&[(name, value)]).expect_err("refused");

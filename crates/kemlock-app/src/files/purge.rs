@@ -42,10 +42,15 @@ impl<A: AttachmentRepo, B: BlobStore, C: Clock> PurgeOrphans<A, B, C> {
         }
         // What pre-signed uploads left under the staging name past the grace period: an upload
         // can arrive after its row was deleted, and then no row names it.
-        purged += self
+        // A listing that fails is no reason to hide what the rows purge did: say so, and go on.
+        match self
             .blobs
             .purge_staging(self.config.orphan_grace.unsigned_abs())
-            .await?;
+            .await
+        {
+            Ok(gone) => purged += gone,
+            Err(error) => tracing::warn!(%error, "couldn't purge the staging objects"),
+        }
         Ok(purged)
     }
 }

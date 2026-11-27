@@ -116,18 +116,6 @@ pub trait BlobStore: Send + Sync {
         blob: BlobId,
     ) -> impl Future<Output = Result<Option<PresignedUrl>, BlobError>> + Send;
 
-    /// [`presigned_upload`](Self::presigned_upload) for a file of exactly `size` bytes: a store
-    /// that can sign the length into the URL does, so what the URL accepts is bounded by what the
-    /// upload announced. The default is the unsized URL.
-    fn presigned_upload_sized(
-        &self,
-        blob: BlobId,
-        size: u64,
-    ) -> impl Future<Output = Result<Option<PresignedUrl>, BlobError>> + Send {
-        let _ = size;
-        self.presigned_upload(blob)
-    }
-
     /// Removes what pre-signed uploads left behind that no upload still waits for: objects under
     /// the staging name older than `older_than`. Returns how many went. A store with no staging
     /// area has none.
