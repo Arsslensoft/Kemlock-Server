@@ -14,6 +14,10 @@ use sea_orm::ActiveValue::Set;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 use uuid::Uuid;
 
+/// The most events kept from one peer for one vault: past it the oldest go, so a peer that sends
+/// events without end can't fill the disk. The cursor is the newest id, which stays.
+pub const MAX_PEER_EVENTS: u64 = 10_000;
+
 fn cut(text: &str, max: usize) -> String {
     text.chars().take(max).collect()
 }
@@ -90,6 +94,28 @@ impl EventSync for SqlStore {
             .await
             .store()?;
             new += 1;
+        }
+        if new > 0 {
+            // The oldest beyond the newest `MAX_PEER_EVENTS` go.
+            let oldest_kept = peer_events::Entity::find()
+                .filter(peer_events::Column::Peer.eq(peer.0))
+                .filter(peer_events::Column::OwnerType.eq(owner_type))
+                .filter(peer_events::Column::OwnerId.eq(owner_id))
+                .order_by_desc(peer_events::Column::Id)
+                .offset(MAX_PEER_EVENTS)
+                .one(self.writer())
+                .await
+                .store()?;
+            if let Some(row) = oldest_kept {
+                peer_events::Entity::delete_many()
+                    .filter(peer_events::Column::Peer.eq(peer.0))
+                    .filter(peer_events::Column::OwnerType.eq(owner_type))
+                    .filter(peer_events::Column::OwnerId.eq(owner_id))
+                    .filter(peer_events::Column::Id.lte(row.id))
+                    .exec(self.writer())
+                    .await
+                    .store()?;
+            }
         }
         Ok(new)
     }

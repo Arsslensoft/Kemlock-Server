@@ -24,7 +24,7 @@ use crate::hashtree::{self, Tree};
 use crate::home::{self, HomeRecord, Policy, PromotionRecord, VaultFederation, Verdict};
 use crate::identity::LocalIdentity;
 use crate::keyrecs::KeyStore;
-use crate::message::{MAX_LEAVES, MAX_PAGE, Request, Response, code};
+use crate::message::{MAX_LEAVES, MAX_PAGE, MAX_PAGES_PER_VISIT, Request, Response, code};
 use crate::outbox::Withholding;
 use crate::ports::{
     ApplyOutcome, Exported, HomeStatus, Peer, PeerRepo, PeerState, ReplicaStore, StoredHomeRecord,
@@ -853,6 +853,11 @@ impl<S: FedStore> Replica<S> {
             self.store.set_peer_cursor(peer, vault, &cursor).await?;
             report.pages += 1;
             if !more {
+                return Ok(report);
+            }
+            if report.pages >= MAX_PAGES_PER_VISIT {
+                // Enough for one visit: the rest comes at the next, and the cursor is kept.
+                tracing::info!(%peer, pages = report.pages, "a pull stopped at its page limit");
                 return Ok(report);
             }
             if cursor == since {

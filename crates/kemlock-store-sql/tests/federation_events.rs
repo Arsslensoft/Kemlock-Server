@@ -157,3 +157,45 @@ async fn what_a_peer_sent_is_kept_once_and_goes_with_the_peer() {
     assert_eq!(left.len(), 1);
     assert_eq!(left[0].from, other);
 }
+
+#[tokio::test]
+async fn a_peer_that_sends_events_without_end_keeps_only_the_newest_ones() {
+    let store = memory().await;
+    let peer = ServerId::random();
+    let vault = Owner::User(kemlock_domain::UserId::random());
+    let numbered = |n: u32| {
+        let mut id = [0u8; 16];
+        id[12..].copy_from_slice(&n.to_be_bytes());
+        LogEntry {
+            id,
+            at_ms: 1_800_000_000_000 + u64::from(n),
+            actor: None,
+            device: None,
+            action: "login".to_owned(),
+            target: None,
+        }
+    };
+    // 10,050 events in pages of 500, a little over the 10,000 the store keeps for one peer.
+    let total = 10_050u32;
+    let mut next = 1u32;
+    while next <= total {
+        let last = (next + 499).min(total);
+        let page: Vec<LogEntry> = (next..=last).map(numbered).collect();
+        EventSync::store_peer_events(&store, peer, vault, &page)
+            .await
+            .expect("stored");
+        next = last + 1;
+    }
+    let kept = EventSync::peer_events(&store, vault, 20_000)
+        .await
+        .expect("events");
+    assert_eq!(kept.len(), 10_000);
+    // The oldest went; the newest stays, and is the cursor a pull resumes from.
+    assert!(kept.iter().all(|e| e.entry.id > numbered(50).id));
+    assert_eq!(
+        EventSync::peer_events_cursor(&store, peer, vault)
+            .await
+            .expect("cursor"),
+        numbered(total).id
+    );
+}

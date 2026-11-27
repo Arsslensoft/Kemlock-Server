@@ -187,7 +187,7 @@ impl<S: FedStore> Replica<S> {
             return Ok(0);
         }
         let mut stored = 0;
-        loop {
+        for _ in 0..crate::message::MAX_PAGES_PER_VISIT {
             let after = self.store.peer_events_cursor(peer, vault).await?;
             let response = channel
                 .call(&Request::Events {
@@ -219,6 +219,8 @@ impl<S: FedStore> Replica<S> {
                 return Ok(stored);
             }
         }
+        // The page limit of a visit: the rest comes at the next.
+        Ok(stored)
     }
 }
 
@@ -427,5 +429,47 @@ mod tests {
                 .expect("events")
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_always_has_more_is_asked_for_a_bounded_number_of_pages() {
+        let t = two().await;
+        switches(&t, true, true).await;
+        struct Endless {
+            calls: usize,
+        }
+        impl Channel for Endless {
+            async fn call(&mut self, request: &Request) -> Result<Response> {
+                let Request::Events { vault, after, .. } = request else {
+                    return Err(FedError::Malformed("not an events request"));
+                };
+                self.calls += 1;
+                let mut last = [0u8; 8];
+                last.copy_from_slice(&after[8..]);
+                let next = u64::from_be_bytes(last) + 1;
+                let mut id = [0u8; 16];
+                id[8..].copy_from_slice(&next.to_be_bytes());
+                Ok(Response::Events {
+                    vault: *vault,
+                    events: vec![LogEntry {
+                        id,
+                        at_ms: 1_700_000_000_000,
+                        actor: None,
+                        device: None,
+                        action: "login".to_owned(),
+                        target: None,
+                    }],
+                    more: true,
+                })
+            }
+        }
+        let mut channel = Endless { calls: 0 };
+        let stored = t
+            .b
+            .pull_events(&mut channel, t.a.server_id(), t.vault)
+            .await
+            .expect("a bounded pull");
+        assert_eq!(channel.calls, crate::message::MAX_PAGES_PER_VISIT);
+        assert_eq!(stored, crate::message::MAX_PAGES_PER_VISIT);
     }
 }

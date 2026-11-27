@@ -403,7 +403,7 @@ impl<S: FedStore> Replica<S> {
         self.authorize(peer, vault).await?;
         let mut report = BlobReport::default();
         let mut after = [0u8; 16];
-        loop {
+        for _ in 0..crate::message::MAX_PAGES_PER_VISIT {
             let response = channel
                 .call(&Request::Blobs {
                     vault,
@@ -423,6 +423,11 @@ impl<S: FedStore> Replica<S> {
             let Some(last) = entries.last() else {
                 return Ok(report);
             };
+            // A page that doesn't move past the last one is a peer that says there is more and
+            // sends the same again.
+            if *last.attachment.0.as_bytes() <= after {
+                return Err(FedError::Invalid("the file list does not move forward"));
+            }
             after = *last.attachment.0.as_bytes();
             for entry in &entries {
                 if self.store.attachment(entry.attachment).await?.is_none() {
@@ -477,6 +482,8 @@ impl<S: FedStore> Replica<S> {
                 return Ok(report);
             }
         }
+        // The page limit of a visit: the rest comes at the next.
+        Ok(report)
     }
 }
 

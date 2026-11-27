@@ -38,6 +38,11 @@ use std::time::{Duration, Instant};
 /// How long a lease on a peer lasts: well beyond one run, and a crashed holder only blocks that
 /// long.
 pub const LEASE_SECS: u64 = 5 * 60;
+/// The longest one run for one peer may take, from connecting to the last vault. A peer that answers
+/// slowly, or keeps saying there is more, is cut off here, so it holds neither the other peers nor
+/// its own lease past its expiry; what was left is taken at the next run.
+pub const VISIT_DEADLINE: Duration = Duration::from_secs(4 * 60);
+const _: () = assert!(VISIT_DEADLINE.as_secs() < LEASE_SECS);
 /// The hash trees of a vault are compared this often.
 pub const RECONCILE_EVERY_SECS: u64 = 60 * 60;
 /// A peer is visited at least this often, whether or not anything changed.
@@ -434,7 +439,8 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
         false
     }
 
-    /// Visits every paired peer that is due, one after the other. Returns what each run did.
+    /// Visits every paired peer that is due, all at once, each under its own deadline. Returns what
+    /// each run did.
     pub async fn tick(&self, now: u64) -> Vec<(ServerId, Result<RunOutcome>)> {
         let peers = match self.replica.store().list_peers().await {
             Ok(peers) => peers,
@@ -443,14 +449,18 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
                 return Vec::new();
             }
         };
-        let mut out = Vec::new();
+        let mut due = Vec::new();
         for peer in peers.into_iter().filter(|p| p.state == PeerState::Paired) {
             if self.due(&peer, now).await {
-                let result = self.run_peer(peer.id, now).await;
-                out.push((peer.id, result));
+                due.push(peer.id);
             }
         }
-        out
+        // One slow or hostile peer must not hold the visits to the others.
+        futures_util::future::join_all(due.into_iter().map(|peer| async move {
+            let result = self.run_peer(peer, now).await;
+            (peer, result)
+        }))
+        .await
     }
 
     /// Ticks until the task is dropped or aborted.
@@ -509,7 +519,14 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
         }
         self.record_attempt(peer, now);
         self.state().dirty.remove(&peer);
-        let result = self.visit(&stored, now).await;
+        let result = match tokio::time::timeout(VISIT_DEADLINE, self.visit(&stored, now)).await {
+            Ok(result) => result,
+            Err(_) => {
+                // What the run didn't reach is taken at the next one, which comes soon.
+                self.state().dirty.insert(peer);
+                Err(FedError::Remote("the visit took too long".to_owned()))
+            }
+        };
         if let Err(e) = store.drop_lease(&lease, &self.holder).await {
             tracing::warn!(error = %e, "couldn't give back a peer lease");
         }
@@ -702,7 +719,12 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
         let report = replica.pull(channel, peer.id, owner).await?;
         // Read before `report.counts` moves into the status.
         let pull_retry = report.counts.retry;
+        let pull_pages = report.pages;
         status.pulled = report.counts;
+        if pull_pages >= crate::message::MAX_PAGES_PER_VISIT {
+            // Stopped at the page limit: the rest is taken at the next visit, soon.
+            self.state().dirty.insert(peer.id);
+        }
 
         let sync = replica.pull_home_records(channel, peer.id, owner).await?;
         status.home_applied = sync.applied;
