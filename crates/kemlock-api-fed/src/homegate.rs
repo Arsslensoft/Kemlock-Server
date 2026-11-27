@@ -4,7 +4,8 @@
 //! (`docs/federation.md`, "Home epochs, promotion and the fence"). [`home_gate`] is a middleware for
 //! the merged router. For a write to `/kem/v1/spaces/{id}/{members, collections, groups, grants,
 //! key-replacement, reseal, policies, chain}`, to the Bitwarden API's `/api/organizations/{id}/{users,
-//! collections, groups, policies, keys, leave}` or to the admin console's
+//! collections, groups, policies, keys, leave}` (and a `PUT` or `DELETE` of `/api/organizations/{id}`
+//! itself) or to the admin console's
 //! `/admin/v1/spaces/{id}/owner`, of a space this server federates:
 //!
 //! - at a server that is **not** the home (a replica, or an old home that was promoted over) the
@@ -130,6 +131,12 @@ pub fn home_only_target(method: &Method, path: &str) -> Option<HomeTarget> {
     let id = match segments.as_slice() {
         ["", "kem", "v1", "spaces", id, section, ..] if HOME_ONLY.contains(section) => id,
         ["", "api", "organizations", id, section, ..] if BITWARDEN_HOME_ONLY.contains(section) => {
+            id
+        }
+        // The organization itself: its update (`PUT`) and its deletion (`DELETE`).
+        ["", "api", "organizations", id] | ["", "api", "organizations", id, ""]
+            if matches!(*method, Method::PUT | Method::DELETE) =>
+        {
             id
         }
         ["", "admin", "v1", "spaces", id, "owner", ..] => id,
@@ -316,6 +323,25 @@ mod tests {
         assert_eq!(
             target(Method::PUT, format!("/admin/v1/spaces/{id}/owner")),
             space
+        );
+        // The organization itself: updating and deleting it are home-only, reading it is not.
+        for method in [Method::PUT, Method::DELETE] {
+            assert_eq!(
+                target(method.clone(), format!("/api/organizations/{id}")),
+                space,
+                "{method}"
+            );
+        }
+        for method in [Method::GET, Method::POST] {
+            assert_eq!(
+                target(method.clone(), format!("/api/organizations/{id}")),
+                None,
+                "{method}"
+            );
+        }
+        assert_eq!(
+            target(Method::PUT, "/api/organizations/not-an-id".to_owned()),
+            Some(HomeTarget::Malformed)
         );
         // Other organization and admin routes are not home-only writes.
         for path in [
