@@ -466,3 +466,90 @@ async fn a_held_record_only_touches_the_items_of_its_own_space() {
         vec![their_item]
     );
 }
+
+#[tokio::test]
+async fn a_member_taken_out_signs_only_where_they_could_edit_and_only_before_they_left() {
+    use kemlock_domain::Owner;
+    use kemlock_federation::extra::{MemberStore, WRITE_SKEW_SECS};
+    let store = memory().await;
+    let space = SpaceId::random();
+    let owner = UserId::random();
+    let gone = UserId::random();
+    let collection = |id: CollectionId| Collection {
+        id,
+        space,
+        parent: None,
+        name: vec![2; 40],
+        key_version: 1,
+        stale_since: None,
+        created_at: AT,
+    };
+    let (editable, read_only, unshared) = (
+        CollectionId::random(),
+        CollectionId::random(),
+        CollectionId::random(),
+    );
+    let mut revoked = member(space, gone, SpaceRole::Member, MemberState::Revoked);
+    revoked.revoked_at = Some(AT);
+    let grant = |collection, user, permission| CollectionGrant {
+        collection,
+        grantee: Grantee::Member(user),
+        permission,
+    };
+    SpaceRepo::create(
+        &store,
+        SpaceChanges {
+            space: Some(Space {
+                id: space,
+                name: vec![1; 40],
+                key_version: 1,
+                keys_pending_since: None,
+                created_at: AT,
+                updated_at: AT,
+            }),
+            members: vec![
+                member(space, owner, SpaceRole::Owner, MemberState::Confirmed),
+                revoked,
+            ],
+            collections: vec![
+                collection(editable),
+                collection(read_only),
+                collection(unshared),
+            ],
+            grants: vec![
+                grant(editable, owner, CollectionPermission::Manage),
+                grant(editable, gone, CollectionPermission::Edit),
+                grant(read_only, owner, CollectionPermission::Manage),
+                grant(read_only, gone, CollectionPermission::View),
+                grant(unshared, owner, CollectionPermission::Manage),
+            ],
+            ..SpaceChanges::new(space)
+        },
+    )
+    .await
+    .expect("a space");
+    let vault = Owner::Space(space);
+    let left = u64::try_from(AT.unix_timestamp()).expect("a time");
+    let may = |user, collection, made| {
+        let store = &store;
+        async move {
+            store
+                .writer_may_edit(vault, user, collection, made)
+                .await
+                .expect("a read")
+        }
+    };
+
+    // Before they left, where they held edit.
+    assert_eq!(may(gone, editable, left - 1_000).await, Some(true));
+    assert_eq!(may(gone, editable, left + WRITE_SKEW_SECS).await, Some(true));
+    // After they left, not.
+    assert_eq!(may(gone, editable, left + WRITE_SKEW_SECS + 1).await, Some(false));
+    // Never where they could only read, or had no grant.
+    assert_eq!(may(gone, read_only, left - 1_000).await, Some(false));
+    assert_eq!(may(gone, unshared, left - 1_000).await, Some(false));
+    // A confirmed member is judged by their grants alone.
+    assert_eq!(may(owner, unshared, left + 1_000_000).await, Some(true));
+    // A collection the server doesn't hold is a reason to wait.
+    assert_eq!(may(gone, CollectionId::random(), left).await, None);
+}

@@ -328,6 +328,7 @@ impl MemberStore for SqlStore {
         vault: Owner,
         user: UserId,
         collection: kemlock_domain::spaces::CollectionId,
+        made_secs: u64,
     ) -> Result<Option<bool>, StoreError> {
         let Owner::Space(space) = vault else {
             return Ok(Some(false));
@@ -343,8 +344,16 @@ impl MemberStore for SqlStore {
         };
         Ok(Some(match member.state {
             MemberState::Confirmed => state.access(user, collection).is_some_and(|a| a.edit),
-            // Taken out since: what they signed before is theirs.
-            MemberState::Revoked => true,
+            // Taken out since: what they signed before is theirs, and only where they could edit
+            // (their grants stay with the row) and only up to when they were taken out.
+            MemberState::Revoked => {
+                member.revoked_at.is_some_and(|at| {
+                    let until = u64::try_from(at.unix_timestamp())
+                        .unwrap_or(0)
+                        .saturating_add(kemlock_federation::extra::WRITE_SKEW_SECS);
+                    made_secs <= until
+                }) && state.access(user, collection).is_some_and(|a| a.edit)
+            }
             _ => false,
         }))
     }

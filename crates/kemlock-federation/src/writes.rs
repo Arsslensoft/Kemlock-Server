@@ -24,7 +24,7 @@ pub const PAST_BUNDLES_CAPABILITY: &str = "x-kemlock-past-bundles1";
 
 /// How far past the moment an account replaced its keys a change made by a server with a slow clock
 /// may still be dated, and be taken as signed before it.
-const RETIRED_KEY_SLACK_SECS: u64 = 300;
+const RETIRED_KEY_SLACK_SECS: u64 = crate::extra::WRITE_SKEW_SECS;
 
 /// What to do with a record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -108,8 +108,9 @@ pub async fn judge<S: ReplicaStore + MemberStore>(
                 "a signed change of a space that names no collection",
             ));
         };
+        let made_secs = record.change.hlc.millis() / 1000;
         match store
-            .writer_may_edit(record.owner, write.writer, collection)
+            .writer_may_edit(record.owner, write.writer, collection, made_secs)
             .await?
         {
             Some(true) => {}

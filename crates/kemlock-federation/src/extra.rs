@@ -15,6 +15,10 @@ use std::future::{Future, ready};
 
 type R<T> = std::result::Result<T, StoreError>;
 
+/// How far past the moment an account was taken out of a space, or replaced its keys, a change
+/// made by a server with a slow clock may still be dated and be taken as made before.
+pub const WRITE_SKEW_SECS: u64 = 300;
+
 /// What an admin acknowledged when pairing with a server another organisation runs: the peer sees
 /// the metadata of the vaults it holds, it can't be forced to delete them, and a peer in another
 /// country is a cross-border transfer. Kept as the operator's record of the data sharing.
@@ -232,10 +236,13 @@ pub trait MemberStore: Send + Sync {
     }
 
     /// Whether `user` may edit `collection` of the space `vault`, from the member list and grants
-    /// this server holds: `Some(true)` for a confirmed member with edit on it, and for one taken out
-    /// of the space since (what they signed before is theirs, and what they could edit then is not
-    /// known), `Some(false)` for a confirmed member without, and `None` when the server doesn't
-    /// know the collection yet (the space's records may not have arrived).
+    /// this server holds, for a change dated `made_secs` (Unix seconds, the origin's HLC):
+    /// `Some(true)` for a confirmed member with edit on it, and for one taken out of the space since
+    /// who held edit on it and whose change was made before they were taken out (with
+    /// [`WRITE_SKEW_SECS`] of slack for a slow clock); `Some(false)` for a confirmed member without,
+    /// for a taken-out member who never could edit it, or whose change is dated after they left,
+    /// and `None` when the server doesn't know the collection yet (the space's records may not have
+    /// arrived).
     ///
     /// The default says yes, for a store that keeps no spaces.
     fn writer_may_edit(
@@ -243,6 +250,7 @@ pub trait MemberStore: Send + Sync {
         _vault: Owner,
         _user: UserId,
         _collection: kemlock_domain::spaces::CollectionId,
+        _made_secs: u64,
     ) -> impl Future<Output = R<Option<bool>>> + Send {
         ready(Ok(Some(true)))
     }

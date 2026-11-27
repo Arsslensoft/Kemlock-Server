@@ -982,6 +982,7 @@ impl crate::extra::MemberStore for MemoryStore {
         vault: Owner,
         user: UserId,
         collection: kemlock_domain::spaces::CollectionId,
+        _made_secs: u64,
     ) -> Result<Option<bool>, StoreError> {
         Ok(self
             .extras()
