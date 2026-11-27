@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
 import { ApiError } from '@/api/errors';
+import { writeFields } from '@/api/signedWrites';
 import type { MemberViewDto, ServedItemDto } from '@/api/spaces';
 import type { ChainView } from '@/crypto/types';
 import { decodeB64, encodeB64, fromUtf8, utf8 } from '@/lib/b64url';
@@ -8,6 +9,7 @@ import { type Manifest, ciphertextHash } from '@/manifest/format';
 import { checkedFingerprint, fingerprintText, fingerprintBytes, uuidBytes } from '@/sharing/bundle';
 import { memoryAnchorStore, memoryPinStore } from '@/spaces/anchors';
 import { makeBundleB64 } from '@/test/bundles';
+import { writeSignatureText } from '@/test/fake-crypto';
 import { NO_CHAIN, fakeBoxSignature, fakeSpaceCrypto } from '@/test/fake-space-crypto';
 import {
   FINANCE,
@@ -835,6 +837,21 @@ describe('replacing the keys of a space that has a chain', () => {
     expect(phases).toEqual(expect.arrayContaining(['reading', 'sealing', 'sending']));
   });
 
+  it('sends each re-written item signed by its writer, the signature binding its collection', async () => {
+    const { spaceDeps, api, crypto, loaded } = await waiting([served(ITEM, INFRA)]);
+    await replaceKeys(spaceDeps, loaded);
+    const writes = api.appendChain.mock.calls[0]?.[1].writes ?? [];
+    expect(writes).toHaveLength(1);
+    for (const { collection, item: sent } of writes) {
+      expect(sent.collectionId).toBe(collection);
+      expect(sent.writer).toBe(crypto.writer);
+      expect(sent.writerKeyVersion).toBe(1);
+      expect(sent.writeSignature).toBe(
+        encodeB64(utf8(writeSignatureText(crypto.writer, 1, writeFields(sent)))),
+      );
+    }
+  });
+
   it('names no item held in a collection the record doesn’t replace', async () => {
     const { spaceDeps, api, crypto, loaded } = await waiting([], [served(UNLISTED, INFRA, { revision: 2 })]);
     // The worker left INFRA's key alone (it holds no key of it): its items stay as they are.
@@ -985,6 +1002,22 @@ describe('sealing again what a replacement left under an old key', () => {
     expect(listed).toEqual([all.map((i) => i.id)]);
     expect(result).toEqual({ rewritten: 2, stuck: 0 });
     expect(phases.at(-1)).toEqual(['sending', 2, 2]);
+  });
+
+  it('signs what it seals again, the signature binding the collection of each item', async () => {
+    const all = [item(1, INFRA, 1), item(2, INFRA, 1)];
+    const { spaceDeps, api, crypto, loaded } = await leftOver(all, all);
+    await resealItems(spaceDeps, loaded);
+    const writes = api.putBatch.mock.calls[0]?.[0].writes ?? [];
+    expect(writes).toHaveLength(2);
+    for (const { item: sent } of writes) {
+      expect(sent.collectionId).toBe(INFRA);
+      expect(sent.writer).toBe(crypto.writer);
+      expect(sent.writerKeyVersion).toBe(1);
+      expect(sent.writeSignature).toBe(
+        encodeB64(utf8(writeSignatureText(crypto.writer, 1, writeFields(sent)))),
+      );
+    }
   });
 
   it('leaves out what the manifest doesn’t list as it is, which a removed member may have written', async () => {

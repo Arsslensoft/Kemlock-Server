@@ -344,7 +344,11 @@ export type ChainChange =
   /** Shares the keys this account holds with the members awaiting them. */
   | { action: 'seal' };
 
-/** An item a `keys` record re-writes under its collection's new key version. */
+/**
+ * An item a `keys` record re-writes under its collection's new key version (or a reseal writes
+ * again). The worker signs it with the account's sig1 key, with the collection bound, as it signs
+ * any write of a space's item.
+ */
 export interface ChainWrite {
   collection: string;
   /** The revision being replaced; the item is written as the next one. */
@@ -360,6 +364,12 @@ export interface ChainWrite {
     itemKey: string;
     deleted: false;
     collectionId: string;
+    /** The signed write ("Signed item writes"): the account that wrote it, as any write of a space's item. */
+    writer: string;
+    /** The key version of the writer's bundle that signed. */
+    writerKeyVersion: number;
+    /** The writer's sig1 signature of the statement binding the item, its envelope and its collection. */
+    writeSignature: string;
   };
 }
 
@@ -912,7 +922,9 @@ export interface CryptoApi {
   /**
    * Replaces the keys the chain marks (a removal or an ungrant marked them): a `keys` record, and
    * the items of the replaced collections sealed again under their new key versions (`writes`),
-   * with those the account can't re-write named `held`. No records when nothing can be replaced.
+   * each signed as any write of a space's item is (`writer`, `writerKeyVersion`, `writeSignature`,
+   * the collection bound), with those the account can't re-write named `held`. No records when
+   * nothing can be replaced.
    */
   buildKeyReplacement(input: {
     spaceId: string;
@@ -922,8 +934,8 @@ export interface CryptoApi {
   /**
    * Seals again the items still under an older key version than their collection's current one
    * (a replacement that stopped halfway, or items it held), as the next revision under the
-   * current version. `held` names those this unlock can't seal again (it no longer holds their
-   * old key, or can't edit them). No record is made.
+   * current version, each signed like a key replacement's. `held` names those this unlock can't
+   * seal again (it no longer holds their old key, or can't edit them). No record is made.
    */
   buildReseal(input: { spaceId: string; items: ChainReplacement['items'] }): Promise<ChainBuilt>;
   /**
