@@ -2,8 +2,37 @@
 # Until this script lives in community-scripts/ProxmoxVE, take the install script from this
 # repository. Dropped when submitting upstream (see deploy/proxmox/README.md).
 export COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/Arsslensoft/Kemlock-Server/main/deploy/proxmox}"
-_cs_boot="${COMMUNITY_SCRIPTS_CORE_DIR:-$(dirname "${BASH_SOURCE[0]}")/../../core}/core/build.func"
-source "$_cs_boot" 2>/dev/null || source <(curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/core/build.func")
+# build.func runs as root on the Proxmox host, so it is fetched from one commit of
+# community-scripts/core and checked against its SHA-256, never from a moving branch. To move the
+# pin: pick a commit, download core/build.func at it, review the diff to the old one, and set both
+# values (sha256sum build.func). Both must be set, or the script stops. Dropped when submitting
+# upstream, like the line above (see deploy/proxmox/README.md).
+_cs_core_commit=""
+_cs_core_sha256=""
+# A local checkout of community-scripts/core is used only when COMMUNITY_SCRIPTS_CORE_DIR names it.
+_cs_boot="${COMMUNITY_SCRIPTS_CORE_DIR:+${COMMUNITY_SCRIPTS_CORE_DIR}/core/build.func}"
+if [[ -n "$_cs_boot" && -r "$_cs_boot" ]]; then
+  source "$_cs_boot"
+else
+  if [[ ! "$_cs_core_commit" =~ ^[0-9a-f]{40}$ || ! "$_cs_core_sha256" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "kemlock-server: the community-scripts/core pin (commit and SHA-256 of build.func) is not set in this script; stopping" >&2
+    exit 1
+  fi
+  export COMMUNITY_SCRIPTS_CORE_URL="https://raw.githubusercontent.com/community-scripts/core/${_cs_core_commit}"
+  _cs_tmp="$(mktemp)"
+  if ! curl -fsSL -o "$_cs_tmp" "${COMMUNITY_SCRIPTS_CORE_URL}/core/build.func"; then
+    rm -f "$_cs_tmp"
+    echo "kemlock-server: could not download build.func at ${_cs_core_commit}" >&2
+    exit 1
+  fi
+  if ! echo "${_cs_core_sha256}  ${_cs_tmp}" | sha256sum -c --status -; then
+    rm -f "$_cs_tmp"
+    echo "kemlock-server: build.func at ${_cs_core_commit} does not match the pinned SHA-256; stopping" >&2
+    exit 1
+  fi
+  source "$_cs_tmp"
+  rm -f "$_cs_tmp"
+fi
 # Copyright (c) 2021-2026 community-scripts ORG
 # Author: Arsslensoft
 # License: MIT | https://github.com/community-scripts/ProxmoxVE/raw/main/LICENSE

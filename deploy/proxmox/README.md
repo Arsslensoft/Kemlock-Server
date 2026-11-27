@@ -32,7 +32,12 @@ The container is unprivileged. Every `var_*` setting of community-scripts works,
 
 The script sets `COMMUNITY_SCRIPTS_URL` to this directory when it is unset, so the engine fetches
 `install/kemlock-server-install.sh` from this repository and not from community-scripts/ProxmoxVE.
-The engine itself (`build.func` and the rest) comes from community-scripts/core.
+The engine itself (`build.func` and the rest) comes from community-scripts/core. `build.func` runs
+as root on the Proxmox host, so `ct/kemlock-server.sh` downloads it from one pinned commit
+(`_cs_core_commit`) and checks its SHA-256 (`_cs_core_sha256`) before it sources it, and stops if
+either is unset or the file differs. To move the pin, pick a commit, read the diff of
+`core/build.func` against the pinned one, and set both values (`sha256sum build.func`).
+`COMMUNITY_SCRIPTS_CORE_DIR` still points the script at a local checkout for development.
 
 ## What it installs
 
@@ -113,7 +118,8 @@ first (ProxmoxVE closes pull requests that add scripts), and then moves them to 
 testing. Its website metadata is now kept on the website, so `json/kemlock-server.json` is the
 text to give them, not a file their CI reads. To submit:
 
-1. Delete the `COMMUNITY_SCRIPTS_URL` line and its comment at the top of `ct/kemlock-server.sh`.
+1. Delete the `COMMUNITY_SCRIPTS_URL` line, the `build.func` pin and their comments at the top of
+   `ct/kemlock-server.sh`, and put back `source <(curl ... build.func)` as community-scripts writes it.
    Everything else is as community-scripts writes it.
 2. Keep the files under `ct/`, `install/` and `json/` as they are, and open the pull request
    against DevScripts with its template.
