@@ -59,7 +59,7 @@ function worthRetrying(error: unknown): boolean {
  * Keeps asking the server to end a session after the person was signed out here without it
  * answering: until one try works, the server refuses (the session is gone or never was), the
  * delays run out, or `cancelled` says so. Only a page that stays open can do this; the tokens it
- * holds are in this closure and nowhere else. `onEnd` runs once, whichever way it stops.
+ * holds are in this closure and nowhere else. `finished` runs once, whichever way it stops.
  */
 export function keepRevoking(
   attempt: () => Promise<unknown>,
