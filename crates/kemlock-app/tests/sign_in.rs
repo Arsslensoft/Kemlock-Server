@@ -789,3 +789,46 @@ async fn an_account_held_for_its_email_is_refused_once_the_password_checks_out()
         .await
         .expect("signs in once confirmed");
 }
+
+#[tokio::test]
+async fn an_account_at_its_device_cap_refuses_a_new_device_but_not_a_known_one() {
+    use kemlock_app::ports::{Clock, DeviceRepo};
+    use kemlock_app::session::MAX_DEVICES_PER_ACCOUNT;
+    use kemlock_domain::{Device, DeviceId};
+    let (world, user) = signed_in_world().await;
+    let now = Clock::now(&world.env);
+    let first = DeviceId::random();
+    for n in 0..MAX_DEVICES_PER_ACCOUNT {
+        let id = if n == 0 { first } else { DeviceId::random() };
+        DeviceRepo::upsert(
+            &world.store,
+            &Device {
+                id,
+                user,
+                name: format!("Phone {n}"),
+                kind: DeviceKind::KemlockAndroid,
+                dpop_jkt: Some(format!("jkt-{n}")),
+                created_at: now,
+                last_seen_at: now,
+            },
+        )
+        .await
+        .expect("stored");
+    }
+
+    let refused = sign_in_with(&world, EMAIL, &PASSWORD, device("One too many"), "jkt-new")
+        .await
+        .map(|_| ());
+    assert!(
+        matches!(refused, Err(AppError::Invalid(text)) if text.contains("too many")),
+        "{refused:?}"
+    );
+    assert_eq!(world.store.devices_of(user).len(), MAX_DEVICES_PER_ACCOUNT);
+
+    // A device the account already has signs in again, with a new key.
+    let mut known = device("Phone 0");
+    known.id = Some(first);
+    sign_in_with(&world, EMAIL, &PASSWORD, known, "jkt-0-rotated")
+        .await
+        .expect("a known device is not a new one");
+}

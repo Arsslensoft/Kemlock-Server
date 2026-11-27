@@ -345,12 +345,33 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> FromRequestParts<Api
             .device_proof
             .check(&format!("device:{}", claims.device.0), api.now())
             .map_err(rate_limited)?;
-        let jkt = verify_proof(parts, api, Some(token), None)?;
+        // The proof is checked now but remembered only once the session behind the token is
+        // found good, in the account's own share of the set: a token that is signed but refused
+        // takes no room, and no number of devices lets one account fill the set for everybody.
+        let proof = proof_header(parts, api)?;
+        let pending = api
+            .dpop
+            .verify_unrecorded_with(
+                proof,
+                parts.method.as_str(),
+                parts.uri.path(),
+                api.now(),
+                Some(token),
+            )
+            .map_err(|e| dpop_problem(api, e))?;
+        let jkt = pending.jkt.clone();
         let actor = api
             .authenticate()
             .execute(token, &jkt)
             .await
             .map_err(|e| invalid_token(Problem::from(e)))?;
+        api.dpop
+            .record_for_account(
+                &pending,
+                format!("user:{}", claims.user).as_bytes(),
+                api.now(),
+            )
+            .map_err(|e| dpop_problem(api, e))?;
         // The device used the API; the device list shows it beside the Bitwarden API's use.
         api.note_use(actor.device).await;
         Ok(Authed {
