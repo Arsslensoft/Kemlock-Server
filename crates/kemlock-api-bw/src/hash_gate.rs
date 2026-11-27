@@ -196,13 +196,16 @@ impl HashGate {
             started: false,
             _permit: None,
         };
-        if let Some(prefix) = who.prefix {
-            self.claim_prefix(prefix, deadline).await?;
-            claims.who.prefix = Some(prefix);
-        }
+        // The account's turn first: waiting out its interval holds nothing another account needs.
+        // Taken the other way round, a request waiting for its account would sit on one of its
+        // prefix's turns, and the other accounts behind that address would be refused meanwhile.
         if let Some(key) = who.account {
             self.claim_account(key, deadline).await?;
             claims.who.account = Some(key);
+        }
+        if let Some(prefix) = who.prefix {
+            self.claim_prefix(prefix, deadline).await?;
+            claims.who.prefix = Some(prefix);
         }
         let permit =
             match tokio::time::timeout_at(deadline, Arc::clone(&self.0.pool).acquire_owned()).await
@@ -321,6 +324,29 @@ mod tests {
         let other = Instant::now();
         gate.run(who(2, None), || ()).await.expect("runs");
         assert!(other.elapsed() < Duration::from_millis(150));
+    }
+
+    #[tokio::test]
+    async fn an_account_waiting_its_interval_keeps_no_turn_of_its_prefix() {
+        // A pool of 2: one hash in flight per prefix.
+        let gate = HashGate::new(2, Duration::from_secs(2), Duration::from_millis(800));
+        gate.run(who(1, Some(9)), || ()).await.expect("runs");
+        // The account's next hash waits out its interval...
+        let waiting = tokio::spawn({
+            let gate = gate.clone();
+            async move { gate.run(who(1, Some(9)), || ()).await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        // ...while another account behind the same address runs at once.
+        let began = Instant::now();
+        gate.run(who(2, Some(9)), || ())
+            .await
+            .expect("another account of the prefix runs");
+        assert!(began.elapsed() < Duration::from_millis(500));
+        waiting
+            .await
+            .expect("joined")
+            .expect("runs after its interval");
     }
 
     #[tokio::test]
