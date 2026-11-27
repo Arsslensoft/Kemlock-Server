@@ -90,9 +90,10 @@ async fn the_kdf_moves_to_the_new_settings_and_only_the_calling_device_stays_sig
         synced["profile"]["securityStamp"],
         before["profile"]["securityStamp"]
     );
-    // Every other device's session ends at once: its access token, and its live connections.
+    // Every other device's live connections are told to sign out; its access token runs out on its
+    // own, so an app beside the CLI that migrated the KDF goes on working until then.
     let (status, _) = h.json("GET", "/api/sync", Some(&phone_access), None).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(status, StatusCode::OK);
     let told = h.events.take();
     assert!(
         told.iter()

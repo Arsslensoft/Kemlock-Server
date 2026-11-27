@@ -7,10 +7,11 @@
 //! Vaultwarden resets the security stamp and lets the calling device refresh its way back in. Not
 //! here: the clients compare the stamp at every sync and sign themselves out when it changed, so
 //! the client that asked for the change would sign itself out (the Bitwarden CLI does). The stamp
-//! stays and every other device's sign-in is revoked instead, which ends its access token at once
-//! too (`App::session` takes a signed-in device's access token only while its sign-in lives) and
-//! closes its live connections; it signs in again with the password, whose old hash no longer
-//! matches. The calling device keeps its session.
+//! stays and every other device's sign-in is revoked instead, and its live connections are told
+//! to sign out; it signs in again with the password, whose old hash no longer matches, once its
+//! access token runs out. That token is not ended at once: a Kemlock app signed in to the account
+//! goes on working when the Bitwarden CLI migrates its KDF at sign-in, as it does with Vaultwarden.
+//! The calling device keeps its session.
 
 use crate::account::Kdf;
 use crate::app::{App, Authed, BwStore};
@@ -118,8 +119,7 @@ pub(crate) async fn change_kdf<S: BwStore>(
         .await?;
     account.akey.clone_from(&unlock.master_key_wrapped_user_key);
     BwAccountRepo::update(&app.store, &account).await?;
-    // Every other device's sign-in ends, and with it its access token, not up to two hours from
-    // now.
+    // Every other device's sign-in ends: it can't refresh, and signs in again with the password.
     for device in DeviceRepo::list(&app.store, account.user).await? {
         if device.id != authed.device.id {
             TokenRepo::revoke_device(&app.store, device.id).await?;

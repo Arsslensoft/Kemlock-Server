@@ -288,16 +288,6 @@ impl<S: BwStore> App<S> {
         if user.security_stamp.to_string() != claims.sstamp {
             return Err(BwError::Unauthorized);
         }
-        // A signed-in device's access token lives only while its sign-in does: once its refresh
-        // tokens are revoked (a KDF change, a sign-out, a reused refresh token) it ends at once, not
-        // up to two hours later. An API key's token has no refresh token to follow.
-        if claims.scope.iter().any(|s| s == "offline_access")
-            && TokenRepo::device_tokens(&self.store, device.id)
-                .await?
-                .is_empty()
-        {
-            return Err(BwError::Unauthorized);
-        }
         // The device used the Bitwarden API: the device list shows it beside the Kemlock API's use.
         self.record_use(device.id).await;
         Ok(Authed {
