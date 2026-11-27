@@ -431,15 +431,15 @@ async fn the_public_pairing_routes_are_rate_limited() {
 }
 
 #[tokio::test]
-async fn promotion_needs_a_fresh_check() {
+async fn promotion_needs_a_step_up_token_not_just_a_recent_sign_in() {
     let e = env(1, Arc::new(Dead));
     let owner = format!("user:{}", uuid::Uuid::new_v4());
     let uri = format!("/admin/v1/federation/vaults/{owner}/promote");
     let (status, _, bytes) = call(&e.app, Method::POST, &uri, None, &[("x-admin", "1")]).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     let problem: Value = serde_json::from_slice(&bytes).expect("a problem");
-    assert_eq!(problem["type"], "urn:kemlock:problem:fresh-check-needed");
-    // With a fresh check it gets as far as the vault, which this server doesn't hold.
+    assert_eq!(problem["type"], "urn:kemlock:problem:step-up-required");
+    // A sign-in minutes old is not enough.
     let (status, _, _) = call(
         &e.app,
         Method::POST,
@@ -448,25 +448,35 @@ async fn promotion_needs_a_fresh_check() {
         &[("x-admin", "1"), ("x-fresh", "1")],
     )
     .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    // With a step-up token it gets as far as the vault, which this server doesn't hold.
+    let (status, _, _) = call(
+        &e.app,
+        Method::POST,
+        &uri,
+        None,
+        &[("x-admin", "1"), ("x-step-up", "1")],
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
-async fn accepting_a_demotion_needs_a_fresh_check_and_a_held_promotion() {
+async fn accepting_a_demotion_needs_a_step_up_token_and_a_held_promotion() {
     let e = env(1, Arc::new(Dead));
     let owner = format!("user:{}", uuid::Uuid::new_v4());
     let uri = format!("/admin/v1/federation/vaults/{owner}/demotion");
     let (status, _, bytes) = call(&e.app, Method::POST, &uri, None, &[("x-admin", "1")]).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     let problem: Value = serde_json::from_slice(&bytes).expect("a problem");
-    assert_eq!(problem["type"], "urn:kemlock:problem:fresh-check-needed");
-    // With a fresh check it gets as far as the vault, which this server doesn't hold.
+    assert_eq!(problem["type"], "urn:kemlock:problem:step-up-required");
+    // With a step-up token it gets as far as the vault, which this server doesn't hold.
     let (status, _, _) = call(
         &e.app,
         Method::POST,
         &uri,
         None,
-        &[("x-admin", "1"), ("x-fresh", "1")],
+        &[("x-admin", "1"), ("x-step-up", "1")],
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);

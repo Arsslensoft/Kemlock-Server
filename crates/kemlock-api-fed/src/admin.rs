@@ -51,12 +51,13 @@ pub struct GateRefusal {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AdminActor {
     pub user: UserId,
-    /// The admin just passed a passkey, password or sign-in check. What counts is the gate's call;
-    /// promotion and replacing the identity key accept it.
+    /// The admin just passed a passkey, password or sign-in check. What counts is the gate's call.
+    /// No federation route accepts it on its own any more: promotion, demotion and replacing or
+    /// revoking the identity key ask for a step-up token like every other write, since a sign-in
+    /// minutes old is what a stolen session still has.
     pub fresh: bool,
     /// The request carries a step-up token the gate accepted: made for this admin and device in the
-    /// last few minutes (see `/admin/v1/step-up`). Every new write needs it, and it stands in for
-    /// `fresh` where that is asked.
+    /// last few minutes (see `/admin/v1/step-up`). Every write needs it.
     pub step_up: bool,
 }
 
@@ -1193,19 +1194,6 @@ where
     ))
 }
 
-/// Refuses an admin who hasn't just passed a passkey or password check, or sent a step-up token.
-fn require_fresh(actor: &AdminActor) -> Result<(), ApiError> {
-    if actor.fresh || actor.step_up {
-        return Ok(());
-    }
-    Err(ApiError::new(
-        StatusCode::FORBIDDEN,
-        "fresh-check-needed",
-        "A fresh check is needed",
-        Some("confirm with your passkey or password, then try again".to_owned()),
-    ))
-}
-
 /// Refuses a write that carries no step-up token the gate accepted: 403 `step-up-required`, as
 /// the rest of `/admin/v1` answers.
 fn require_step_up(actor: &AdminActor) -> Result<(), ApiError> {
@@ -1231,7 +1219,7 @@ where
     S: FedStore + Leases + 'static,
     C: Connector + 'static,
 {
-    require_fresh(&actor)?;
+    require_step_up(&actor)?;
     let change = state.federation.rotate_identity(unix_now()).await?;
     Ok(Json(key_change_dto(change)))
 }
@@ -1244,7 +1232,7 @@ where
     S: FedStore + Leases + 'static,
     C: Connector + 'static,
 {
-    require_fresh(&actor)?;
+    require_step_up(&actor)?;
     let change = state.federation.revoke_identity(unix_now()).await?;
     Ok(Json(key_change_dto(change)))
 }
@@ -1259,7 +1247,7 @@ where
     C: Connector + 'static,
 {
     let owner = parse_owner(&owner)?;
-    require_fresh(&actor)?;
+    require_step_up(&actor)?;
     let record = state.federation.promote(owner, unix_now()).await?;
     Ok(Json(PromotionDto {
         record: b64url::encode(&record),
@@ -1288,7 +1276,7 @@ where
     C: Connector + 'static,
 {
     let owner = parse_owner(&owner)?;
-    require_fresh(&actor)?;
+    require_step_up(&actor)?;
     let next = state
         .federation
         .accept_promotion_of(owner, pick_of(&pick)?)

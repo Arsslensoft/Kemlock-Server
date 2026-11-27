@@ -498,7 +498,7 @@ A peer applies it only if it is for a federated vault it holds, its epoch is the
 previous home is the home the peer knows, its signer is a replica the peer already knows, and it
 keeps exactly the servers the peer knows. Two replicas that promote themselves at once both make a
 record for the next epoch; the first one a peer takes wins and the other fails the previous-home
-check, which is why an admin does it, after a fresh passkey or password check.
+check, which is why an admin does it, with a step-up token.
 
 **A promotion nobody asked for is held, at every server.** What a server does with a promotion
 another server announces is the admin setting `federation_promotion` (environment
@@ -517,8 +517,8 @@ another server announces is the admin setting `federation_promotion` (environmen
   server a promotion takes the vault from.
 
 The admin sees the held promotions at `GET /admin/v1/federation/promotions` (and as `heldPromotions`
-beside each vault), accepts one with `POST /admin/v1/federation/vaults/{owner}/demotion` (after a
-fresh passkey or password check) and refuses it with `DELETE` on the same path (with a step-up
+beside each vault), accepts one with `POST /admin/v1/federation/vaults/{owner}/demotion` (with a
+step-up token) and refuses it with `DELETE` on the same path (with a step-up
 token), naming the server with `?newHome=<server id>` when more than one waits; the console shows both beside the vault. Accepting checks the record again and applies it
 as above; refusing drops it, and the other server announces it again when it restarts. A changed
 set of servers drops a held promotion, which no longer fits it.
@@ -832,8 +832,8 @@ after a rotation the new key's sessions are refused until the record is applied:
 its pending records to a peer before it opens a session to it. Each server keeps the newest record of
 each kind for each server and passes them on to its other peers, so a revocation reaches peers the
 revoked server isn't paired with. The admin console rotates with
-`POST /admin/v1/federation/identity/rotate` and revokes with `.../identity/revoke`, both after a
-fresh passkey or password check; a revoking server takes a new key and every peer must pair with it
+`POST /admin/v1/federation/identity/rotate` and revokes with `.../identity/revoke`, both with a
+step-up token; a revoking server takes a new key and every peer must pair with it
 again.
 
 **Relaying across a chain.** A vault's home and replicas need only form a connected chain of
@@ -943,9 +943,9 @@ drops them (it is refused once the head has been sent to a peer).
 
 The federation screens of the web vault read more than the peer and vault rows. All of it is under
 `/admin/v1/federation`, behind the admin gate; every write (`POST`, `PUT`, `DELETE`) also needs a step-up
-token (`Step-Up-Token`, the one `/admin/v1/step-up` issues), and a step-up token is also the fresh
-check promotion and identity rotation ask for (a sign-in in the last five minutes counts too: the
-time of the sign-in the session began with, which a refresh keeps). The routes added for the screens are in the OpenAPI
+token (`Step-Up-Token`, the one `/admin/v1/step-up` issues). That includes promotion, accepting or
+refusing a demotion, and rotating or revoking the identity key: a sign-in in the last five minutes no
+longer stands in for the token. The routes added for the screens are in the OpenAPI
 document at `/admin/v1/federation/openapi.json`.
 
 - **Identity keys.** Each peer and each waiting pairing carries `identityKey` (hex): the key pinned
