@@ -571,6 +571,14 @@ their keys and that they must confirm the contact again in Emergency access, unt
 contact has no access. Every mail is best effort, sent after the commit, and carries no key
 material.
 
+Two slugs look alike and are different rules. `key-version-stale` answers **409** on
+the wrap routes above (a PRF wrap, a kit, a Send, a device copy, an emergency box, a recovery box),
+and **422** on a signed item write whose signature is for a key version the account no longer has;
+both carry `currentKeyVersion` and mean "the account's keys changed after this device unlocked:
+unlock again". `stale-key-version` (409) is another rule: a write of an item under a collection
+key version that a `keys` record has replaced (the scenario of "A write under the old version leaves
+it held"), and carries no `currentKeyVersion`.
+
 Other devices' sessions end with the stamp: each signs in again and sees at
 `GET /kem/v1/account/keys` a `keyVersion` it did not hold, so it opens with the password, a passkey,
 the new kit or another device's approval and makes its trusted-device copy again. A copy of the old
