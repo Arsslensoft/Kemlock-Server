@@ -1,9 +1,9 @@
 # Every change is reviewed by the lead maintainer. The last matching pattern wins.
-*                        @Arsslensoft
+*                        @iarsslen
 
 # Cryptography and its byte formats
-/crates/kemlock-crypto/  @Arsslensoft
-/docs/crypto.md          @Arsslensoft
+/crates/kemlock-crypto/  @iarsslen
+/docs/crypto.md          @iarsslen
 
 # Build, release and repository settings
-/.github/                @Arsslensoft
+/.github/                @iarsslen
