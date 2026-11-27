@@ -35,11 +35,12 @@ The script sets `COMMUNITY_SCRIPTS_URL` to this directory when it is unset, so t
 The engine itself (`build.func` and the rest) comes from community-scripts/core. `build.func` runs
 as root on the Proxmox host, so `ct/kemlock-server.sh` can pin it: with `_cs_core_commit` and
 `_cs_core_sha256` both set, it downloads `build.func` from that commit and checks the SHA-256
-before it sources it, and stops if the file cannot be fetched or differs. **Both are empty in the
-repository, so the script warns (again below the screen clear) that `build.func` is not pinned, and uses the `main` branch of
-community-scripts/core only after `KEMLOCK_ALLOW_UNPINNED=1` or a yes at its prompt.** The owner must set them: pick a commit, read its `core/build.func`, and
-put the commit and `sha256sum build.func` in the script. `COMMUNITY_SCRIPTS_CORE_DIR` points the
-script at a local checkout (once pinned, only when it is set explicitly).
+before it sources it, and stops if the file cannot be fetched or differs. To move the pin, pick a
+commit, read its `core/build.func`, and put the commit and `sha256sum build.func` in the script.
+With both values empty, the script warns (again below the screen clear) that `build.func` is not
+pinned, and uses the `main` branch of community-scripts/core only after `KEMLOCK_ALLOW_UNPINNED=1`
+or a yes at its prompt. `COMMUNITY_SCRIPTS_CORE_DIR` points the script at a local checkout (once
+pinned, only when it is set explicitly).
 
 ## What it installs
 

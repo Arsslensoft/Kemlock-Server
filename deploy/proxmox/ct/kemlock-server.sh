@@ -15,8 +15,9 @@ _cs_warn_unpinned() {
   echo "WARNING: kemlock-server: build.func is NOT pinned (_cs_core_commit and _cs_core_sha256 are not set in this script)." >&2
   echo "WARNING: it was taken from the community-scripts/core main branch and runs as root on this host." >&2
 }
-_cs_core_commit=""
-_cs_core_sha256=""
+# community-scripts/core main as of 2026-11-27.
+_cs_core_commit="187905c4e3226c695c750806824392504cbf82e0"
+_cs_core_sha256="5c30801926bf1185c8f0f11a1e33fb081ea2156aee889dbf2a70065a9db81426"
 if [[ -n "$_cs_core_commit" || -n "$_cs_core_sha256" ]] && [[ ! "$_cs_core_commit" =~ ^[0-9a-f]{40}$ || ! "$_cs_core_sha256" =~ ^[0-9a-f]{64}$ ]]; then
   # Half a pin, or a mistyped one, is an error, never a silent fall back to the unpinned branch.
   echo "kemlock-server: the build.func pin is malformed: _cs_core_commit must be 40 lowercase hex digits and _cs_core_sha256 64, and both must be set (or both left empty); stopping" >&2
