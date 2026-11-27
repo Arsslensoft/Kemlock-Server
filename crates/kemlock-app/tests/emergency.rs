@@ -471,3 +471,35 @@ async fn a_timer_that_read_the_earlier_wait_cannot_approve_the_new_one() {
     s.world.env.clock.advance(Duration::days(7));
     assert_eq!(approve_due(&s.world, &s.notices).execute().await, Ok(1));
 }
+
+#[tokio::test]
+async fn the_grants_of_a_disabled_or_erasing_account_are_inactive_until_it_is_back() {
+    let s = scene().await;
+    let access = emergency_access(&s.world, &s.notices);
+    let grant = s.confirmed(EmergencyKind::Takeover, 7).await;
+
+    // The grantor's account waits out its erasure: the contact can't ask.
+    s.world.store.set_erasure_pending(s.sam_id, true);
+    assert_eq!(
+        access.initiate(&s.kim, grant.id).await.map(|_| ()),
+        Err(AppError::Forbidden)
+    );
+    s.world.store.set_erasure_pending(s.sam_id, false);
+    access.initiate(&s.kim, grant.id).await.expect("asks");
+
+    // The wait ends while the account is disabled: the timer doesn't approve, nor release a key.
+    s.world.env.clock.advance(Duration::days(8));
+    s.world.store.set_account_disabled(s.sam_id, true);
+    assert_eq!(approve_due(&s.world, &s.notices).execute().await, Ok(0));
+    s.world.store.set_account_disabled(s.sam_id, false);
+    assert_eq!(approve_due(&s.world, &s.notices).execute().await, Ok(1));
+
+    // Approved, but the account is erasing again: the key is not handed out.
+    s.world.store.set_erasure_pending(s.sam_id, true);
+    assert_eq!(
+        access.release_key(&s.kim, grant.id).await.map(|_| ()),
+        Err(AppError::Forbidden)
+    );
+    s.world.store.set_erasure_pending(s.sam_id, false);
+    assert!(access.release_key(&s.kim, grant.id).await.is_ok());
+}

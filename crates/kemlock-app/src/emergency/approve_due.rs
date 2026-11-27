@@ -33,6 +33,13 @@ impl<U: UserRepo, R: EmergencyRepo, N: EmergencyNotices, E: Platform, V: EventLo
             }
             // As read: the timer writes only over this very version of the grant.
             let version = grant.updated_at;
+            // The grantor's account is disabled or erasing: the grant is inactive, and the wait
+            // that has run out is not an approval until the account is back.
+            if self.users.account_disabled(grant.grantor).await?
+                || self.users.erasure_pending(grant.grantor).await?.is_some()
+            {
+                continue;
+            }
             if grant.approve_due(now).is_err() {
                 continue;
             }
