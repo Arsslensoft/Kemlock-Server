@@ -17,12 +17,12 @@ use axum::http::StatusCode;
 use chain_kit::{Chain, Person, Step, request};
 use common::{App, Client, Reply, Req, Session, b64, register_and_sign_in_with};
 use kemlock_api_kem::testing::DpopSigner;
-use kemlock_api_kem::{space_chain_router, spaces_router};
+use kemlock_api_kem::{space_chain_router, space_recovery_router, spaces_router};
 use kemlock_app::notices::{BoxFuture, InvitationNotice, Notice, Outbox};
 use kemlock_app::ports::Clock as _;
 use kemlock_app::ports::ItemStore;
-use kemlock_app::spaces::SpaceRepo;
-use kemlock_crypto::space_chain::{KeyRef, Role, b64 as chain_b64, link};
+use kemlock_app::spaces::{SpaceRecoveryRepo, SpaceRepo};
+use kemlock_crypto::space_chain::{Body, KeyRef, Policies, Role, b64 as chain_b64, link};
 use kemlock_domain::spaces::MemberState;
 use kemlock_domain::{ItemId, SpaceId, UserId};
 use serde_json::{Value, json};
@@ -95,7 +95,8 @@ impl Rig {
         let router = app
             .router_with(spaces.clone())
             .merge(spaces_router(app.api.clone(), spaces.clone()))
-            .merge(space_chain_router(app.api.clone(), spaces.clone()));
+            .merge(space_chain_router(app.api.clone(), spaces.clone()))
+            .merge(space_recovery_router(app.api.clone(), spaces.clone()));
         Rig {
             app,
             router,
@@ -146,6 +147,51 @@ async fn make(rig: &Rig, sam: &Who) -> (Uuid, Uuid, Chain, Step) {
     let reply = sam.post(&uri(space), request(&[&create])).await;
     assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
     (space, collection, chain, create)
+}
+
+#[tokio::test]
+async fn a_recovery_box_for_another_key_version_is_a_409_with_the_current_one() {
+    let rig = Rig::new();
+    let sam = rig.person("sam@example.org", 1).await;
+    let (space, _collection, mut chain, _create) = make(&rig, &sam).await;
+    // The chain sets a recovery key (seq 1) and turns account recovery on (seq 2).
+    let key = sam.person.bundle.kx1_public.as_bytes().to_vec();
+    let set_key = chain.record(&sam.person, Body::RecoveryKey { key });
+    let reply = sam.post(&uri(space), request(&[&set_key])).await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+    let policies = Policies {
+        account_recovery: true,
+        ..Policies::default()
+    };
+    let turn_on = chain.record(&sam.person, Body::Policies { policies });
+    let reply = sam.post(&uri(space), request(&[&turn_on])).await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+
+    // The store says the account is at key version 2.
+    rig.spaces.set_account_key_version(2);
+    let enrol_uri = format!("/kem/v1/spaces/{space}/members/me/recovery");
+    let enrol = |key_version: Option<u32>| {
+        let mut body = json!({"box": b64(&[1u8; 1693]), "keySeq": 1});
+        if let Some(version) = key_version {
+            body["keyVersion"] = json!(version);
+        }
+        sam.call("PUT", &enrol_uri, Some(body))
+    };
+    let stale = enrol(Some(1)).await;
+    assert_eq!(stale.status, StatusCode::CONFLICT, "{:?}", stale.json());
+    assert_eq!(
+        stale.json()["type"],
+        "urn:kemlock:problem:key-version-stale"
+    );
+    assert_eq!(stale.json()["currentKeyVersion"], 2);
+    // Nothing was stored, so the member has no box to read back.
+    assert_eq!(
+        SpaceRecoveryRepo::recovery_box(&rig.spaces, SpaceId(space), sam.id).await,
+        Ok(None)
+    );
+    assert_eq!(enrol(Some(2)).await.status, StatusCode::NO_CONTENT);
+    // An old client sends no version, and is accepted.
+    assert_eq!(enrol(None).await.status, StatusCode::NO_CONTENT);
 }
 
 #[tokio::test]
