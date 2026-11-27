@@ -67,7 +67,7 @@ pub(crate) async fn change_kdf<S: BwStore>(
 ) -> BwResult<()> {
     let mut account = authed.account.clone();
     if !app
-        .password_matches(&account, &data.master_password_hash)
+        .password_matches(&account, &data.master_password_hash, Some(authed.ip))
         .await?
     {
         return Err(BwError::msg("Invalid password"));
@@ -104,11 +104,16 @@ pub(crate) async fn change_kdf<S: BwStore>(
     account.kdf_memory = kdf.memory;
     account.kdf_parallelism = kdf.parallelism;
     account.password_iterations = app.settings.password_iterations;
-    account.password_hash = hash_password(
-        auth.master_password_authentication_hash.as_bytes(),
-        &account.salt,
+    let (secret, salt, iterations) = (
+        auth.master_password_authentication_hash.as_bytes().to_vec(),
+        account.salt.clone(),
         account.password_iterations,
     );
+    account.password_hash = app
+        .hashing(app.who_of(account.user, Some(authed.ip)), move || {
+            hash_password(&secret, &salt, iterations)
+        })
+        .await?;
     account.akey.clone_from(&unlock.master_key_wrapped_user_key);
     BwAccountRepo::update(&app.store, &account).await?;
     // As Vaultwarden does, the security stamp moves: every access token the account had, and every

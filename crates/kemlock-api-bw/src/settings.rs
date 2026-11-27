@@ -53,6 +53,11 @@ pub struct BwSettings {
     /// `UNAUTHENTICATED_RATELIMIT_MAX_BURST`: requests an address may make at once on those routes
     /// (50; they share it, so it is more lenient than the login one).
     pub unauthenticated_ratelimit_max_burst: u32,
+    /// The least time between two password hash checks of one account (a second): a right password
+    /// still passes, only a little later. The tests set it to nothing.
+    pub hash_interval: std::time::Duration,
+    /// How long a password hash check waits for its turn and a free place before it is answered 429.
+    pub hash_wait: std::time::Duration,
     /// The longest, in seconds, a password check is held back once its account has more wrong
     /// passwords in a window than the console allows (3).
     pub password_slowdown_secs: u64,
@@ -84,6 +89,8 @@ impl BwSettings {
             unauthenticated_ratelimit_seconds: 60,
             unauthenticated_ratelimit_max_burst: 50,
             password_slowdown_secs: 3,
+            hash_interval: crate::hash_gate::DEFAULT_INTERVAL,
+            hash_wait: crate::hash_gate::DEFAULT_WAIT,
             org_events_enabled: false,
             org_groups_enabled: true,
             live: None,

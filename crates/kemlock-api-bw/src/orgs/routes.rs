@@ -436,7 +436,9 @@ async fn check_proof<S: BwStore>(
 ) -> BwResult<()> {
     match (data.master_password_hash.as_deref(), data.otp.as_deref()) {
         (Some(hash), None) => {
-            if app.password_matches(&authed.account, hash).await? {
+            if app
+                .password_matches(&authed.account, hash, Some(authed.ip))
+                .await? {
                 Ok(())
             } else {
                 Err(BwError::msg("Invalid password"))

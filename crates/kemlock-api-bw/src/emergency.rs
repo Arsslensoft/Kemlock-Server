@@ -924,11 +924,16 @@ async fn password<S: BwStore>(
     };
 
     // The grantor's new password and key, and an end to every session they had.
-    account.password_hash = hash_password(
-        new_hash.as_bytes(),
-        &account.salt,
+    let (secret, salt, iterations) = (
+        new_hash.as_bytes().to_vec(),
+        account.salt.clone(),
         account.password_iterations,
     );
+    account.password_hash = app
+        .hashing(app.who_of(grantor.id, None), move || {
+            hash_password(&secret, &salt, iterations)
+        })
+        .await?;
     account.akey = new_key;
     BwAccountRepo::update(&app.store, &account).await?;
     grantor.security_stamp = random_uuid(app.env.as_ref());

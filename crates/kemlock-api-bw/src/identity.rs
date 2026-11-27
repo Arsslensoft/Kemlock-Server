@@ -904,6 +904,7 @@ pub(crate) async fn check_password<S: BwStore>(
     user: &User,
     account: &BwAccount,
     password: &str,
+    ip: IpAddr,
 ) -> BwResult<()> {
     let limit = app.settings.password_limit();
     let tries = BwTryRepo::count_try(
@@ -921,7 +922,7 @@ pub(crate) async fn check_password<S: BwStore>(
         ))
         .await;
     }
-    if !app.password_matches(account, password).await? {
+    if !app.password_matches(account, password, Some(ip)).await? {
         return Err(BwError::msg(BAD_LOGIN));
     }
     BwTryRepo::forget_tries(&app.store, user.id, PASSWORD_KIND).await?;
@@ -948,10 +949,10 @@ pub(crate) async fn prove_password_of<S: BwStore>(
         None => None,
     };
     let (Some(user), Some(account)) = (user, account) else {
-        app.password_decoy(hash).await?;
+        app.password_decoy(email, hash, Some(ip)).await?;
         return Err(BwError::msg(BAD_LOGIN));
     };
-    check_password(app, &user, &account, hash).await?;
+    check_password(app, &user, &account, hash, ip).await?;
     if UserRepo::account_disabled(&app.store, user.id).await? {
         return Err(BwError::msg(DISABLED));
     }
@@ -993,18 +994,18 @@ async fn password_login<S: BwStore>(
         None => None,
     };
     let (Some(user), Some(mut account)) = (user, account) else {
-        // The work of a check is done all the same, so the time of the answer does not say whether
-        // the address has an account.
-        if data.auth_request.is_none() {
-            app.password_decoy(password).await?;
-        }
+        // The work of a check is done all the same (an `authRequest` or not), so the time of the
+        // answer does not say whether the address has an account.
+        app.password_decoy(&username, password, Some(caller.ip)).await?;
         return Err(BwError::msg(BAD_LOGIN));
     };
-    // A login approved on another device isn't supported: Kemlock never starts one.
+    check_password(app, &user, &account, password, caller.ip).await?;
+    // A login approved on another device isn't supported: Kemlock never starts one. It is looked at
+    // only after the password, and answers as a wrong password does, so a request that names one
+    // tells nobody whether the account exists or the password was right.
     if data.auth_request.is_some() {
-        return Err(BwError::msg("Auth request not found. Try again."));
+        return Err(BwError::msg(BAD_LOGIN));
     }
-    check_password(app, &user, &account, password).await?;
     attempt.proved = true;
     attempt.user = Some(user.id);
     // As Vaultwarden does (`_password_login`, identity.rs): the disabled check comes after the
@@ -1016,7 +1017,7 @@ async fn password_login<S: BwStore>(
     refuse_pending_erasure(app, &user).await?;
     crate::signup_hold::refuse_if_held(app, &user).await?;
     require_sso(app, &user, SignInMethod::Password).await?;
-    kdf_upgrade(app, &mut account, password).await?;
+    kdf_upgrade(app, &mut account, password, caller.ip).await?;
 
     let device_type = requested_device_type(&data, caller);
     let (device, is_new) = app
@@ -1035,7 +1036,8 @@ async fn password_login<S: BwStore>(
         app.announce_new_device(&user, &device, caller.ip).await?;
     }
 
-    DeviceRepo::upsert(&app.store, &device).await?;
+    // Only what the sign-in changed: a key a sign-out cleared since `device_for` read it stays cleared.
+    DeviceRepo::upsert_description(&app.store, &device).await?;
     app.record_use(device.id).await;
     let identifier = app
         .note_device(
@@ -1279,7 +1281,8 @@ async fn user_api_key_login<S: BwStore>(
     if is_new {
         app.announce_new_device(&user, &device, caller.ip).await?;
     }
-    DeviceRepo::upsert(&app.store, &device).await?;
+    // Only what the sign-in changed: a key a sign-out cleared since `device_for` read it stays cleared.
+    DeviceRepo::upsert_description(&app.store, &device).await?;
     app.record_use(device.id).await;
     let identifier = app
         .note_device(
@@ -1349,11 +1352,11 @@ pub(crate) async fn send_email_login<S: BwStore>(
         // A hash was sent for an address with no account: the work of a check is done all the
         // same, so the time of the answer does not say who has an account.
         if let Some(hash) = password_hash {
-            app.password_decoy(hash).await?;
+            app.password_decoy(email, hash, Some(ip)).await?;
         }
         return Err(BwError::msg(BAD_LOGIN));
     };
-    check_password(app, &user, &account, hash).await?;
+    check_password(app, &user, &account, hash, ip).await?;
     // Only a request that knows the password is counted, so a stranger can neither use the count
     // to tell who has an account nor use up the owner's mails; the client address limit above is
     // what stops guesses.

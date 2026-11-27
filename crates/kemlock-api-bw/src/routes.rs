@@ -208,10 +208,14 @@ async fn register_verification_clicked<S: BwStore>(
     empty(account::verification_clicked(&app, &data.email, &data.email_verification_token).await)
 }
 
-async fn register_finish<S: BwStore>(State(app): State<App<S>>, body: Bytes) -> JsonResult {
+async fn register_finish<S: BwStore>(
+    State(app): State<App<S>>,
+    Peer(ip): Peer,
+    body: Bytes,
+) -> JsonResult {
     let value: Value = parse(&body)?;
     let request = account::parse_registration(&value)?;
-    account::register(&app, request).await?;
+    account::register(&app, request, ip).await?;
     ok(json!({ "object": "registerFinish" }))
 }
 

@@ -284,6 +284,8 @@ impl Harness {
         // The suites sign in far more often than a person does; the rate-limit tests set their own.
         settings.login_ratelimit_max_burst = 1_000_000;
         settings.unauthenticated_ratelimit_max_burst = 1_000_000;
+        // No wait between the hashes of one account: the suites sign one in again and again.
+        settings.hash_interval = std::time::Duration::ZERO;
         tweak(&mut settings);
         let app = App::new(AppParts {
             store: store.clone(),

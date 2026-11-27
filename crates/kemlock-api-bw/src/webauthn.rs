@@ -206,7 +206,9 @@ pub(crate) async fn verify<S: BwStore>(
 ) -> BwResult<()> {
     match (master_password_hash, token) {
         (Some(hash), _) => {
-            if app.password_matches(&authed.account, hash).await? {
+            if app
+                .password_matches(&authed.account, hash, Some(authed.ip))
+                .await? {
                 Ok(())
             } else {
                 Err(BwError::msg("Invalid password"))

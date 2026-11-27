@@ -272,8 +272,16 @@ pub(crate) async fn recover<S: BwStore>(
     };
 
     if let Some((hash, key)) = new {
-        account.password_hash =
-            hash_password(hash.as_bytes(), &account.salt, account.password_iterations);
+        let (secret, salt, iterations) = (
+            hash.as_bytes().to_vec(),
+            account.salt.clone(),
+            account.password_iterations,
+        );
+        account.password_hash = app
+            .hashing(app.who_of(user, None), move || {
+                hash_password(&secret, &salt, iterations)
+            })
+            .await?;
         account.akey = key;
         BwAccountRepo::update(&app.store, &account).await?;
     }

@@ -69,6 +69,34 @@ impl DeviceRepo for SqlStore {
             .is_some_and(|row| row.dpop_jkt.as_deref() == Some(jkt)))
     }
 
+    async fn upsert_description(&self, device: &Device) -> Result<(), StoreError> {
+        let updated = devices::Entity::update_many()
+            .col_expr(devices::Column::Name, Expr::value(device.name.clone()))
+            .col_expr(
+                devices::Column::Kind,
+                Expr::value(devices::kind_str(device.kind).to_owned()),
+            )
+            .col_expr(devices::Column::LastSeenAt, Expr::value(utc(device.last_seen_at)))
+            .filter(devices::Column::Id.eq(device.id.0))
+            .filter(devices::Column::UserId.eq(device.user.0))
+            .exec(self.writer())
+            .await
+            .store()?;
+        if updated.rows_affected > 0 {
+            return Ok(());
+        }
+        // Nothing changed: the device is new, or MySQL counted a row written with the same values.
+        if devices::Entity::find_by_id(device.id.0)
+            .one(self.writer())
+            .await
+            .store()?
+            .is_some()
+        {
+            return Ok(());
+        }
+        self.upsert(device).await
+    }
+
     async fn touch_last_seen(&self, id: DeviceId, at: OffsetDateTime) -> Result<(), StoreError> {
         devices::Entity::update_many()
             .col_expr(devices::Column::LastSeenAt, Expr::value(utc(at)))

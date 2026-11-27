@@ -509,8 +509,14 @@ pub(crate) async fn accept<S: BwStore>(
             }
             let proved = match hash {
                 Some(hash) => {
-                    crate::identity::check_password(app, &authed.user, &authed.account, hash)
-                        .await?;
+                    crate::identity::check_password(
+                        app,
+                        &authed.user,
+                        &authed.account,
+                        hash,
+                        ip,
+                    )
+                    .await?;
                     true
                 }
                 None => false,

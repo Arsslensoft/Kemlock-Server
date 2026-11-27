@@ -25,7 +25,7 @@ pub enum Relation {}
 
 impl ActiveModelBehavior for ActiveModel {}
 
-fn kind_str(kind: DeviceKind) -> &'static str {
+pub(crate) fn kind_str(kind: DeviceKind) -> &'static str {
     match kind {
         DeviceKind::KemlockAndroid => "kemlock-android",
         DeviceKind::KemlockIos => "kemlock-ios",

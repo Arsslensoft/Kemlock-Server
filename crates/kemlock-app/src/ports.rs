@@ -285,6 +285,27 @@ pub trait DeviceRepo: Send + Sync {
         }
     }
 
+    /// Inserts the device, or, when it is there, writes only its name, kind and last-seen time: not
+    /// its owner, its DPoP key or when it was made. A sign-in that read the row a moment ago must
+    /// not put back a key that a sign-out cleared since. The default reads and writes in two steps;
+    /// a store that serves requests concurrently overrides it with one statement.
+    fn upsert_description(
+        &self,
+        device: &Device,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        async move {
+            match self.get(device.id).await? {
+                Some(mut row) => {
+                    row.name.clone_from(&device.name);
+                    row.kind = device.kind;
+                    row.last_seen_at = device.last_seen_at;
+                    self.upsert(&row).await
+                }
+                None => self.upsert(device).await,
+            }
+        }
+    }
+
     /// Records that the device was seen at `at`, whatever key it holds, and nothing else of the row:
     /// a caller that read the row earlier must not write back what a sign-out cleared since. A
     /// device that is gone stays gone. The default reads and writes in two steps; a store that

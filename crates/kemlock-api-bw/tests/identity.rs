@@ -1901,3 +1901,38 @@ async fn the_personal_api_key_is_sealed_at_rest_and_still_signs_in_and_shows() {
         .await;
     assert_eq!(body["message"], "Incorrect client_secret");
 }
+
+/// The password grant writes only the device's name, kind and last-seen time, so it never puts back
+/// a DPoP key that a sign-out cleared; a device it makes is new and has none.
+#[tokio::test]
+async fn a_password_sign_in_leaves_the_devices_dpop_key_as_it_is() {
+    use kemlock_app::ports::DeviceRepo;
+    let h = Harness::new().await;
+    let user = h.account("ada@example.com", HASH).await;
+    h.login("ada@example.com", HASH).await;
+    let mut device = DeviceRepo::list(&h.store, user)
+        .await
+        .expect("devices")
+        .remove(0);
+    assert_eq!(device.dpop_jkt, None);
+    device.dpop_jkt = Some("jkt".to_owned());
+    DeviceRepo::upsert(&h.store, &device).await.expect("a key");
+    h.login("ada@example.com", HASH).await;
+    let kept = DeviceRepo::get(&h.store, device.id)
+        .await
+        .expect("a read")
+        .expect("the device");
+    assert_eq!(kept.dpop_jkt.as_deref(), Some("jkt"));
+    // And a write that races a sign-out (a stale copy with the key) can't put it back.
+    let mut cleared = kept.clone();
+    cleared.dpop_jkt = None;
+    DeviceRepo::upsert(&h.store, &cleared).await.expect("cleared");
+    DeviceRepo::upsert_description(&h.store, &kept)
+        .await
+        .expect("described");
+    let after = DeviceRepo::get(&h.store, device.id)
+        .await
+        .expect("a read")
+        .expect("the device");
+    assert_eq!(after.dpop_jkt, None, "the cleared key stays cleared");
+}

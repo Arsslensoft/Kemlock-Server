@@ -14,7 +14,7 @@ use std::sync::{Mutex, PoisonError};
 /// The address a client is followed by: an IPv6 client holds a whole /56 (what a household gets,
 /// and what a mobile network may hand out per device), so changing the low 72 bits is not a new
 /// client, and an IPv4-mapped address is the IPv4 one.
-fn bucket_key(ip: IpAddr) -> IpAddr {
+pub(crate) fn bucket_key(ip: IpAddr) -> IpAddr {
     match ip.to_canonical() {
         IpAddr::V6(v6) => {
             let mut octets = v6.octets();
