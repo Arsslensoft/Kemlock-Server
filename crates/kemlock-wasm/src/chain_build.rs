@@ -16,7 +16,10 @@
 //! - [`Session::create_chained_space`] makes the `create` record of a new space.
 //! - [`Session::build_key_replacement`] replaces the keys a removal or an ungrant marked
 //!   ("Removal and replacement"): a `keys` record, and the items of the replaced collections
-//!   re-written under their new key versions, which the append route stores with it.
+//!   re-written under their new key versions, which the append route stores with it. Each
+//!   re-written item is signed with the account's `sig1` key as any write of a space's item is
+//!   ("Signed item writes"), the statement binding the item's collection; so is each item of
+//!   [`Session::build_reseal`].
 //! - [`Session::build_chain_records`] makes the records of one [`Change`]. A change that gives
 //!   members keys (a `confirm`, a `grant`, new group members) is followed by a `seal` record that
 //!   shares the keys this account holds with the members now awaiting them.
@@ -43,6 +46,7 @@ use crate::{
     b64,
     error::Error,
     ids,
+    item_writes::sign_rewrite,
     session::{SealedItemRef, Session},
     spaces::{NameKind, SpaceKeys, seal_name_under},
 };
@@ -179,6 +183,11 @@ struct ItemOut {
     item_key: String,
     deleted: bool,
     collection_id: String,
+    /// The signed write ("Signed item writes"): this account, its key version and the signature
+    /// of the statement that binds the item, its new envelope and its collection.
+    writer: String,
+    writer_key_version: u32,
+    write_signature: String,
 }
 
 /// An item a `keys` record re-writes under its collection's new key version.
@@ -213,6 +222,10 @@ pub(crate) struct AppendOut {
 /// An item sealed again as the next revision under a fresh item key, wrapped under the collection
 /// key `secret` at `version`. A fresh item key, so whoever kept the old collection key learns
 /// nothing of the new copy.
+///
+/// The write is signed like any write of a space's item ("Signed item writes"): by `sig`, the key
+/// of the account `writer` at `writer_key_version`, over a statement that binds `collection`.
+#[allow(clippy::too_many_arguments)]
 fn sealed_again(
     space: &Id,
     item: &ItemIn,
@@ -221,6 +234,9 @@ fn sealed_again(
     version: u32,
     secret: &SecretKey,
     plain: &[u8],
+    sig: &SigningKey,
+    writer: Id,
+    writer_key_version: u32,
 ) -> Option<WriteOut> {
     let owner = Owner::space(*space);
     let revision = item.revision.checked_add(1)?;
@@ -228,6 +244,20 @@ fn sealed_again(
     let sealed = kem1::seal_item(&item_key, id, revision, &item.kind, &owner, plain).ok()?;
     let wrap = secret.child(ITEM_WRAP_LABEL).ok()?;
     let wrapped = kem1::wrap_item_key(&wrap, &item_key, id, &owner, version).ok()?;
+    let signed = sign_rewrite(
+        &owner,
+        id,
+        collection,
+        &item.kind,
+        revision,
+        version,
+        &sealed,
+        &wrapped,
+        writer,
+        writer_key_version,
+        sig,
+    )
+    .ok()?;
     Some(WriteOut {
         collection: sc::uuid_text(collection),
         expected_revision: item.revision,
@@ -242,6 +272,9 @@ fn sealed_again(
             item_key: b64::encode(&wrapped),
             deleted: false,
             collection_id: sc::uuid_text(collection),
+            writer: signed.writer,
+            writer_key_version: signed.writer_key_version,
+            write_signature: signed.write_signature,
         },
     })
 }
@@ -704,7 +737,18 @@ impl<'a> Build<'a> {
                 },
             )
             .ok()?;
-        sealed_again(&self.space, item, id, collection, version, secret, &plain)
+        sealed_again(
+            &self.space,
+            item,
+            id,
+            collection,
+            version,
+            secret,
+            &plain,
+            self.sig,
+            self.me,
+            session.own_key_version().ok()?,
+        )
     }
 
     /// Every name of the space sealed again under the new space key: opened as the chain committed
@@ -1131,6 +1175,7 @@ impl Session {
     /// edit, comes back named held instead. No record is made and no state changes.
     pub(crate) fn build_reseal(&self, space: &Id, input: &Reseal) -> Result<Built, Error> {
         let unlocked = self.unlocked()?;
+        let (_, sig_private) = unlocked.private.as_ref().ok_or(Error::Locked)?;
         if unlocked.spaces.refused.contains(space) {
             return Err(Error::Invalid);
         }
@@ -1185,7 +1230,18 @@ impl Session {
                     &ciphertext,
                 )
                 .ok()?;
-                sealed_again(space, item, &id, &collection, current, new, &plain)
+                sealed_again(
+                    space,
+                    item,
+                    &id,
+                    &collection,
+                    current,
+                    new,
+                    &plain,
+                    sig_private,
+                    unlocked.account_id,
+                    unlocked.key_version,
+                )
             })();
             match again {
                 Some(write) => writes.push(write),
