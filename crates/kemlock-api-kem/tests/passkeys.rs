@@ -1191,12 +1191,13 @@ async fn an_answer_with_another_users_handle_is_refused() {
 }
 
 #[tokio::test]
-async fn proof_options_require_verification_only_when_a_passkey_may_answer() {
+async fn proof_options_require_verification_for_a_security_key_too() {
     let pk = pk();
     let (d1, s1) = pk.signed_in("sam@example.org").await;
     let mut key = enrol_key(&pk, &d1, &s1, "Yubi").await;
+    // A security key alone is asked to verify too: a touch of a key someone picked up proves nothing.
     let keys_only = pk.proof_options(&d1, &s1).await.json()["options"].clone();
-    assert_eq!(keys_only["userVerification"], "discouraged");
+    assert_eq!(keys_only["userVerification"], "required");
 
     // The key answers the proof the new passkey needs, with a second step on.
     let proof = json!({ "webauthn": key.get(&keys_only) });
