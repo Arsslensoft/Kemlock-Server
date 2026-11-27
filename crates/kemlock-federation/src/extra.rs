@@ -255,6 +255,20 @@ pub trait MemberStore: Send + Sync {
         ready(Ok(Some(true)))
     }
 
+    /// Whether `collection` is one of the space `vault`: `Some(true)` when it is, `Some(false)` when
+    /// it belongs to another space (or `vault` has no collections), and `None` when this server
+    /// doesn't know it yet (the space's records may not have arrived). What a change that names a
+    /// collection is checked against, signed or not.
+    ///
+    /// The default says yes, for a store that keeps no spaces.
+    fn space_has_collection(
+        &self,
+        _vault: Owner,
+        _collection: kemlock_domain::spaces::CollectionId,
+    ) -> impl Future<Output = R<Option<bool>>> + Send {
+        ready(Ok(Some(true)))
+    }
+
     /// The public part of an account that lives on this server, with its device registrations.
     /// `None` when there is no such account or it is a copy from another server.
     fn member_account(

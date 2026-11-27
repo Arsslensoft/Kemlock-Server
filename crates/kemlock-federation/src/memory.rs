@@ -171,6 +171,8 @@ struct Extras {
     members: HashMap<Owner, Vec<UserId>>,
     /// The members `writer_ids` adds to them: those who left.
     former_members: HashMap<Owner, Vec<UserId>>,
+    /// What `space_has_collection` answers, where a test says: absent means yes.
+    has_collection: HashMap<(Owner, kemlock_domain::spaces::CollectionId), Option<bool>>,
     /// What `writer_may_edit` answers, where a test says: absent means yes.
     edits: HashMap<(Owner, UserId, kemlock_domain::spaces::CollectionId), Option<bool>>,
     /// The account copies applied: the home that signed and the user.
@@ -346,6 +348,18 @@ impl MemoryStore {
     /// Sets who `member_ids` answers for `vault`: the members this store "knows" of it.
     pub fn set_members(&self, vault: Owner, members: Vec<UserId>) {
         self.extras().members.insert(vault, members);
+    }
+
+    /// Sets what `space_has_collection` answers for `collection` of `vault`.
+    pub fn set_has_collection(
+        &self,
+        vault: Owner,
+        collection: kemlock_domain::spaces::CollectionId,
+        answer: Option<bool>,
+    ) {
+        self.extras()
+            .has_collection
+            .insert((vault, collection), answer);
     }
 
     /// Sets what `writer_may_edit` answers for `user` and `collection` of `vault`.
@@ -991,6 +1005,19 @@ impl crate::extra::MemberStore for MemoryStore {
             .extras()
             .edits
             .get(&(vault, user, collection))
+            .copied()
+            .unwrap_or(Some(true)))
+    }
+
+    async fn space_has_collection(
+        &self,
+        vault: Owner,
+        collection: kemlock_domain::spaces::CollectionId,
+    ) -> Result<Option<bool>, StoreError> {
+        Ok(self
+            .extras()
+            .has_collection
+            .get(&(vault, collection))
             .copied()
             .unwrap_or(Some(true)))
     }

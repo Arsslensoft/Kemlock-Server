@@ -58,8 +58,11 @@ pub fn statement_of(record: &ChangeRecord) -> Option<item_write::Statement<'_>> 
     })
 }
 
-/// Judges a `kem1` record against the writer's signature and the owner's signed-only flag. A `bw`
-/// record is accepted: it has no `kem1` envelope to sign.
+/// Judges a record. Any record of a space that names a collection (signed or not, `kem1` or `bw`)
+/// must name one of that space: otherwise a peer could link an item to another space's collection.
+///
+/// A `kem1` record is judged against the writer's signature and the owner's signed-only flag. A `bw`
+/// record has no `kem1` envelope to sign, so the collection is all there is to check of it.
 ///
 /// - With a signature: the writer must be allowed for the owner (the vault's own account, or a
 ///   member of the space, from this server's replicated member list); this server must hold the
@@ -70,6 +73,21 @@ pub async fn judge<S: ReplicaStore + MemberStore>(
     store: &S,
     record: &ChangeRecord,
 ) -> Result<Verdict> {
+    if let (Owner::Space(_), Some(collection)) = (record.owner, record.collection) {
+        match store.space_has_collection(record.owner, collection).await? {
+            Some(true) => {}
+            Some(false) => {
+                return Ok(Verdict::Refuse(
+                    "a change into a collection that is not this space's",
+                ));
+            }
+            None => {
+                return Ok(Verdict::Defer(
+                    "a change into a collection this server does not know yet",
+                ));
+            }
+        }
+    }
     if record.format != ItemFormat::Kem1 {
         return Ok(Verdict::Accept);
     }
@@ -402,6 +420,41 @@ mod tests {
             judge(&store, &record).await,
             Ok(Verdict::Defer(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn a_change_that_names_a_collection_of_another_space_is_refused_signed_or_not() {
+        let writer = UserId::random();
+        let key = sig1::SigningKey::from_bytes(&[5; 64]);
+        let store = store_for(writer, &key);
+        let space = Owner::Space(SpaceId::random());
+        store.set_members(space, vec![writer]);
+        let signed = signed_record(space, writer, &key);
+        let collection = signed.collection.expect("a collection");
+        // An unsigned `kem1` record and a Bitwarden one, naming the same collection.
+        let mut unsigned = signed.clone();
+        unsigned.write = None;
+        let mut bitwarden = unsigned.clone();
+        bitwarden.format = ItemFormat::Bw;
+        for record in [&signed, &unsigned, &bitwarden] {
+            assert!(!verdict_is_refusal(judge(&store, record).await));
+        }
+        // The collection is another space's.
+        store.set_has_collection(space, collection, Some(false));
+        for record in [&signed, &unsigned, &bitwarden] {
+            assert!(matches!(
+                judge(&store, record).await,
+                Ok(Verdict::Refuse(_))
+            ));
+        }
+        // Or not known here yet.
+        store.set_has_collection(space, collection, None);
+        for record in [&signed, &unsigned, &bitwarden] {
+            assert!(matches!(
+                judge(&store, record).await,
+                Ok(Verdict::Defer(_))
+            ));
+        }
     }
 
     #[tokio::test]

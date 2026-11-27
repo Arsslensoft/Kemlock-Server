@@ -358,6 +358,29 @@ impl MemberStore for SqlStore {
         }))
     }
 
+    async fn space_has_collection(
+        &self,
+        vault: Owner,
+        collection: kemlock_domain::spaces::CollectionId,
+    ) -> Result<Option<bool>, StoreError> {
+        let Owner::Space(space) = vault else {
+            return Ok(Some(false));
+        };
+        let Some(state) = SpaceRepo::load(self, space).await? else {
+            return Ok(None);
+        };
+        if state.collection(collection).is_some() {
+            return Ok(Some(true));
+        }
+        // Another space's collection is a refusal; one nobody here holds yet may still arrive.
+        let elsewhere = crate::tables::space_tables::collections::Entity::find_by_id(collection.0)
+            .one(self.reader())
+            .await
+            .store()?
+            .is_some();
+        Ok(if elsewhere { Some(false) } else { None })
+    }
+
     async fn writer_ids(&self, vault: Owner) -> Result<Vec<UserId>, StoreError> {
         match vault {
             Owner::User(_) => MemberStore::member_ids(self, vault).await,

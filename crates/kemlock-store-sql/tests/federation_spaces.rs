@@ -553,3 +553,58 @@ async fn a_member_taken_out_signs_only_where_they_could_edit_and_only_before_the
     // A collection the server doesn't hold is a reason to wait.
     assert_eq!(may(gone, CollectionId::random(), left).await, None);
 }
+
+#[tokio::test]
+async fn a_collection_is_this_spaces_another_spaces_or_not_known_yet() {
+    use kemlock_domain::Owner;
+    use kemlock_federation::extra::MemberStore;
+    let store = memory().await;
+    let owner = UserId::random();
+    let make = |space: SpaceId, collection: CollectionId| SpaceChanges {
+        space: Some(Space {
+            id: space,
+            name: vec![1; 40],
+            key_version: 1,
+            keys_pending_since: None,
+            created_at: AT,
+            updated_at: AT,
+        }),
+        members: vec![member(space, owner, SpaceRole::Owner, MemberState::Confirmed)],
+        collections: vec![Collection {
+            id: collection,
+            space,
+            parent: None,
+            name: vec![2; 40],
+            key_version: 1,
+            stale_since: None,
+            created_at: AT,
+        }],
+        ..SpaceChanges::new(space)
+    };
+    let (mine, theirs) = (SpaceId::random(), SpaceId::random());
+    let (my_collection, their_collection) = (CollectionId::random(), CollectionId::random());
+    SpaceRepo::create(&store, make(mine, my_collection))
+        .await
+        .expect("a space");
+    SpaceRepo::create(&store, make(theirs, their_collection))
+        .await
+        .expect("another space");
+
+    let ask = |collection| store.space_has_collection(Owner::Space(mine), collection);
+    assert_eq!(ask(my_collection).await, Ok(Some(true)));
+    assert_eq!(ask(their_collection).await, Ok(Some(false)));
+    assert_eq!(ask(CollectionId::random()).await, Ok(None));
+    // A space this server doesn't hold knows nothing yet; a personal vault has no collections.
+    assert_eq!(
+        store
+            .space_has_collection(Owner::Space(SpaceId::random()), my_collection)
+            .await,
+        Ok(None)
+    );
+    assert_eq!(
+        store
+            .space_has_collection(Owner::User(owner), my_collection)
+            .await,
+        Ok(Some(false))
+    );
+}
