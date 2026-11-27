@@ -284,6 +284,57 @@ pub trait DeviceRepo: Send + Sync {
             }
         }
     }
+
+    /// Records that the device was seen at `at`, whatever key it holds, and nothing else of the row:
+    /// a caller that read the row earlier must not write back what a sign-out cleared since. A
+    /// device that is gone stays gone. The default reads and writes in two steps; a store that
+    /// serves requests concurrently overrides it with one conditional write.
+    fn touch_last_seen(
+        &self,
+        id: DeviceId,
+        at: OffsetDateTime,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        async move {
+            if let Some(mut device) = self.get(id).await? {
+                device.last_seen_at = at;
+                self.upsert(&device).await?;
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Which API issued a refresh token. The two APIs share one table and one token form, but a Kemlock
+/// token is bound to a DPoP key and a Bitwarden one is a bearer token, so one API refuses the
+/// other's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TokenApi {
+    /// Issued before the tag existed: no one knows. The Bitwarden API takes it only for a device
+    /// with no DPoP key.
+    #[default]
+    Unknown,
+    Kemlock,
+    Bitwarden,
+}
+
+impl TokenApi {
+    /// The value stored in the `api` column.
+    pub fn as_i16(self) -> i16 {
+        match self {
+            TokenApi::Unknown => 0,
+            TokenApi::Kemlock => 1,
+            TokenApi::Bitwarden => 2,
+        }
+    }
+
+    /// The tag a stored value stands for; one that is none of them is `Unknown`.
+    pub fn from_i16(value: i16) -> Self {
+        match value {
+            1 => TokenApi::Kemlock,
+            2 => TokenApi::Bitwarden,
+            _ => TokenApi::Unknown,
+        }
+    }
 }
 
 /// A refresh token as stored: only its SHA-256, so a database copy can't be replayed.
@@ -302,6 +353,8 @@ pub struct RefreshToken {
     pub created_at: OffsetDateTime,
     pub expires_at: OffsetDateTime,
     pub used_at: Option<OffsetDateTime>,
+    /// The API that issued the token.
+    pub api: TokenApi,
 }
 
 pub trait TokenRepo: Send + Sync {

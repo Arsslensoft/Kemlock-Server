@@ -6,7 +6,10 @@ use axum::body::Body;
 use axum::http::StatusCode;
 use common::{DOMAIN, HASH, Harness, USER_KEY, claims};
 use kemlock_app::admin::AdminUserRepo;
-use kemlock_app::ports::{TwoFactor, TwoFactorMethod, TwoFactorRepo, UserRepo};
+use kemlock_app::ports::{
+    DeviceRepo, RefreshToken, TokenApi, TokenRepo, TwoFactor, TwoFactorMethod, TwoFactorRepo,
+    UserRepo,
+};
 use kemlock_app::privacy::{AccountEraser, ClientAddr, PrivacyLog};
 use kemlock_crypto::seal::ServerSeal;
 use serde_json::{Value, json};
@@ -515,9 +518,11 @@ async fn refresh_tokens_rotate_and_a_late_reuse_ends_the_sign_in() {
     assert_eq!(status, StatusCode::OK);
     let r2 = third["refresh_token"].as_str().expect("a token").to_owned();
 
-    // The first token again, within a minute of its use: a lost answer, retried.
-    let (status, _) = refresh(r0.clone()).await;
+    // The first token again, within a minute of its use: a lost answer, retried. It gets the
+    // successor it made (not a second chain), and a new access token.
+    let (status, again) = refresh(r0.clone()).await;
     assert_eq!(status, StatusCode::OK);
+    assert_eq!(again["refresh_token"], json!(r1), "the same successor");
 
     // Later it is a replay: it fails, and the whole sign-in's tokens go with it.
     h.env.advance(Duration::seconds(61));
@@ -533,6 +538,94 @@ async fn refresh_tokens_rotate_and_a_late_reuse_ends_the_sign_in() {
     assert_eq!(body, json!({"error": "invalid_grant"}));
     let (_, body) = h.token(&[("grant_type", "refresh_token")]).await;
     assert_eq!(body["message"], "refresh_token cannot be blank");
+}
+
+/// Puts a refresh token for `device` of `user` in the store, as the API `api` would have made it,
+/// and returns its text.
+async fn stored_refresh_token(
+    h: &Harness,
+    user: kemlock_domain::UserId,
+    device: kemlock_domain::DeviceId,
+    n: u8,
+    api: TokenApi,
+) -> String {
+    let raw = [n; 32];
+    let now = h.env.time();
+    TokenRepo::insert(
+        &h.store,
+        &RefreshToken {
+            hash: kemlock_crypto::hash::sha256(&raw),
+            family: uuid::Uuid::new_v4(),
+            user,
+            device,
+            security_stamp: UserRepo::by_id(&h.store, user)
+                .await
+                .expect("a read")
+                .expect("the user")
+                .security_stamp,
+            created_at: now,
+            expires_at: now + Duration::days(30),
+            used_at: None,
+            api,
+        },
+    )
+    .await
+    .expect("a token");
+    kemlock_app::b64url::encode(&raw)
+}
+
+#[tokio::test]
+async fn a_kemlock_refresh_token_is_refused_at_the_bitwarden_endpoint() {
+    let h = Harness::new().await;
+    let user = h.account("ada@example.com", HASH).await;
+    h.login("ada@example.com", HASH).await;
+    let mut device = DeviceRepo::list(&h.store, user)
+        .await
+        .expect("the devices")
+        .remove(0);
+    let refresh = |token: String| {
+        let h = &h;
+        async move {
+            h.token(&[
+                ("grant_type", "refresh_token"),
+                ("client_id", "mobile"),
+                ("refresh_token", token.as_str()),
+            ])
+            .await
+        }
+    };
+
+    // A token the Kemlock API made is bound to a DPoP key; here it would be a bearer token.
+    let kemlock = stored_refresh_token(&h, user, device.id, 1, TokenApi::Kemlock).await;
+    let (status, body) = refresh(kemlock.clone()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body, json!({"error": "invalid_grant"}));
+    // And it ended that sign-in for good, as a stolen token does.
+    let (status, _) = refresh(kemlock).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // A Bitwarden token works on a device that also holds a DPoP key (a phone on both APIs).
+    device.dpop_jkt = Some("jkt".to_owned());
+    DeviceRepo::upsert(&h.store, &device).await.expect("a key");
+    let bitwarden = stored_refresh_token(&h, user, device.id, 2, TokenApi::Bitwarden).await;
+    let (status, body) = refresh(bitwarden).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // The refresh did not take the key off the device.
+    let after = DeviceRepo::get(&h.store, device.id)
+        .await
+        .expect("a read")
+        .expect("the device");
+    assert_eq!(after.dpop_jkt.as_deref(), Some("jkt"));
+
+    // A token from before the tag is taken only for a device with no DPoP key.
+    let legacy = stored_refresh_token(&h, user, device.id, 3, TokenApi::Unknown).await;
+    let (status, _) = refresh(legacy).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    device.dpop_jkt = None;
+    DeviceRepo::upsert(&h.store, &device).await.expect("no key");
+    let legacy = stored_refresh_token(&h, user, device.id, 4, TokenApi::Unknown).await;
+    let (status, body) = refresh(legacy).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 }
 
 #[tokio::test]

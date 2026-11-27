@@ -69,6 +69,16 @@ impl DeviceRepo for SqlStore {
             .is_some_and(|row| row.dpop_jkt.as_deref() == Some(jkt)))
     }
 
+    async fn touch_last_seen(&self, id: DeviceId, at: OffsetDateTime) -> Result<(), StoreError> {
+        devices::Entity::update_many()
+            .col_expr(devices::Column::LastSeenAt, Expr::value(utc(at)))
+            .filter(devices::Column::Id.eq(id.0))
+            .exec(self.writer())
+            .await
+            .store()?;
+        Ok(())
+    }
+
     async fn list(&self, user: UserId) -> Result<Vec<Device>, StoreError> {
         devices::Entity::find()
             .filter(devices::Column::UserId.eq(user.0))

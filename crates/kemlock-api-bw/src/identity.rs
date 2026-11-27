@@ -22,7 +22,8 @@ use kemlock_app::devices::{NewDeviceNotice, bitwarden_device_id};
 use kemlock_app::error::AppError;
 use kemlock_app::notices::{Notice, TwoStepRecoveredNotice};
 use kemlock_app::ports::{
-    DeviceRepo, Event, EventLog, RefreshToken, TokenRepo, TwoFactorMethod, TwoFactorRepo, UserRepo,
+    DeviceRepo, Event, EventLog, RefreshToken, StoreError, TokenApi, TokenRepo, TwoFactorMethod,
+    TwoFactorRepo, UserRepo,
 };
 use kemlock_app::privacy::{NewSignIn, record_sign_in};
 use kemlock_app::sealed::{PURPOSE_TOTP, open_bound};
@@ -461,21 +462,32 @@ impl<S: BwStore> App<S> {
             .map_err(|e| BwError::Server(e.to_string()))
     }
 
-    /// Stores a new refresh token and returns its text.
+    /// Stores a new refresh token and returns its text. A rotation (`successor_of` is the hash of
+    /// the token it replaces) makes the token from that hash and the server's key, not at random:
+    /// the same old token always has the same successor, so one presented again within the grace
+    /// of a lost answer gets that token back instead of starting a second chain.
     async fn new_refresh_token(
         &self,
         user: UserId,
         device: DeviceId,
         family: Option<Uuid>,
+        successor_of: Option<[u8; 32]>,
         ttl: Duration,
     ) -> BwResult<String> {
         let now = self.now();
-        let raw = random_bytes::<32>(self.env.as_ref());
+        let raw = match successor_of {
+            Some(old) => {
+                let mut input = b"bitwarden/refresh-successor".to_vec();
+                input.extend_from_slice(&old);
+                hash::hmac_sha256(&self.prelogin_key, &input)
+            }
+            None => random_bytes::<32>(self.env.as_ref()),
+        };
         // Bound to the account's stamp, so a password change or key replacement ends it.
         let security_stamp = UserRepo::by_id(&self.store, user)
             .await?
             .map_or(Uuid::nil(), |u| u.security_stamp);
-        TokenRepo::insert(
+        let stored = TokenRepo::insert(
             &self.store,
             &RefreshToken {
                 security_stamp,
@@ -486,9 +498,18 @@ impl<S: BwStore> App<S> {
                 created_at: now,
                 expires_at: now + ttl,
                 used_at: None,
+                api: TokenApi::Bitwarden,
             },
         )
-        .await?;
+        .await;
+        match stored {
+            Ok(()) => {}
+            // The retry of a lost answer: the successor is there already, and is the same.
+            Err(StoreError::Duplicate) if successor_of.is_some() => {}
+            // The sign-in was ended while this rotation ran.
+            Err(StoreError::NotFound) if successor_of.is_some() => return Err(invalid_grant()),
+            Err(error) => return Err(error.into()),
+        }
         Ok(b64url::encode(&raw))
     }
 
@@ -1009,7 +1030,9 @@ async fn password_login<S: BwStore>(
     } else {
         REFRESH_TTL
     };
-    let refresh = app.new_refresh_token(user.id, device.id, None, ttl).await?;
+    let refresh = app
+        .new_refresh_token(user.id, device.id, None, None, ttl)
+        .await?;
 
     let mut result = json!({
         "access_token": access,
@@ -1067,10 +1090,20 @@ async fn refresh_login<S: BwStore>(
         TokenRepo::revoke_family(&app.store, token.family).await?;
         return Err(invalid_grant());
     }
+    // A Kemlock refresh token is bound to a DPoP key and was not made for this API: its holder
+    // presenting it here, as a bearer token, is a theft, and the whole sign-in goes. One from before
+    // tokens were tagged is taken only for a device that has no DPoP key.
+    if token.api == TokenApi::Kemlock {
+        TokenRepo::revoke_family(&app.store, token.family).await?;
+        return Err(invalid_grant());
+    }
     let device = DeviceRepo::get(&app.store, token.device)
         .await?
         .filter(|d| d.user == token.user)
         .ok_or_else(invalid_grant)?;
+    if token.api == TokenApi::Unknown && device.dpop_jkt.is_some() {
+        return Err(invalid_grant());
+    }
     let user = UserRepo::by_id(&app.store, token.user)
         .await?
         .ok_or_else(invalid_grant)?;
@@ -1092,14 +1125,9 @@ async fn refresh_login<S: BwStore>(
         return Err(invalid_grant());
     }
 
-    DeviceRepo::upsert(
-        &app.store,
-        &Device {
-            last_seen_at: now,
-            ..device.clone()
-        },
-    )
-    .await?;
+    // Only the time it was seen is written: the row read above may be older than a sign-out that
+    // cleared its DPoP key, and writing the whole row back would put the key back.
+    DeviceRepo::touch_last_seen(&app.store, device.id, now).await?;
     app.record_use(device.id).await;
     // What the device kept at its sign-in; a device from before that has only its kind to go by.
     let known = BwDeviceRepo::bw_device(&app.store, device.id)
@@ -1127,7 +1155,7 @@ async fn refresh_login<S: BwStore>(
     )?;
     let ttl = token.expires_at - token.created_at;
     let refresh = app
-        .new_refresh_token(user.id, device.id, Some(token.family), ttl)
+        .new_refresh_token(user.id, device.id, Some(token.family), Some(token.hash), ttl)
         .await?;
     Ok(json!({
         "refresh_token": refresh,

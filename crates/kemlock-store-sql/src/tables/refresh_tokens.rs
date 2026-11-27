@@ -1,7 +1,7 @@
 //! `refresh_tokens`: refresh tokens by the SHA-256 of their value.
 
 use crate::convert::{corrupt, utc};
-use kemlock_app::ports::{RefreshToken, StoreError};
+use kemlock_app::ports::{RefreshToken, StoreError, TokenApi};
 use kemlock_domain::{DeviceId, UserId};
 use sea_orm::ActiveValue::Set;
 use sea_orm::entity::prelude::*;
@@ -20,6 +20,8 @@ pub struct Model {
     pub created_at: TimeDateTimeWithTimeZone,
     pub expires_at: TimeDateTimeWithTimeZone,
     pub used_at: Option<TimeDateTimeWithTimeZone>,
+    /// The API that issued it (`TokenApi::as_i16`); 0 for a token from before the column.
+    pub api: i16,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -42,6 +44,7 @@ impl Model {
             created_at: self.created_at,
             expires_at: self.expires_at,
             used_at: self.used_at,
+            api: TokenApi::from_i16(self.api),
         })
     }
 }
@@ -56,6 +59,7 @@ pub(crate) fn active(token: &RefreshToken) -> ActiveModel {
         created_at: Set(utc(token.created_at)),
         expires_at: Set(utc(token.expires_at)),
         used_at: Set(token.used_at.map(utc)),
+        api: Set(token.api.as_i16()),
     }
 }
 
@@ -75,6 +79,7 @@ mod tests {
             created_at: datetime!(2026-01-02 03:04:05 UTC),
             expires_at: datetime!(2026-02-02 03:04:05 UTC),
             used_at: Some(datetime!(2026-01-03 03:04:05 UTC)),
+            api: TokenApi::Bitwarden,
         };
         let model = Model {
             hash: token.hash.to_vec(),
@@ -85,6 +90,7 @@ mod tests {
             created_at: token.created_at,
             expires_at: token.expires_at,
             used_at: token.used_at,
+            api: token.api.as_i16(),
         };
         assert_eq!(model.into_domain(), Ok(token.clone()));
         assert_eq!(active(&token).hash, Set(vec![9; 32]));
@@ -101,6 +107,7 @@ mod tests {
             created_at: datetime!(2026-01-02 03:04:05 UTC),
             expires_at: datetime!(2026-02-02 03:04:05 UTC),
             used_at: None,
+            api: 0,
         };
         assert!(model.into_domain().is_err());
     }

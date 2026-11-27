@@ -9,7 +9,7 @@ use crate::tables::{bw_account_extras, bw_accounts, devices, refresh_tokens, two
 use kemlock_app::b64url;
 use kemlock_app::bitwarden::BwAccount;
 use kemlock_app::passkeys::{ImportedKey, PURPOSE_WEBAUTHN, encode_key_list};
-use kemlock_app::ports::{RefreshToken, TwoFactorMethod};
+use kemlock_app::ports::{RefreshToken, TokenApi, TwoFactorMethod};
 use kemlock_app::two_step::{PURPOSE_DUO, PURPOSE_EMAIL, PURPOSE_YUBIKEY};
 use kemlock_domain::{
     AccountMode, Device, DeviceId, DeviceKind, Email, KdfParams, Role, User, UserId,
@@ -321,6 +321,7 @@ pub(super) async fn put_devices(ctx: &Ctx, table: &Table) -> Res<()> {
                 created_at: created,
                 expires_at: ctx.opts.now + time::Duration::days(REFRESH_DAYS),
                 used_at: None,
+                api: TokenApi::Bitwarden,
             };
             refresh_tokens::Entity::insert(refresh_tokens::active(&token))
                 .exec(txn)
