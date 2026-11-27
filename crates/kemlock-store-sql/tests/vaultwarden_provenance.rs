@@ -569,6 +569,8 @@ async fn config_json_can_only_set_the_names_of_the_settings_list() {
         ("setting.smtp_host", json!("evil.example.org")),
         ("smtp_password", json!("hunter2")),
         ("domain", json!("https://vault.example.org")),
+        ("federation_promotion", json!("auto")),
+        ("bw_invites_auto_accept", json!(true)),
     ] {
         settings.values.insert(name.to_owned(), value);
     }
@@ -601,6 +603,8 @@ async fn config_json_can_only_set_the_names_of_the_settings_list() {
         "setting.setting.smtp_host",
         "setting.smtp_password",
         "setting.domain",
+        "setting.federation_promotion",
+        "setting.bw_invites_auto_accept",
         "smtp_password",
         "domain",
     ] {
@@ -614,7 +618,7 @@ async fn config_json_can_only_set_the_names_of_the_settings_list() {
             .as_deref(),
         Some("kept")
     );
-    assert_eq!(refused(&report, "setting").len(), 6);
+    assert_eq!(refused(&report, "setting").len(), 8);
 }
 
 #[tokio::test]

@@ -109,10 +109,14 @@ fn write_plan(
         "settings        {} carried from config.json",
         mapped.settings.values.len()
     )?;
+    // Each value that will be written, so nobody agrees to a setting they never saw.
+    for (name, value) in &mapped.settings.values {
+        writeln!(out, "                  {name} = {value}")?;
+    }
     if !mapped.settings.ignored.is_empty() {
         writeln!(
             out,
-            "                ignored: {}",
+            "                not carried: {}",
             mapped.settings.ignored.join(", ")
         )?;
     }
@@ -175,6 +179,14 @@ mod tests {
         });
         mapped.warnings.push("something to read".into());
         mapped.settings.secrets.push("smtp_password".into());
+        mapped
+            .settings
+            .values
+            .insert("signups_allowed".into(), serde_json::json!(false));
+        mapped
+            .settings
+            .values
+            .insert("smtp_host".into(), serde_json::json!("mail.example.org"));
         let plan = render_plan(&meta, &mapped, None);
         assert!(
             plan.starts_with("Vaultwarden 1.37.5 (SQLite), read from /data"),
@@ -186,6 +198,8 @@ mod tests {
         );
         assert!(plan.contains("rsa_key.pem     carried"), "{plan}");
         assert!(plan.contains("to enter again: smtp_password"), "{plan}");
+        assert!(plan.contains("signups_allowed = false"), "{plan}");
+        assert!(plan.contains("smtp_host = \"mail.example.org\""), "{plan}");
         assert!(plan.contains("- something to read"), "{plan}");
         assert!(!plan.contains("changed between"), "{plan}");
     }

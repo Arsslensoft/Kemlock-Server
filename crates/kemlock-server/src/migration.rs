@@ -372,11 +372,17 @@ impl VaultwardenMove {
     async fn run(self, by: UserId, source: Source, shown: String) {
         let record = self.record();
         let saved = match self.import(&source).await {
-            Ok(report) => {
+            Ok((report, carried)) => {
                 tracing::info!(%report, "the move from Vaultwarden is done");
-                // What it changed, and what it refused, go to the admin event log.
+                // What it changed, and what it refused, go to the admin event log, and so does
+                // each setting it carried over from `config.json`, by name and value: the source
+                // is not trusted, and an admin reading the log sees what it set.
                 self.audit(by, "admin.migration.done", &shown, &report)
                     .await;
+                for setting in &carried {
+                    self.audit(by, "admin.migration.setting", &shown, setting)
+                        .await;
+                }
                 record.finished(report).await
             }
             Err(error) => {
@@ -393,7 +399,7 @@ impl VaultwardenMove {
     }
 
     /// Reads, maps and writes. The error is in words for the admin.
-    async fn import(&self, source: &Source) -> Result<String, String> {
+    async fn import(&self, source: &Source) -> Result<(String, Vec<String>), String> {
         let record = self.record();
         self.stage(&record, "reading the Vaultwarden data", None)
             .await;
@@ -418,7 +424,16 @@ impl VaultwardenMove {
         let report = apply(&mapped, &[], &mut sink)
             .await
             .map_err(|e| write_failure(&e))?;
-        Ok(describe(&report))
+        // The settings that were written, each as `name = value`, for the event log.
+        let refused = report.refused.get("setting").cloned().unwrap_or_default();
+        let carried = mapped
+            .settings
+            .values
+            .iter()
+            .filter(|(name, _)| !refused.contains(name))
+            .map(|(name, value)| format!("{name} = {value}"))
+            .collect();
+        Ok((describe(&report), carried))
     }
 
     /// Writes a line of the admin event log for the move, as the admin who started it. A failure to

@@ -428,13 +428,13 @@ async fn maps_files_settings_the_signing_key_and_everything_else() {
     assert_eq!(rsa.private_pem, RSA_PEM);
     assert_eq!(rsa.public_pem.as_deref(), Some(RSA_PUB_PEM));
 
-    // config.json: carried, minus secrets, with the admin token ignored.
+    // config.json: only the listed settings carried, never secrets, the admin token ignored.
     let names: Vec<&str> = mapped.settings.values.keys().map(String::as_str).collect();
-    assert_eq!(names, vec!["domain", "signups_allowed", "smtp_host"]);
+    assert_eq!(names, vec!["signups_allowed", "smtp_host"]);
     assert_eq!(mapped.settings.values["signups_allowed"], json!(false));
     assert_eq!(
         mapped.settings.ignored,
-        vec!["admin_token", "enable_websocket"]
+        vec!["admin_token", "domain", "enable_websocket"]
     );
     assert_eq!(
         mapped.settings.secrets,
@@ -504,7 +504,7 @@ async fn maps_files_settings_the_signing_key_and_everything_else() {
         "{plan}"
     );
     assert!(
-        plan.contains("ignored: admin_token, enable_websocket"),
+        plan.contains("not carried: admin_token, domain, enable_websocket"),
         "{plan}"
     );
 }
@@ -623,7 +623,7 @@ async fn a_second_copy_finds_what_changed_including_deletions() {
             "items 2",
             "states 0",
             "attachments 1",
-            "settings 3",
+            "settings 2",
             "finish"
         ]
     );
@@ -646,7 +646,7 @@ async fn a_second_copy_finds_what_changed_including_deletions() {
         ApplyReport {
             items: 2,
             attachments: 1,
-            settings: 3,
+            settings: 2,
             files: 1,
             file_bytes: 4,
             deleted_rows: 5,

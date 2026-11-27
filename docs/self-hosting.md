@@ -335,9 +335,13 @@ accounts or spaces that aren't its own. Running a move again over its own earlie
 before, but never over what this server has changed since: an account whose record, vault or
 password was changed here after the import wrote it, a space that was renamed or whose members
 changed, and an item revised here after the source's date are left as they are, with everything
-that hangs off them. `--adopt-existing` overrides that too. Imported `config.json` settings become the console's own settings (Settings screen; an
-environment variable still wins) when the console has a setting of that name and accepts the
-value; the others, and every secret, are not carried and are listed in the result.
+that hangs off them. `--adopt-existing` overrides that too. Imported `config.json` settings become the
+console's own settings (Settings screen; an environment variable still wins), but only these: `signups_allowed`,
+`signups_verify`, `signups_domains_whitelist`, `invitations_allowed` and the `smtp_host`, `smtp_port`,
+`smtp_security`, `smtp_username`, `smtp_from` and `smtp_from_name` of the SMTP settings, and only when the console
+accepts the value. The source is not trusted to set anything else: Kemlock's own security, backup, push and
+federation settings, and every secret, are not carried. The dry-run plan lists each value that would be written
+and the move's entries in the admin event log (`admin.migration.setting`) name each one that was.
 
 What was left alone is listed in the move's result and in the admin event log
 (`admin.migration.done`, `admin.migration.failed` for the console and `admin.migration.cli` for
