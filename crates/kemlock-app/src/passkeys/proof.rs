@@ -98,9 +98,9 @@ where
             )
             .await?;
         let mut options = started.options;
-        // A passkey's answer must carry user verification, so the browser is required to verify when
-        // one is listed; a security key alone stays touch-only.
-        if held.iter().any(|h| h.passkey.is_some()) {
+        // A proof carries user verification whatever key makes it: a touch alone is no more than a
+        // key someone picked up. The browser is required to verify, and the answer is checked for it.
+        {
             let inner = if options.get("publicKey").is_some() {
                 &mut options["publicKey"]
             } else {
@@ -148,8 +148,9 @@ where
                 &[own.credential.as_slice()],
             )
             .map_err(key_error)?;
-        // A passkey is possession plus a PIN or a body check, as at sign-in.
-        if own.passkey.is_some() && !assertion.user_verified {
+        // Possession plus a PIN or a body check, a security key too: a proof of the owner for a
+        // sensitive change is not a touch of a key someone picked up.
+        if !assertion.user_verified {
             return Err(SecurityKeyError::Refused);
         }
         // The authenticator's counter moved: keep it.
