@@ -230,6 +230,16 @@ export interface ChainAnchor {
   epoch: number;
   /** base64url of each record's link, from seq 0. */
   links: string[];
+  /**
+   * The ids of the space's owners at `seq`, from the verified chain. The verifier lets a fence move
+   * the chain only when it is signed by one of them; an anchor kept before this field has none.
+   */
+  owners?: string[];
+  /**
+   * The promotions this browser has seen, as `[owner id, base64url of the record's hash]`. Kept as
+   * the verifier gave them and passed back; an anchor kept before this field has none.
+   */
+  promotions?: Array<[string, string]>;
 }
 
 /** A chain the verifier refused: the spec's reason ("Verification") and the record's seq. */
@@ -287,6 +297,10 @@ export interface ChainView {
   /** Whether first contact is done, so keys open. */
   trusted: boolean;
   firstContact?: FirstContactAsk;
+  /** The ids of the space's owners at the head: kept in the anchor (`ChainAnchor.owners`). */
+  owners?: string[];
+  /** The promotions the verifier tracks, when it reports them: kept in the anchor like `owners`. */
+  promotions?: Array<[string, string]>;
   /** The seq of the fence where the chain parted from the kept anchor. */
   divergence?: number;
   members: ChainMember[];

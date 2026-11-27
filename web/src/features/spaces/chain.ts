@@ -60,9 +60,21 @@ function classify(view: ChainView): SpaceTrust {
   return view.trusted ? { kind: 'verified', view } : { kind: 'first-contact', view };
 }
 
-function anchorOf(view: ChainView): ChainAnchor | undefined {
+/**
+ * The anchor a verified chain gives: its head, epoch and links, with the owners at the head. The
+ * promotions are the view's when it reports them, else those of the anchor kept before, so the
+ * verifier gets back what it was told (`kept` is what this browser held when the chain was read).
+ */
+function anchorOf(view: ChainView, kept?: ChainAnchor): ChainAnchor | undefined {
   if (!view.head) return undefined;
-  return { seq: view.head.seq, epoch: view.epoch, links: view.links };
+  const promotions = view.promotions ?? kept?.promotions;
+  return {
+    seq: view.head.seq,
+    epoch: view.epoch,
+    links: view.links,
+    ...(view.owners ? { owners: view.owners } : {}),
+    ...(promotions ? { promotions } : {}),
+  };
 }
 
 /**
@@ -109,7 +121,7 @@ export async function checkSpaceChain(
       return { kind: 'unverified', reason: 'rolled back', seq: null };
     }
     // The anchor is kept once first contact is done, and moves forward with every chain verified.
-    const next = verdict.chained && verdict.trusted ? anchorOf(verdict) : undefined;
+    const next = verdict.chained && verdict.trusted ? anchorOf(verdict, anchor) : undefined;
     if (next) deps.noteChained?.(spaceId);
     if (next) await store.save(me, spaceId, next, verdict.divergence !== undefined);
     return classify(verdict);

@@ -146,6 +146,40 @@ describe('checking a space’s chain', () => {
     expect(await checkSpaceChain({ ...deps, crypto: fresh }, THEO, ME)).toEqual({ kind: 'unchained' });
   });
 
+  it('keeps the owners of the verified chain with the anchor, and passes them back next time', async () => {
+    const owned = view({ owners: [ME, LEE] });
+    const { deps, anchors, crypto, api } = setup(owned);
+    expect((await checkSpaceChain(deps, SPACE, ME)).kind).toBe('verified');
+    expect(await anchors.load(ME, SPACE)).toEqual({ seq: 4, epoch: 1, links: owned.links, owners: [ME, LEE] });
+    // The next check, from a fresh unlock, hands the kept anchor to the worker as it was kept.
+    const fresh = fakeSpaceCrypto();
+    fresh.chain = owned;
+    const spy = vi.spyOn(fresh, 'verifySpaceChain');
+    await checkSpaceChain({ api, crypto: fresh, anchors }, SPACE, ME);
+    expect(spy).toHaveBeenCalledWith(
+      expect.objectContaining({ anchor: expect.objectContaining({ owners: [ME, LEE] }) }),
+    );
+    expect(crypto.calls).toContain(`verifySpaceChain:${SPACE}`);
+  });
+
+  it('keeps the promotions it was given when the chain view reports none, and takes new ones', async () => {
+    const { deps, anchors } = setup(view({ owners: [ME] }));
+    await anchors.save(ME, SPACE, { seq: 3, epoch: 1, links: ['l0', 'l1', 'l2', 'l3'], promotions: [[LEE, 'aA']] });
+    await checkSpaceChain(deps, SPACE, ME);
+    expect((await anchors.load(ME, SPACE))?.promotions).toEqual([[LEE, 'aA']]);
+    const later = setup(view({ owners: [ME], promotions: [[THEO, 'Yg']] }));
+    await checkSpaceChain({ ...later.deps, anchors }, SPACE, ME);
+    expect((await anchors.load(ME, SPACE))?.promotions).toEqual([[THEO, 'Yg']]);
+  });
+
+  it('still reads an anchor kept without owners', async () => {
+    const { deps, anchors } = setup(view());
+    await anchors.save(ME, SPACE, { seq: 2, epoch: 1, links: ['l0', 'l1', 'l2'] });
+    expect((await checkSpaceChain(deps, SPACE, ME)).kind).toBe('verified');
+    // A chain view with no owners keeps an anchor with none, as before.
+    expect((await anchors.load(ME, SPACE))?.owners).toBeUndefined();
+  });
+
   it('does not read a space the account’s signed manifest lists as chained as one with none', async () => {
     // A browser with no history of the space: nothing seen, no anchor. The server serves no chain.
     const { deps, crypto } = setup();
