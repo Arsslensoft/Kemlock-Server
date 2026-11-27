@@ -70,6 +70,7 @@ mod m20261203_020001_rotation_staged_signatures;
 mod m20261204_060001_email_change_key_version;
 mod m20261204_060002_sso_sessions;
 mod m20261204_060003_sso_identity_unconfirm;
+mod m20261204_060004_exact_text_columns;
 
 use sea_orm_migration::prelude::*;
 
@@ -145,6 +146,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261204_060001_email_change_key_version::Migration),
             Box::new(m20261204_060002_sso_sessions::Migration),
             Box::new(m20261204_060003_sso_identity_unconfirm::Migration),
+            Box::new(m20261204_060004_exact_text_columns::Migration),
         ]
     }
 }
