@@ -113,6 +113,103 @@ impl Meter {
     }
 }
 
+/// What a peer may ask this server to read or scan, over a window of an hour, in memory: a request
+/// that costs the server much more than it costs the peer (a chunk read from offset 0 through a
+/// large file, a scan of every item of a vault) is counted by what it costs, so a paired peer can't
+/// use the disk and the database of this server for itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WorkLimits {
+    /// Bytes of blob storage one peer may make this server read in a window. A chunk at offset N
+    /// reads N plus its length from the store (storage has no ranged read), so a file fetched in
+    /// 2 MiB chunks costs about its size squared over 4 MiB.
+    pub blob_bytes_per_window: u64,
+    /// Scans of one vault (a summary or a list of leaves) one peer may ask for in a window.
+    pub scans_per_window: u32,
+}
+
+impl Default for WorkLimits {
+    /// Room for the honest hourly comparison and a few large files, and not for a loop: 128 GiB of
+    /// reads (a 512 MiB file fetched whole costs about 64 GiB) and 30 scans of one vault.
+    fn default() -> WorkLimits {
+        WorkLimits {
+            blob_bytes_per_window: 128 << 30,
+            scans_per_window: 30,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Work {
+    start: u64,
+    blob_bytes: u64,
+    scans: u32,
+}
+
+/// The work each peer asked for, by peer and (for scans) vault.
+#[derive(Debug, Default)]
+pub struct WorkMeter {
+    blobs: Mutex<HashMap<ServerId, Work>>,
+    scans: Mutex<HashMap<(ServerId, kemlock_domain::Owner), Work>>,
+}
+
+impl WorkMeter {
+    fn fresh(start: u64) -> Work {
+        Work {
+            start,
+            blob_bytes: 0,
+            scans: 0,
+        }
+    }
+
+    /// Counts a read that costs `bytes`; false when the peer has used its window.
+    pub fn allow_blob_read(
+        &self,
+        limits: &WorkLimits,
+        peer: ServerId,
+        bytes: u64,
+        now: u64,
+    ) -> bool {
+        let mut blobs = self.blobs.lock().unwrap_or_else(PoisonError::into_inner);
+        if blobs.len() >= MAX_ORIGINS && !blobs.contains_key(&peer) {
+            blobs.retain(|_, w| now < w.start.saturating_add(WINDOW_SECS));
+        }
+        let work = blobs.entry(peer).or_insert_with(|| WorkMeter::fresh(now));
+        if now >= work.start.saturating_add(WINDOW_SECS) {
+            *work = WorkMeter::fresh(now);
+        }
+        if work.blob_bytes.saturating_add(bytes) > limits.blob_bytes_per_window {
+            return false;
+        }
+        work.blob_bytes += bytes;
+        true
+    }
+
+    /// Counts one scan of `vault`; false when the peer has used its window for it.
+    pub fn allow_scan(
+        &self,
+        limits: &WorkLimits,
+        peer: ServerId,
+        vault: kemlock_domain::Owner,
+        now: u64,
+    ) -> bool {
+        let mut scans = self.scans.lock().unwrap_or_else(PoisonError::into_inner);
+        if scans.len() >= MAX_ORIGINS && !scans.contains_key(&(peer, vault)) {
+            scans.retain(|_, w| now < w.start.saturating_add(WINDOW_SECS));
+        }
+        let work = scans
+            .entry((peer, vault))
+            .or_insert_with(|| WorkMeter::fresh(now));
+        if now >= work.start.saturating_add(WINDOW_SECS) {
+            *work = WorkMeter::fresh(now);
+        }
+        if work.scans >= limits.scans_per_window {
+            return false;
+        }
+        work.scans += 1;
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,6 +282,29 @@ mod tests {
         for _ in 0..3 {
             assert_eq!(meter.admit(&small(), P, a, 10, 5), Admission::Admitted);
         }
+    }
+
+    #[test]
+    fn a_peers_reads_and_scans_are_counted_for_a_window() {
+        let meter = WorkMeter::default();
+        let limits = WorkLimits {
+            blob_bytes_per_window: 100,
+            scans_per_window: 2,
+        };
+        let (a, b) = (ServerId::random(), ServerId::random());
+        let vault = kemlock_domain::Owner::User(kemlock_domain::UserId::random());
+        assert!(meter.allow_blob_read(&limits, a, 60, 10));
+        assert!(!meter.allow_blob_read(&limits, a, 41, 11));
+        assert!(meter.allow_blob_read(&limits, a, 40, 11));
+        // Another peer has its own, and the window passes.
+        assert!(meter.allow_blob_read(&limits, b, 100, 11));
+        assert!(meter.allow_blob_read(&limits, a, 100, 10 + WINDOW_SECS));
+
+        assert!(meter.allow_scan(&limits, a, vault, 10));
+        assert!(meter.allow_scan(&limits, a, vault, 11));
+        assert!(!meter.allow_scan(&limits, a, vault, 12));
+        assert!(meter.allow_scan(&limits, b, vault, 12));
+        assert!(meter.allow_scan(&limits, a, vault, 10 + WINDOW_SECS));
     }
 
     #[test]

@@ -51,18 +51,36 @@ pub struct GateRefusal {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AdminActor {
     pub user: UserId,
-    /// The admin just passed a passkey, password or sign-in check. What counts is the gate's call;
-    /// promotion and replacing the identity key accept it.
+    /// The admin just passed a passkey, password or sign-in check. What counts is the gate's call.
+    /// No federation route accepts it on its own any more: promotion, demotion and replacing or
+    /// revoking the identity key ask for a step-up token like every other write, since a sign-in
+    /// minutes old is what a stolen session still has.
     pub fresh: bool,
     /// The request carries a step-up token the gate accepted: made for this admin and device in the
-    /// last few minutes (see `/admin/v1/step-up`). Every new write needs it, and it stands in for
-    /// `fresh` where that is asked.
+    /// last few minutes (see `/admin/v1/step-up`). Every write needs it.
     pub step_up: bool,
 }
 
 /// Decides who may use the admin routes.
 pub trait AdminGate: Send + Sync {
     fn authorize<'a>(&'a self, parts: &'a Parts) -> BoxFut<'a, Result<AdminActor, GateRefusal>>;
+
+    /// Records in the audit log that `actor` asked for the federation write `action` (after the
+    /// gate and the step-up check let the request in), naming the peer it is about when there is
+    /// one, never whose vault. The default records nothing.
+    fn audit<'a>(
+        &'a self,
+        _actor: &'a AdminActor,
+        _action: &'static str,
+        _target: Option<String>,
+    ) -> BoxFut<'a, ()> {
+        Box::pin(async {})
+    }
+}
+
+/// The audit target for a peer named in a path: its id as the request wrote it, cut short.
+pub(crate) fn peer_target(raw: &str) -> Option<String> {
+    Some(format!("peer:{}", raw.chars().take(40).collect::<String>()))
 }
 
 /// The state of the admin routes. Cloning shares everything.
@@ -183,6 +201,15 @@ impl From<FedError> for ApiError {
                 "bad-request",
                 "The request can't be read",
                 Some(why.to_owned()),
+            ),
+            FedError::CopyFromAnotherServer => ApiError::new(
+                StatusCode::CONFLICT,
+                "account-copy-from-another-server",
+                "The account is a copy from another server",
+                Some(
+                    "this account is a copy that came from another server: accept the offer as a re-homing to make the offering server its home"
+                        .to_owned(),
+                ),
             ),
             FedError::KeyMismatch { .. } => ApiError::new(
                 StatusCode::CONFLICT,
@@ -507,6 +534,28 @@ pub(crate) struct AddressChangeDto {
     suites: Vec<String>,
     /// When the rotation was applied, in Unix seconds.
     received_at: u64,
+}
+
+/// A rotation of a peer's identity key that waits for the admin: the new key is pinned only when
+/// the admin confirms it is the peer's own (compare the fingerprint with the peer's admin).
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+struct RotationDto {
+    #[schema(value_type = String)]
+    peer: ServerId,
+    /// SHA-256 of the new identity key, in hex.
+    fingerprint: String,
+    operator: String,
+    addresses: Vec<String>,
+    issued_at: u64,
+    received_at: u64,
+}
+
+/// Which held rotation a route means: the one whose new key has this fingerprint, or the only one
+/// that waits.
+#[derive(Debug, Default, Deserialize)]
+struct RotationPick {
+    fingerprint: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -918,6 +967,7 @@ where
 {
     // Every write needs a step-up token, and this one makes the secret that lets a stranger pair.
     require_step_up(&actor)?;
+    state.gate.audit(&actor, "federation.admin.pairing_code", None).await;
     let (code, expires_at) = state.federation.pairings().new_code(unix_now());
     Ok(Json(CodeDto { code, expires_at }))
 }
@@ -932,6 +982,7 @@ where
     C: Connector + 'static,
 {
     require_step_up(&actor)?;
+    state.gate.audit(&actor, "federation.admin.pairing_start", None).await;
     let request: StartPairingBody = parse_body(&body)?;
     let awaiting = state
         .federation
@@ -972,6 +1023,7 @@ where
     C: Connector + 'static,
 {
     require_step_up(&actor)?;
+    state.gate.audit(&actor, "federation.admin.pairing_confirm", peer_target(&peer)).await;
     let peer = parse_server(&peer)?;
     let request: ConfirmBody = parse_body(&body)?;
     let now = unix_now();
@@ -1003,6 +1055,7 @@ where
     C: Connector + 'static,
 {
     require_step_up(&actor)?;
+    state.gate.audit(&actor, "federation.admin.pairing_cancel", peer_target(&peer)).await;
     let peer = parse_server(&peer)?;
     if state.federation.pairings().cancel(peer) {
         Ok(StatusCode::NO_CONTENT)
@@ -1022,6 +1075,7 @@ where
     C: Connector + 'static,
 {
     require_step_up(&actor)?;
+    state.gate.audit(&actor, "federation.admin.logs", peer_target(&id)).await;
     let id = parse_server(&id)?;
     let request: LogsBody = parse_body(&body)?;
     state
@@ -1050,6 +1104,7 @@ where
     C: Connector + 'static,
 {
     require_step_up(&actor)?;
+    state.gate.audit(&actor, "federation.admin.peer_revoke", peer_target(&id)).await;
     state.federation.revoke_peer(parse_server(&id)?).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1064,6 +1119,7 @@ where
     C: Connector + 'static,
 {
     require_step_up(&actor)?;
+    state.gate.audit(&actor, "federation.admin.peer_remove", peer_target(&id)).await;
     if state.federation.remove_peer(parse_server(&id)?).await? {
         Ok(StatusCode::NO_CONTENT)
     } else {
@@ -1081,6 +1137,7 @@ where
     C: Connector + 'static,
 {
     require_step_up(&actor)?;
+    state.gate.audit(&actor, "federation.admin.peer_unpair", peer_target(&id)).await;
     Ok(Json(unpair_dto(
         state.federation.unpair(parse_server(&id)?).await?,
     )))
@@ -1116,6 +1173,7 @@ where
     C: Connector + 'static,
 {
     require_step_up(&actor)?;
+    state.gate.audit(&actor, "federation.admin.vault_policy", None).await;
     let owner = parse_owner(&owner)?;
     let request: PolicyBody = parse_body(&body)?;
     let policy = Policy::parse(&request.policy)
@@ -1171,19 +1229,6 @@ where
     ))
 }
 
-/// Refuses an admin who hasn't just passed a passkey or password check, or sent a step-up token.
-fn require_fresh(actor: &AdminActor) -> Result<(), ApiError> {
-    if actor.fresh || actor.step_up {
-        return Ok(());
-    }
-    Err(ApiError::new(
-        StatusCode::FORBIDDEN,
-        "fresh-check-needed",
-        "A fresh check is needed",
-        Some("confirm with your passkey or password, then try again".to_owned()),
-    ))
-}
-
 /// Refuses a write that carries no step-up token the gate accepted: 403 `step-up-required`, as
 /// the rest of `/admin/v1` answers.
 fn require_step_up(actor: &AdminActor) -> Result<(), ApiError> {
@@ -1209,7 +1254,8 @@ where
     S: FedStore + Leases + 'static,
     C: Connector + 'static,
 {
-    require_fresh(&actor)?;
+    require_step_up(&actor)?;
+    state.gate.audit(&actor, "federation.admin.identity_rotate", None).await;
     let change = state.federation.rotate_identity(unix_now()).await?;
     Ok(Json(key_change_dto(change)))
 }
@@ -1222,7 +1268,8 @@ where
     S: FedStore + Leases + 'static,
     C: Connector + 'static,
 {
-    require_fresh(&actor)?;
+    require_step_up(&actor)?;
+    state.gate.audit(&actor, "federation.admin.identity_revoke", None).await;
     let change = state.federation.revoke_identity(unix_now()).await?;
     Ok(Json(key_change_dto(change)))
 }
@@ -1237,7 +1284,8 @@ where
     C: Connector + 'static,
 {
     let owner = parse_owner(&owner)?;
-    require_fresh(&actor)?;
+    require_step_up(&actor)?;
+    state.gate.audit(&actor, "federation.admin.vault_promote", None).await;
     let record = state.federation.promote(owner, unix_now()).await?;
     Ok(Json(PromotionDto {
         record: b64url::encode(&record),
@@ -1266,7 +1314,8 @@ where
     C: Connector + 'static,
 {
     let owner = parse_owner(&owner)?;
-    require_fresh(&actor)?;
+    require_step_up(&actor)?;
+    state.gate.audit(&actor, "federation.admin.demotion_accept", None).await;
     let next = state
         .federation
         .accept_promotion_of(owner, pick_of(&pick)?)
@@ -1313,6 +1362,7 @@ where
 {
     let owner = parse_owner(&owner)?;
     require_step_up(&actor)?;
+    state.gate.audit(&actor, "federation.admin.demotion_refuse", None).await;
     state
         .federation
         .refuse_promotion_of(owner, pick_of(&pick)?)
@@ -1346,6 +1396,71 @@ where
     ))
 }
 
+/// `GET …/rotations`: the identity-key rotations that came from peers and wait for the admin.
+async fn held_rotations<S, C>(
+    State(state): State<AdminState<S, C>>,
+    _admin: Admin,
+) -> Result<Json<Vec<RotationDto>>, ApiError>
+where
+    S: FedStore + Leases + 'static,
+    C: Connector + 'static,
+{
+    Ok(Json(
+        state
+            .federation
+            .held_rotations()
+            .await?
+            .into_iter()
+            .map(|r| RotationDto {
+                peer: r.server,
+                fingerprint: r.fingerprint,
+                operator: r.operator,
+                addresses: r.addresses,
+                issued_at: r.issued_at,
+                received_at: r.received_at,
+            })
+            .collect(),
+    ))
+}
+
+/// `POST …/peers/{id}/rotation`: the new key is the peer's own; pin it.
+async fn accept_rotation<S, C>(
+    State(state): State<AdminState<S, C>>,
+    Admin(actor): Admin,
+    Path(id): Path<String>,
+    Query(pick): Query<RotationPick>,
+) -> Result<StatusCode, ApiError>
+where
+    S: FedStore + Leases + 'static,
+    C: Connector + 'static,
+{
+    let peer = parse_server(&id)?;
+    require_step_up(&actor)?;
+    state.gate.audit(&actor, "federation.admin.rotation_accept", peer_target(&id)).await;
+    state
+        .federation
+        .accept_held_rotation(peer, pick.fingerprint.as_deref(), unix_now())
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE …/peers/{id}/rotation`: refuse the rotations held for the peer.
+async fn refuse_rotation<S, C>(
+    State(state): State<AdminState<S, C>>,
+    Admin(actor): Admin,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError>
+where
+    S: FedStore + Leases + 'static,
+    C: Connector + 'static,
+{
+    let peer = parse_server(&id)?;
+    require_step_up(&actor)?;
+    state.gate.audit(&actor, "federation.admin.rotation_refuse", peer_target(&id)).await;
+    state.federation.refuse_held_rotations(peer).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// `POST …/peers/{id}/address-change`: follow the server to its new addresses.
 async fn approve_address_change<S, C>(
     State(state): State<AdminState<S, C>>,
@@ -1358,6 +1473,7 @@ where
 {
     let peer = parse_server(&id)?;
     require_step_up(&actor)?;
+    state.gate.audit(&actor, "federation.admin.address_approve", peer_target(&id)).await;
     state.federation.approve_address_change(peer).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1374,6 +1490,7 @@ where
 {
     let peer = parse_server(&id)?;
     require_step_up(&actor)?;
+    state.gate.audit(&actor, "federation.admin.contest_clear", peer_target(&id)).await;
     state.federation.clear_contest(peer).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1390,6 +1507,7 @@ where
 {
     let peer = parse_server(&id)?;
     require_step_up(&actor)?;
+    state.gate.audit(&actor, "federation.admin.address_refuse", peer_target(&id)).await;
     state.federation.refuse_address_change(peer).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1413,17 +1531,30 @@ where
     ))
 }
 
+/// `?rehome=true` on an accept: the admin means to take the account of a personal vault that this
+/// server holds as a copy from another server over to the offering server.
+#[derive(Debug, Default, Deserialize)]
+struct AcceptOffer {
+    #[serde(default)]
+    rehome: bool,
+}
+
 async fn accept_offer<S, C>(
     State(state): State<AdminState<S, C>>,
     Admin(actor): Admin,
     Path(owner): Path<String>,
+    Query(accept): Query<AcceptOffer>,
 ) -> Result<Json<VaultDto>, ApiError>
 where
     S: FedStore + Leases + 'static,
     C: Connector + 'static,
 {
     require_step_up(&actor)?;
-    let settings = state.federation.accept_offer(parse_owner(&owner)?).await?;
+    state.gate.audit(&actor, "federation.admin.offer_accept", None).await;
+    let settings = state
+        .federation
+        .accept_offer_rehoming(parse_owner(&owner)?, accept.rehome)
+        .await?;
     Ok(Json(settings_dto(&settings, false)))
 }
 
@@ -1437,6 +1568,7 @@ where
     C: Connector + 'static,
 {
     require_step_up(&actor)?;
+    state.gate.audit(&actor, "federation.admin.offer_decline", None).await;
     state.federation.decline_offer(parse_owner(&owner)?).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1497,6 +1629,11 @@ where
         .route(
             &format!("{BASE}/address-changes"),
             get(address_changes::<S, C>),
+        )
+        .route(&format!("{BASE}/rotations"), get(held_rotations::<S, C>))
+        .route(
+            &format!("{BASE}/peers/{{id}}/rotation"),
+            post(accept_rotation::<S, C>).delete(refuse_rotation::<S, C>),
         )
         .route(
             &format!("{BASE}/peers/{{id}}/address-change"),
@@ -1567,6 +1704,10 @@ mod tests {
         assert_eq!(status(FedError::UnknownPeer), StatusCode::NOT_FOUND);
         assert_eq!(status(FedError::UnknownVault), StatusCode::NOT_FOUND);
         assert_eq!(status(FedError::Refused("x")), StatusCode::CONFLICT);
+        assert_eq!(
+            status(FedError::CopyFromAnotherServer),
+            StatusCode::CONFLICT
+        );
         assert_eq!(
             status(FedError::KeyMismatch { offered: vec![1] }),
             StatusCode::CONFLICT

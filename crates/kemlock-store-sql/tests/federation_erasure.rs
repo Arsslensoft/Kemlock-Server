@@ -13,7 +13,8 @@ use kemlock_domain::{
 };
 use kemlock_federation::eventsync::{EventSync, LogEntry};
 use kemlock_federation::extra::{
-    ErasureOutbox, FedAdminRepo, MemberApply, MemberStore, StoredOffer, VaultErasure,
+    AccountStanding, ErasureOutbox, FedAdminRepo, MemberApply, MemberStore, StoredOffer,
+    VaultErasure,
 };
 use kemlock_federation::home::VaultFederation;
 use kemlock_federation::members::{MemberAccount, MemberDevice};
@@ -634,4 +635,30 @@ async fn forgetting_a_peer_erases_a_space_it_homes_with_the_account_copy_that_ow
     assert_eq!(UserRepo::by_id(&store, copy_id).await, Ok(None));
     // The local account is untouched.
     assert!(UserRepo::by_id(&store, local.id).await.expect("read").is_some());
+}
+
+#[tokio::test]
+async fn an_account_id_is_unknown_local_or_a_copy_from_one_server() {
+    let store = memory().await;
+    let home = ServerId::random();
+    let space = Owner::Space(kemlock_domain::SpaceId::random());
+    let (local, _) = account_with_items(&store, "local", 0).await;
+    let copied = UserId::random();
+    store
+        .apply_member_account(space, home, &copy_of(copied, &unique_email("copy")))
+        .await
+        .expect("the copy is taken");
+
+    assert_eq!(
+        store.account_standing(UserId::random()).await,
+        Ok(AccountStanding::Unknown)
+    );
+    assert_eq!(
+        store.account_standing(local.id).await,
+        Ok(AccountStanding::Local)
+    );
+    assert_eq!(
+        store.account_standing(copied).await,
+        Ok(AccountStanding::Copy(home))
+    );
 }

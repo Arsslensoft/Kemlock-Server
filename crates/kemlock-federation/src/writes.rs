@@ -24,7 +24,17 @@ pub const PAST_BUNDLES_CAPABILITY: &str = "x-kemlock-past-bundles1";
 
 /// How far past the moment an account replaced its keys a change made by a server with a slow clock
 /// may still be dated, and be taken as signed before it.
-const RETIRED_KEY_SLACK_SECS: u64 = 300;
+const RETIRED_KEY_SLACK_SECS: u64 = crate::extra::WRITE_SKEW_SECS;
+
+/// The highest revision a change may carry. Revisions go up by one with each write of an item, so no
+/// person's edits reach this; a record that says more is a peer's attempt to put an item out of
+/// reach (a head at the top of the range can't be written past, and outranks every real version).
+pub const MAX_REVISION: u64 = u32::MAX as u64;
+
+/// How far above the highest revision this server holds of an item a change may be. A replica that
+/// missed a stretch of edits catches up in order, so the real gap is small; one that jumps far ahead
+/// takes the head from every real version, since the head is ranked by revision first.
+pub const MAX_REVISION_JUMP: u64 = 10_000;
 
 /// What to do with a record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,8 +68,11 @@ pub fn statement_of(record: &ChangeRecord) -> Option<item_write::Statement<'_>> 
     })
 }
 
-/// Judges a `kem1` record against the writer's signature and the owner's signed-only flag. A `bw`
-/// record is accepted: it has no `kem1` envelope to sign.
+/// Judges a record. Any record of a space that names a collection (signed or not, `kem1` or `bw`)
+/// must name one of that space: otherwise a peer could link an item to another space's collection.
+///
+/// A `kem1` record is judged against the writer's signature and the owner's signed-only flag. A `bw`
+/// record has no `kem1` envelope to sign, so the collection is all there is to check of it.
 ///
 /// - With a signature: the writer must be allowed for the owner (the vault's own account, or a
 ///   member of the space, from this server's replicated member list); this server must hold the
@@ -70,6 +83,37 @@ pub async fn judge<S: ReplicaStore + MemberStore>(
     store: &S,
     record: &ChangeRecord,
 ) -> Result<Verdict> {
+    if let (Owner::Space(_), Some(collection)) = (record.owner, record.collection) {
+        match store.space_has_collection(record.owner, collection).await? {
+            Some(true) => {}
+            Some(false) => {
+                return Ok(Verdict::Refuse(
+                    "a change into a collection that is not this space's",
+                ));
+            }
+            None => {
+                return Ok(Verdict::Defer(
+                    "a change into a collection this server does not know yet",
+                ));
+            }
+        }
+    }
+    if record.revision.0 > MAX_REVISION {
+        return Ok(Verdict::Refuse("a change with a revision no run of edits reaches"));
+    }
+    if record.revision.0 > MAX_REVISION_JUMP {
+        let top = store
+            .export_items(record.owner, &[record.item])
+            .await?
+            .iter()
+            .map(|held| held.item.revision.0)
+            .max();
+        if top.is_some_and(|top| record.revision.0 > top.saturating_add(MAX_REVISION_JUMP)) {
+            return Ok(Verdict::Refuse(
+                "a change with a revision far above the one this server holds",
+            ));
+        }
+    }
     if record.format != ItemFormat::Kem1 {
         return Ok(Verdict::Accept);
     }
@@ -108,8 +152,9 @@ pub async fn judge<S: ReplicaStore + MemberStore>(
                 "a signed change of a space that names no collection",
             ));
         };
+        let made_secs = record.change.hlc.millis() / 1000;
         match store
-            .writer_may_edit(record.owner, write.writer, collection)
+            .writer_may_edit(record.owner, write.writer, collection, made_secs)
             .await?
         {
             Some(true) => {}
@@ -134,6 +179,8 @@ pub async fn judge<S: ReplicaStore + MemberStore>(
     };
     // Keys the account has replaced signed nothing after it did (a stolen old key must not write
     // new changes): only a change made before then, by the clock of the server that accepted it.
+    // That clock is the origin's own word, so it is also held against the origin's other changes:
+    // a change with a later sequence number than one this server holds can't be dated before it.
     if let Some(retired) = store
         .writer_bundle_retired_at(write.writer, write.key_version)
         .await?
@@ -146,6 +193,15 @@ pub async fn judge<S: ReplicaStore + MemberStore>(
         {
             return Ok(Verdict::Refuse(
                 "a change signed with keys the account had replaced by then",
+            ));
+        }
+        if let Some((seq, hlc)) = store.newest_change_of(record.change.origin).await?
+            && record.change.seq > seq
+            && record.change.hlc.millis().saturating_add(RETIRED_KEY_SLACK_SECS * 1000)
+                < hlc.millis()
+        {
+            return Ok(Verdict::Refuse(
+                "a change signed with replaced keys that its origin dated before its own earlier change",
             ));
         }
     }
@@ -419,6 +475,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_change_that_names_a_collection_of_another_space_is_refused_signed_or_not() {
+        let writer = UserId::random();
+        let key = sig1::SigningKey::from_bytes(&[5; 64]);
+        let store = store_for(writer, &key);
+        let space = Owner::Space(SpaceId::random());
+        store.set_members(space, vec![writer]);
+        let signed = signed_record(space, writer, &key);
+        let collection = signed.collection.expect("a collection");
+        // An unsigned `kem1` record and a Bitwarden one, naming the same collection.
+        let mut unsigned = signed.clone();
+        unsigned.write = None;
+        let mut bitwarden = unsigned.clone();
+        bitwarden.format = ItemFormat::Bw;
+        for record in [&signed, &unsigned, &bitwarden] {
+            assert!(!verdict_is_refusal(judge(&store, record).await));
+        }
+        // The collection is another space's.
+        store.set_has_collection(space, collection, Some(false));
+        for record in [&signed, &unsigned, &bitwarden] {
+            assert!(matches!(
+                judge(&store, record).await,
+                Ok(Verdict::Refuse(_))
+            ));
+        }
+        // Or not known here yet.
+        store.set_has_collection(space, collection, None);
+        for record in [&signed, &unsigned, &bitwarden] {
+            assert!(matches!(
+                judge(&store, record).await,
+                Ok(Verdict::Defer(_))
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_revision_no_run_of_edits_reaches_is_refused_signed_or_not() {
+        let writer = UserId::random();
+        let key = sig1::SigningKey::from_bytes(&[5; 64]);
+        let store = store_for(writer, &key);
+        let owner = Owner::User(writer);
+        let mut record = signed_record(owner, writer, &key);
+        record.write = None;
+        assert_eq!(judge(&store, &record).await, Ok(Verdict::Accept));
+        for revision in [i64::MAX as u64, u64::MAX, MAX_REVISION + 1] {
+            record.revision = Revision(revision);
+            assert!(matches!(
+                judge(&store, &record).await,
+                Ok(Verdict::Refuse(_))
+            ));
+            record.format = ItemFormat::Bw;
+            assert!(matches!(
+                judge(&store, &record).await,
+                Ok(Verdict::Refuse(_))
+            ));
+            record.format = ItemFormat::Kem1;
+        }
+
+        // Far above what is held is refused too, where something is held; a gap a peer that missed
+        // some edits would leave is not.
+        let held = crate::testing::draft(record.item, owner, None, 1, 1_000);
+        store.put(held).expect("an item");
+        record.revision = Revision(1 + MAX_REVISION_JUMP);
+        assert!(!verdict_is_refusal(judge(&store, &record).await));
+        record.revision = Revision(2 + MAX_REVISION_JUMP);
+        assert!(matches!(
+            judge(&store, &record).await,
+            Ok(Verdict::Refuse(_))
+        ));
+        // A new item with a high revision that is in range has nothing to compare with.
+        record.item = ItemId::random();
+        record.revision = Revision(MAX_REVISION_JUMP + 5);
+        assert!(!verdict_is_refusal(judge(&store, &record).await));
+    }
+
+    #[tokio::test]
     async fn a_bitwarden_record_is_not_judged() {
         let writer = UserId::random();
         let key = sig1::SigningKey::from_bytes(&[5; 64]);
@@ -516,6 +647,59 @@ mod tests {
         // Made after the account replaced the keys: the old key is no longer the account.
         assert!(verdict_is_refusal(
             judge(&held(1_699_000_000), &record).await
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_change_with_replaced_keys_is_not_dated_before_an_earlier_change_of_its_origin() {
+        use crate::members::PastBundle;
+        let writer = UserId::random();
+        let old_key = sig1::SigningKey::from_bytes(&[5; 64]);
+        let new_key = sig1::SigningKey::from_bytes(&[6; 64]);
+        let bundle_of = |version: u32, key: &sig1::SigningKey| {
+            Bundle {
+                account_id: *writer.as_bytes(),
+                key_version: version,
+                kx1_public: kx1::PublicKey::from_bytes(&[1; 1600]).expect("length"),
+                sig1_public: key.public_key().expect("public key"),
+            }
+            .to_bytes()
+        };
+        // The account replaced its first keys at 1_700_000_100 s; the record below claims to be
+        // made at 1_700_000_000 s, before that.
+        let store = MemoryStore::new(ServerId::random());
+        let mut copy = account(writer, bundle_of(2, &new_key), 2);
+        copy.past_bundles = vec![PastBundle {
+            key_version: 1,
+            public_bundle: bundle_of(1, &old_key),
+            bundle_signature: vec![0; 8],
+            superseded_at: 1_700_000_100,
+        }];
+        store.set_member_account(copy);
+        let mut record = signed_record(Owner::User(writer), writer, &old_key);
+        // The origin is this store's own server, which already holds one of its changes, made at
+        // 1_800_000_000_000 ms.
+        record.change.origin = store.server_id();
+        sign(&mut record, writer, &old_key);
+        store
+            .put(crate::testing::draft(
+                ItemId::random(),
+                Owner::User(writer),
+                None,
+                1,
+                1_800_000_000_000,
+            ))
+            .expect("an earlier change");
+        // A change numbered before the one held can be older than it.
+        record.change.seq = 1;
+        sign(&mut record, writer, &old_key);
+        assert_eq!(judge(&store, &record).await, Ok(Verdict::Accept));
+        // One numbered after it can't: the origin dated it into the past to use the old keys.
+        record.change.seq = 2;
+        sign(&mut record, writer, &old_key);
+        assert!(matches!(
+            judge(&store, &record).await,
+            Ok(Verdict::Refuse(_))
         ));
     }
 }

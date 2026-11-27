@@ -342,15 +342,20 @@ async fn every_new_write_asks_for_a_step_up_token() {
 }
 
 #[tokio::test]
-async fn a_step_up_token_is_the_fresh_check_identity_rotation_asks_for() {
+async fn identity_rotation_asks_for_a_step_up_token_not_a_recent_sign_in() {
     let e = env(1);
     let uri = format!("{BASE}/identity/rotate");
-    let (status, _, bytes) = send(&e.app, Method::POST, &uri, &[("x-admin", "1")], None).await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
-    assert_eq!(
-        value(&bytes)["type"],
-        "urn:kemlock:problem:fresh-check-needed"
-    );
+    for headers in [
+        &[("x-admin", "1")][..],
+        &[("x-admin", "1"), ("x-fresh", "1")][..],
+    ] {
+        let (status, _, bytes) = send(&e.app, Method::POST, &uri, headers, None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            value(&bytes)["type"],
+            "urn:kemlock:problem:step-up-required"
+        );
+    }
     let (status, body) = write(&e.app, Method::POST, &uri, None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["kind"], "rotation");

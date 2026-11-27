@@ -431,15 +431,15 @@ async fn the_public_pairing_routes_are_rate_limited() {
 }
 
 #[tokio::test]
-async fn promotion_needs_a_fresh_check() {
+async fn promotion_needs_a_step_up_token_not_just_a_recent_sign_in() {
     let e = env(1, Arc::new(Dead));
     let owner = format!("user:{}", uuid::Uuid::new_v4());
     let uri = format!("/admin/v1/federation/vaults/{owner}/promote");
     let (status, _, bytes) = call(&e.app, Method::POST, &uri, None, &[("x-admin", "1")]).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     let problem: Value = serde_json::from_slice(&bytes).expect("a problem");
-    assert_eq!(problem["type"], "urn:kemlock:problem:fresh-check-needed");
-    // With a fresh check it gets as far as the vault, which this server doesn't hold.
+    assert_eq!(problem["type"], "urn:kemlock:problem:step-up-required");
+    // A sign-in minutes old is not enough.
     let (status, _, _) = call(
         &e.app,
         Method::POST,
@@ -448,25 +448,35 @@ async fn promotion_needs_a_fresh_check() {
         &[("x-admin", "1"), ("x-fresh", "1")],
     )
     .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    // With a step-up token it gets as far as the vault, which this server doesn't hold.
+    let (status, _, _) = call(
+        &e.app,
+        Method::POST,
+        &uri,
+        None,
+        &[("x-admin", "1"), ("x-step-up", "1")],
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
-async fn accepting_a_demotion_needs_a_fresh_check_and_a_held_promotion() {
+async fn accepting_a_demotion_needs_a_step_up_token_and_a_held_promotion() {
     let e = env(1, Arc::new(Dead));
     let owner = format!("user:{}", uuid::Uuid::new_v4());
     let uri = format!("/admin/v1/federation/vaults/{owner}/demotion");
     let (status, _, bytes) = call(&e.app, Method::POST, &uri, None, &[("x-admin", "1")]).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     let problem: Value = serde_json::from_slice(&bytes).expect("a problem");
-    assert_eq!(problem["type"], "urn:kemlock:problem:fresh-check-needed");
-    // With a fresh check it gets as far as the vault, which this server doesn't hold.
+    assert_eq!(problem["type"], "urn:kemlock:problem:step-up-required");
+    // With a step-up token it gets as far as the vault, which this server doesn't hold.
     let (status, _, _) = call(
         &e.app,
         Method::POST,
         &uri,
         None,
-        &[("x-admin", "1"), ("x-fresh", "1")],
+        &[("x-admin", "1"), ("x-step-up", "1")],
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -782,4 +792,154 @@ async fn a_contested_peer_shows_as_such_and_is_trusted_again_only_with_a_step_up
     // Nothing is left to settle.
     let (status, _) = admin(&e.app, Method::DELETE, &uri, None).await;
     assert_eq!(status, StatusCode::CONFLICT);
+}
+
+/// A gate that lets every request in with a step-up token and remembers what was audited.
+struct Recording {
+    seen: std::sync::Mutex<Vec<(&'static str, Option<String>)>>,
+}
+
+impl AdminGate for Recording {
+    fn authorize<'a>(&'a self, parts: &'a Parts) -> BoxFut<'a, Result<AdminActor, GateRefusal>> {
+        Box::pin(async move {
+            if !parts.headers.contains_key("x-admin") {
+                return Err(GateRefusal {
+                    status: StatusCode::UNAUTHORIZED,
+                    detail: "send x-admin",
+                });
+            }
+            Ok(AdminActor {
+                user: UserId::random(),
+                fresh: false,
+                step_up: parts.headers.contains_key("x-step-up"),
+            })
+        })
+    }
+
+    fn audit<'a>(
+        &'a self,
+        _actor: &'a AdminActor,
+        action: &'static str,
+        target: Option<String>,
+    ) -> BoxFut<'a, ()> {
+        Box::pin(async move {
+            self.seen
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((action, target));
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_federation_write_that_got_past_the_step_up_check_is_audited() {
+    let id = identity(1, unix_now(), &Suite::IMPLEMENTED);
+    let replica = Arc::new(Replica::new(MemoryStore::new(id.server), Arc::new(id)));
+    let pairings = Arc::new(Pairings::new(replica.clone(), Arc::new(Dead)));
+    let runner = Arc::new(PeerRunner::new(
+        replica.clone(),
+        NoConnector,
+        "audit".to_owned(),
+    ));
+    let gate = Arc::new(Recording {
+        seen: std::sync::Mutex::new(Vec::new()),
+    });
+    let app = admin_router(AdminState {
+        federation: Federation::new(replica, runner, pairings),
+        gate: gate.clone(),
+    });
+    let peer = uuid::Uuid::new_v4();
+    let owner = format!("user:{}", uuid::Uuid::new_v4());
+    let base = "/admin/v1/federation";
+
+    // Turned away for lack of a step-up token: nothing happened, nothing is logged.
+    let (status, _, _) = call(
+        &app,
+        Method::POST,
+        &format!("{base}/peers/{peer}/revoke"),
+        None,
+        &[("x-admin", "1")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        gate.seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty()
+    );
+
+    // With one, the write is logged, naming the peer and never the vault.
+    for (method, uri) in [
+        (Method::POST, format!("{base}/peers/{peer}/revoke")),
+        (Method::POST, format!("{base}/offers/{owner}/decline")),
+    ] {
+        let _ = call(
+            &app,
+            method,
+            &uri,
+            None,
+            &[("x-admin", "1"), ("x-step-up", "1")],
+        )
+        .await;
+    }
+    let seen = gate
+        .seen
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    assert_eq!(
+        seen,
+        vec![
+            (
+                "federation.admin.peer_revoke",
+                Some(format!("peer:{peer}"))
+            ),
+            ("federation.admin.offer_decline", None),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn accepting_an_offer_for_an_account_copied_from_another_server_has_its_own_problem() {
+    use kemlock_federation::extra::{AccountStanding, FedAdminRepo as _, StoredOffer};
+    use kemlock_federation::message::OfferState;
+    let e = env(1, Arc::new(Dead));
+    let user = UserId::random();
+    let owner = format!("user:{}", user.0);
+    // This server holds the account as a copy of a third server's, and another server offers it.
+    let offering = ServerId::random();
+    e.replica
+        .store()
+        .set_account_standing(user, AccountStanding::Copy(ServerId::random()));
+    e.replica
+        .store()
+        .put_offer(&StoredOffer {
+            vault: kemlock_domain::Owner::User(user),
+            home: offering,
+            epoch: 1,
+            replicas: vec![e.replica.server_id()],
+            state: OfferState::Pending,
+            received_at: unix_now(),
+        })
+        .await
+        .expect("an offer");
+
+    let (status, body) = admin(
+        &e.app,
+        Method::POST,
+        &format!("/admin/v1/federation/offers/{owner}/accept"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(
+        body["type"],
+        "urn:kemlock:problem:account-copy-from-another-server"
+    );
+    assert!(
+        body["detail"]
+            .as_str()
+            .is_some_and(|d| d.contains("re-homing"))
+    );
 }

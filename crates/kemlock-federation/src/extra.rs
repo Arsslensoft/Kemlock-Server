@@ -15,6 +15,10 @@ use std::future::{Future, ready};
 
 type R<T> = std::result::Result<T, StoreError>;
 
+/// How far past the moment an account was taken out of a space, or replaced its keys, a change
+/// made by a server with a slow clock may still be dated and be taken as made before.
+pub const WRITE_SKEW_SECS: u64 = 300;
+
 /// What an admin acknowledged when pairing with a server another organisation runs: the peer sees
 /// the metadata of the vaults it holds, it can't be forced to delete them, and a peer in another
 /// country is a cross-border transfer. Kept as the operator's record of the data sharing.
@@ -202,6 +206,17 @@ pub enum MemberApply {
     Refused,
 }
 
+/// What this server knows of an account id: whether it is its own, a copy, or not here at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccountStanding {
+    /// No account of this id lives here, as an original or as a copy.
+    Unknown,
+    /// An account of this server (not a copy from another server).
+    Local,
+    /// A copy that came from this server.
+    Copy(ServerId),
+}
+
 /// The member accounts of a federated vault: what the home publishes and a replica keeps. Never
 /// an OPAQUE record, so no password secret is shared; the copy signs in with its device keys.
 pub trait MemberStore: Send + Sync {
@@ -221,16 +236,34 @@ pub trait MemberStore: Send + Sync {
     }
 
     /// Whether `user` may edit `collection` of the space `vault`, from the member list and grants
-    /// this server holds: `Some(true)` for a confirmed member with edit on it, and for one taken out
-    /// of the space since (what they signed before is theirs, and what they could edit then is not
-    /// known), `Some(false)` for a confirmed member without, and `None` when the server doesn't
-    /// know the collection yet (the space's records may not have arrived).
+    /// this server holds, for a change dated `made_secs` (Unix seconds, the origin's HLC):
+    /// `Some(true)` for a confirmed member with edit on it, and for one taken out of the space since
+    /// who held edit on it and whose change was made before they were taken out (with
+    /// [`WRITE_SKEW_SECS`] of slack for a slow clock); `Some(false)` for a confirmed member without,
+    /// for a taken-out member who never could edit it, or whose change is dated after they left,
+    /// and `None` when the server doesn't know the collection yet (the space's records may not have
+    /// arrived).
     ///
     /// The default says yes, for a store that keeps no spaces.
     fn writer_may_edit(
         &self,
         _vault: Owner,
         _user: UserId,
+        _collection: kemlock_domain::spaces::CollectionId,
+        _made_secs: u64,
+    ) -> impl Future<Output = R<Option<bool>>> + Send {
+        ready(Ok(Some(true)))
+    }
+
+    /// Whether `collection` is one of the space `vault`: `Some(true)` when it is, `Some(false)` when
+    /// it belongs to another space (or `vault` has no collections), and `None` when this server
+    /// doesn't know it yet (the space's records may not have arrived). What a change that names a
+    /// collection is checked against, signed or not.
+    ///
+    /// The default says yes, for a store that keeps no spaces.
+    fn space_has_collection(
+        &self,
+        _vault: Owner,
         _collection: kemlock_domain::spaces::CollectionId,
     ) -> impl Future<Output = R<Option<bool>>> + Send {
         ready(Ok(Some(true)))
@@ -261,6 +294,19 @@ pub trait MemberStore: Send + Sync {
     /// Whether `user` is a copy from another server.
     fn is_replica_account(&self, _user: UserId) -> impl Future<Output = R<bool>> + Send {
         ready(Ok(false))
+    }
+
+    /// What this server holds under the account id `user`: nothing, an account of its own, or a
+    /// copy and the server it came from. A replica asks before it lets a space's home name `user`
+    /// as a member, a group seat, a grantee or the owner of key copies: only an id this server has
+    /// no account for yet, or a copy that came from that home, may be named.
+    ///
+    /// The default says nothing is held, for a store that keeps no accounts.
+    fn account_standing(
+        &self,
+        _user: UserId,
+    ) -> impl Future<Output = R<AccountStanding>> + Send {
+        ready(Ok(AccountStanding::Unknown))
     }
 
     /// The public-key bundle `user` had at `key_version` as this server holds it, whether the
@@ -297,6 +343,27 @@ pub trait BlobSync: Send + Sync {
         _limit: u32,
     ) -> impl Future<Output = R<Vec<Attachment>>> + Send {
         ready(Ok(Vec::new()))
+    }
+
+    /// Where the list of `vault`'s attachments stopped last time with `peer`: the id the next page
+    /// asks after (all zeros to start). A vault with more attachments than one visit lists is listed
+    /// over several, and the list starts again from the beginning when it was reached the end of.
+    fn blob_cursor(
+        &self,
+        _peer: ServerId,
+        _vault: Owner,
+    ) -> impl Future<Output = R<[u8; 16]>> + Send {
+        ready(Ok([0; 16]))
+    }
+
+    /// Keeps where the list stopped. Idempotent.
+    fn set_blob_cursor(
+        &self,
+        _peer: ServerId,
+        _vault: Owner,
+        _after: [u8; 16],
+    ) -> impl Future<Output = R<()>> + Send {
+        ready(Ok(()))
     }
 
     /// The attachment stored as `blob`, if any.

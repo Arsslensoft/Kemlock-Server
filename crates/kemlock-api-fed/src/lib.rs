@@ -30,5 +30,5 @@ pub use identity::{
 };
 pub use pair::{PAIRING_MEDIA_TYPE, pair_router};
 pub use routes::{DESCRIPTOR_MEDIA_TYPE, router};
-pub use session::{Duplex, SessionEnd, serve, serve_session};
+pub use session::{Duplex, HELLO_TIMEOUT, SessionEnd, serve, serve_session, serve_session_within};
 pub use state::{FedEvent, FedState};

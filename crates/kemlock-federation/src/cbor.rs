@@ -22,6 +22,12 @@ pub enum Value {
 /// How deep arrays and maps may nest.
 pub const MAX_DEPTH: u8 = 6;
 
+/// How many values (integers, strings, arrays and maps, each counted once) one decoded message may
+/// hold. A value takes tens of bytes in memory and one byte on the wire, so without a bound a
+/// message of a few MiB of single-byte integers would take hundreds of MiB to decode. The largest
+/// real message (a list of 4,096 grants) is under 20,000.
+pub const MAX_VALUES: usize = 131_072;
+
 impl Value {
     /// A map from entries in any order; they are sorted by key. A repeated key is a bug in the
     /// caller, and the later entry is dropped.
@@ -79,7 +85,10 @@ impl Value {
 
     /// Parses exactly one value that fills `bytes`.
     pub fn decode(bytes: &[u8]) -> Result<Value> {
-        let mut d = Decoder { rest: bytes };
+        let mut d = Decoder {
+            rest: bytes,
+            left: MAX_VALUES,
+        };
         let value = d.value(0)?;
         if d.rest.is_empty() {
             Ok(value)
@@ -154,6 +163,8 @@ fn head(out: &mut Vec<u8>, major: u8, n: u64) {
 
 struct Decoder<'a> {
     rest: &'a [u8],
+    /// Values this decode may still make.
+    left: usize,
 }
 
 impl<'a> Decoder<'a> {
@@ -215,6 +226,10 @@ impl<'a> Decoder<'a> {
         if depth > MAX_DEPTH {
             return Err(FedError::Malformed("nested too deeply"));
         }
+        self.left = self
+            .left
+            .checked_sub(1)
+            .ok_or(FedError::Malformed("too many values"))?;
         let (major, n) = self.head()?;
         match major {
             0 => Ok(Value::Uint(n)),
@@ -260,7 +275,7 @@ impl<'a> Decoder<'a> {
     /// a hostile head can't make us reserve memory the input doesn't back.
     fn count(&self, n: u64) -> Result<usize> {
         let count = usize::try_from(n).map_err(|_| FedError::Malformed("count"))?;
-        if count > self.rest.len() {
+        if count > self.rest.len() || count > self.left {
             return Err(FedError::Malformed("count exceeds the input"));
         }
         Ok(count)
@@ -421,6 +436,24 @@ mod tests {
         for bad in cases {
             assert!(Value::decode(&bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn the_number_of_values_in_a_message_is_bounded() {
+        // An array of single-byte integers, as many as the bound allows, decodes; one more doesn't.
+        let mut ok = vec![0x9a];
+        ok.extend_from_slice(&u32::try_from(MAX_VALUES - 1).expect("small").to_be_bytes());
+        ok.extend(std::iter::repeat_n(0u8, MAX_VALUES - 1));
+        assert!(Value::decode(&ok).is_ok());
+        let mut over = vec![0x9a];
+        over.extend_from_slice(&u32::try_from(MAX_VALUES).expect("small").to_be_bytes());
+        over.extend(std::iter::repeat_n(0u8, MAX_VALUES));
+        assert!(Value::decode(&over).is_err());
+        // Arrays of empty arrays can't get around it: every level counts.
+        let mut wide = vec![0x9a];
+        wide.extend_from_slice(&u32::try_from(MAX_VALUES).expect("small").to_be_bytes());
+        wide.extend(std::iter::repeat_n(0x80u8, MAX_VALUES));
+        assert!(Value::decode(&wide).is_err());
     }
 
     #[test]

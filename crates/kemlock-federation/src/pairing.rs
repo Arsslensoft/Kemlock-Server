@@ -432,6 +432,17 @@ pub fn respond(
     local: &LocalIdentity,
     message: &[u8],
 ) -> Result<(PendingPairing, Vec<u8>)> {
+    respond_keeping(&code, local, message)
+}
+
+/// [`respond`], leaving the code with the caller: it fails only on a message that can't be read
+/// (nothing about the code can make it fail), so a caller that gets an error puts the code back,
+/// and a request that was no attempt at it doesn't use it up. Once it answers, the code is spent.
+pub fn respond_keeping(
+    code: &PairingCode,
+    local: &LocalIdentity,
+    message: &[u8],
+) -> Result<(PendingPairing, Vec<u8>)> {
     if message.len() > MAX_MESSAGE {
         return Err(FedError::Pairing);
     }
@@ -481,8 +492,10 @@ pub fn respond(
 }
 
 impl PendingPairing {
-    /// Reads message 3. It opens only if the initiator held the right code.
-    pub fn finish(self, message: &[u8], now: u64) -> Result<Paired> {
+    /// Reads message 3. It opens only if the initiator held the right code. A message that doesn't
+    /// open leaves this pairing as it was: it takes only `&self`, so the hub can keep it when
+    /// someone who isn't the initiator sends junk in the initiator's name.
+    pub fn finish(&self, message: &[u8], now: u64) -> Result<Paired> {
         if message.len() > MAX_MESSAGE {
             return Err(FedError::Pairing);
         }

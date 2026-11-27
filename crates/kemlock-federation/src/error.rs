@@ -40,6 +40,11 @@ pub enum FedError {
     /// The request is not allowed for this peer or in this state.
     #[error("refused: {0}")]
     Refused(&'static str),
+    /// An offer of a personal vault whose account this server holds as a copy from another server:
+    /// the admin may accept it only as a re-homing. Its own variant so the console can tell it from
+    /// the other refusals.
+    #[error("refused: this account is a copy that came from another server: accept the offer as a re-homing to make the offering server its home")]
+    CopyFromAnotherServer,
     /// This server does not federate that vault (or the peer may not know it exists).
     #[error("unknown vault")]
     UnknownVault,

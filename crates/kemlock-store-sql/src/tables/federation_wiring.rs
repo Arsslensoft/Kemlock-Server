@@ -214,3 +214,47 @@ pub(crate) mod federation_withheld {
 
     impl ActiveModelBehavior for ActiveModel {}
 }
+
+/// `vault_rank_pins`: a vault this server ranks by revision for good.
+pub(crate) mod vault_rank_pins {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+    #[sea_orm(table_name = "vault_rank_pins")]
+    pub struct Model {
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub owner_type: i16,
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub owner_id: Uuid,
+        /// Unix seconds.
+        pub pinned_at: i64,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+/// `peer_blob_cursors`: where the list of a vault's attachments stopped with a peer.
+pub(crate) mod peer_blob_cursors {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+    #[sea_orm(table_name = "peer_blob_cursors")]
+    pub struct Model {
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub peer: Uuid,
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub owner_type: i16,
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub owner_id: Uuid,
+        /// The attachment id the next page asks after.
+        pub after: Uuid,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}

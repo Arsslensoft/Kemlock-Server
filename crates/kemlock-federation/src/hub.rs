@@ -20,7 +20,7 @@ use crate::extra::Acknowledgement;
 use crate::net::Http;
 use crate::pairing::{
     CODE_LIFETIME_SECS, Fingerprint, PairingCode, PairingInitiator, PendingPairing,
-    check_first_message, respond,
+    check_first_message, respond_keeping,
 };
 use crate::ports::Peer;
 use crate::replicate::{FedStore, Replica};
@@ -176,15 +176,23 @@ impl<S: FedStore> Pairings<S> {
         // anyone can send one, and the code is good for a single attempt.
         check_first_message(message, self.replica.server_id())?;
         let initiator = initiator_of(message)?;
-        let code = {
+        let (code, expires) = {
             let mut state = self.state();
             match state.code.take() {
-                Some((code, expires)) if expires > now => code,
+                Some((code, expires)) if expires > now => (code, expires),
                 _ => return Err(FedError::Pairing),
             }
         };
         let identity = self.replica.identity();
-        let (pending, reply) = respond(code, &identity, message)?;
+        // A message the code can't be told apart on (it can't be read at all) gets the code back:
+        // otherwise anyone who can send a request could use up the code before the admin types it.
+        let (pending, reply) = match respond_keeping(&code, &identity, message) {
+            Ok(answered) => answered,
+            Err(e) => {
+                self.state().code.get_or_insert((code, expires));
+                return Err(e);
+            }
+        };
         let mut state = self.state();
         state.responding.retain(|_, (_, expires)| *expires > now);
         if state.responding.len() >= MAX_PENDING {
@@ -199,14 +207,16 @@ impl<S: FedStore> Pairings<S> {
     /// Message 3 from the typing side: if it opens, the exchange succeeded and the peer waits for
     /// the admin's confirmation.
     pub fn finish(&self, initiator: ServerId, message: &[u8], now: u64) -> Result<()> {
-        let pending = {
-            let mut state = self.state();
-            match state.responding.remove(&initiator) {
-                Some((pending, expires)) if expires > now => pending,
+        // The pairing stays until a message 3 opens: the initiator's id is no secret, and a junk
+        // message in its name must not cancel the pairing its admin is in the middle of.
+        let paired = {
+            let state = self.state();
+            match state.responding.get(&initiator) {
+                Some((pending, expires)) if *expires > now => pending.finish(message, now)?,
                 _ => return Err(FedError::Pairing),
             }
         };
-        let paired = pending.finish(message, now)?;
+        self.state().responding.remove(&initiator);
         self.hold(AwaitingPeer {
             descriptor: paired.descriptor,
             fingerprint: paired.fingerprint,
@@ -401,6 +411,51 @@ mod tests {
                 at: NOW,
             }),
         }
+    }
+
+    #[tokio::test]
+    async fn junk_cannot_use_up_the_code_or_cancel_a_pairing_in_progress() {
+        let ia = identity(1, NOW, &Suite::IMPLEMENTED);
+        let ib = identity(2, NOW, &Suite::IMPLEMENTED);
+        let (a_id, b_id) = (ia.server, ib.server);
+        let a = Arc::new(Replica::new(MemoryStore::new(a_id), Arc::new(ia)));
+        let b = Arc::new(Replica::new(MemoryStore::new(b_id), Arc::new(ib)));
+        let shower = Arc::new(Pairings::new(b.clone(), Arc::new(Nobody)));
+        let typer = Pairings::new(a.clone(), Arc::new(Loop(shower.clone())));
+
+        let (code, _) = shower.new_code(NOW);
+        // A message 1 that has the right fields but no point on the curve is not an attempt at
+        // the code: it is refused and the code is still waiting.
+        let junk = {
+            use crate::cbor::Value;
+            Value::map(vec![
+                (0, Value::Uint(1)),
+                (1, Value::bytes(&[7; 16])),
+                (2, Value::bytes(&[1; 3])),
+                (3, Value::bytes(a_id.as_bytes())),
+            ])
+            .encode()
+        };
+        assert!(shower.respond(&junk, NOW).is_err());
+        assert!(shower.code_waiting(NOW), "the code survived the junk");
+
+        // The real exchange still goes through with it.
+        let awaiting = typer.start("http://b.example.org", &code, NOW).await;
+        assert!(awaiting.is_ok(), "{awaiting:?}");
+
+        // A message 3 in the initiator's name that doesn't open can't be told from a real one, and
+        // must not cancel the pairing: run it again from a fresh code and put junk in the middle.
+        let (code, _) = shower.new_code(NOW);
+        let (initiator, first) = crate::pairing::PairingInitiator::start(
+            &crate::pairing::PairingCode::parse(&code).expect("a code"),
+            &a.identity(),
+        )
+        .expect("message 1");
+        let second = shower.respond(&first, NOW).expect("message 2");
+        assert!(shower.finish(a_id, &[0xff; 20], NOW).is_err());
+        assert!(shower.finish(a_id, &[], NOW).is_err());
+        let (_, third) = initiator.finish(&second, NOW).expect("message 3");
+        assert_eq!(shower.finish(a_id, &third, NOW), Ok(()));
     }
 
     #[tokio::test]

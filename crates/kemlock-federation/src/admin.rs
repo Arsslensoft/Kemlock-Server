@@ -19,7 +19,9 @@ use crate::home::{MAX_REPLICAS, Policy, PromotionRecord, VaultFederation};
 use crate::hub::Pairings;
 use crate::insight::{MismatchRecord, PeerSecurityRecord, VaultInfo};
 use crate::job::{Connector, LEASE_SECS, PeerRunner, PeerStatus, RunOutcome, lease_name};
-use crate::keyrecs::{IdentityRotator, PendingAddresses, revocation_record, rotation_record};
+use crate::keyrecs::{
+    HeldRotationView, IdentityRotator, PendingAddresses, revocation_record, rotation_record,
+};
 use crate::net::Http;
 use crate::pairing::Fingerprint;
 use crate::ports::{HomeStatus, LogSwitches, Peer, PeerState, StoredHomeRecord};
@@ -781,7 +783,17 @@ impl<S: FedStore + Leases, C: Connector> Federation<S, C> {
 
     /// The admin of a replica accepts the vault a home offered: it is copied here from now on.
     pub async fn accept_offer(&self, vault: Owner) -> Result<VaultFederation> {
-        let accepted = self.replica.accept_offer(vault).await?;
+        self.accept_offer_rehoming(vault, false).await
+    }
+
+    /// [`accept_offer`](Self::accept_offer) for a personal vault whose account is a copy from
+    /// another server, when the admin means to re-home it to the offering server.
+    pub async fn accept_offer_rehoming(
+        &self,
+        vault: Owner,
+        rehome: bool,
+    ) -> Result<VaultFederation> {
+        let accepted = self.replica.accept_offer_rehoming(vault, rehome).await?;
         self.runner.mark_dirty(accepted.home);
         Ok(accepted)
     }
@@ -856,6 +868,32 @@ impl<S: FedStore + Leases, C: Connector> Federation<S, C> {
         self.replica.clear_contest(peer).await?;
         self.runner.mark_dirty(peer);
         Ok(())
+    }
+
+    /// The identity-key rotations peers signed that wait for this server's admin to confirm.
+    pub async fn held_rotations(&self) -> Result<Vec<HeldRotationView>> {
+        self.replica.held_rotations().await
+    }
+
+    /// Confirms the rotation held for `server` (the one whose new key has `fingerprint`; the only
+    /// one that waits when none is named): this server pins the new key from now on. The caller has
+    /// checked the admin with a step-up token.
+    pub async fn accept_held_rotation(
+        &self,
+        server: ServerId,
+        fingerprint: Option<&str>,
+        now: u64,
+    ) -> Result<()> {
+        self.replica
+            .accept_held_rotation(server, fingerprint, now)
+            .await?;
+        self.runner.mark_dirty(server);
+        Ok(())
+    }
+
+    /// Refuses the rotations held for `server`: the key this server pins stays.
+    pub async fn refuse_held_rotations(&self, server: ServerId) -> Result<()> {
+        self.replica.refuse_held_rotations(server).await
     }
 
     /// The address changes that came with peers' key rotations and wait for this server's admin.

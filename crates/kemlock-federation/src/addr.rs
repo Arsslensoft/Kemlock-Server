@@ -15,6 +15,12 @@
 //!   name must resolve to public addresses only ([`is_public_ip`]); the connection then goes to
 //!   exactly the addresses that were checked, so a second lookup can't answer differently.
 //!
+//! A **name** the admin typed is looked up again at every dial, and whoever runs its DNS can change
+//! the answer after the admin looked: so a name never resolves to an address no network of the
+//! admin's could use (the unspecified address, multicast, broadcast, link-local, which holds the
+//! cloud metadata address), whatever its trust. A private network, loopback and the like stay the
+//! admin's to allow, and an IP address typed as such is the admin's own word.
+//!
 //! Either way an address is a plain base URL: no user name or password, no query, no fragment. The
 //! path of a request is joined to it as a path ([`join`]), never appended to a string, so no
 //! address can reach a different URL than the one the code asked for.
@@ -120,6 +126,24 @@ fn public_v6(ip: Ipv6Addr) -> bool {
         || (s[0] == 0x2001 && (s[1] & 0xfff0) == 0x10))
 }
 
+/// Whether `ip` is one no peer is ever at, so a name the admin typed may not resolve to it: the
+/// unspecified address, multicast, broadcast and link-local ranges (169.254.0.0/16 holds the cloud
+/// metadata address), also inside an IPv6 address that carries an IPv4 one.
+pub fn is_never_dialled(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_unspecified() || v4.is_multicast() || v4.is_broadcast() || v4.is_link_local()
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_never_dialled(IpAddr::V4(v4));
+            }
+            let s = v6.segments();
+            v6.is_unspecified() || v6.is_multicast() || (s[0] & 0xffc0) == 0xfe80
+        }
+    }
+}
+
 /// `address` in the form two addresses are compared in: no blanks, no trailing slash, lower case.
 pub fn normal(address: &str) -> String {
     address.trim().trim_end_matches('/').to_ascii_lowercase()
@@ -193,6 +217,7 @@ pub async fn resolve(url: &Url, trust: Trust) -> Result<Vec<SocketAddr>> {
     let port = url
         .port_or_known_default()
         .ok_or(FedError::Invalid("an address has no port"))?;
+    let named = matches!(url.host(), Some(Host::Domain(_)));
     let found: Vec<SocketAddr> = match url.host() {
         None => return Err(FedError::Invalid("an address has no host")),
         Some(Host::Ipv4(ip)) => vec![SocketAddr::new(IpAddr::V4(ip), port)],
@@ -215,6 +240,12 @@ pub async fn resolve(url: &Url, trust: Trust) -> Result<Vec<SocketAddr>> {
     if found.is_empty() {
         return Err(FedError::Remote(
             "the peer's name has no address".to_owned(),
+        ));
+    }
+    // Checked at every lookup, whoever typed the name: the answer is not the one the admin saw.
+    if named && found.iter().any(|a| is_never_dialled(a.ip())) {
+        return Err(FedError::Refused(
+            "a peer's name resolves to an address no peer is at (link-local, multicast or unspecified)",
         ));
     }
     if trust == Trust::Descriptor && found.iter().any(|a| !is_public_ip(a.ip())) {
@@ -378,6 +409,27 @@ mod tests {
             resolve(&public, Trust::Descriptor).await.expect("public"),
             vec![SocketAddr::new(ip("8.8.8.8"), 443)]
         );
+    }
+
+    #[test]
+    fn some_addresses_are_never_dialled_by_name() {
+        for text in [
+            "169.254.169.254",
+            "169.254.0.1",
+            "0.0.0.0",
+            "224.0.0.1",
+            "255.255.255.255",
+            "fe80::1",
+            "ff02::1",
+            "::",
+            "::ffff:169.254.169.254",
+        ] {
+            assert!(is_never_dialled(ip(text)), "{text}");
+        }
+        // A home lab is still the admin's to allow.
+        for text in ["10.0.0.5", "192.168.1.10", "127.0.0.1", "::1", "fd00::1", "8.8.8.8"] {
+            assert!(!is_never_dialled(ip(text)), "{text}");
+        }
     }
 
     #[tokio::test]

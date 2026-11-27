@@ -6,10 +6,10 @@
 //!
 //! The code is the authentication, so the routes are open, and they say as little as they can: any
 //! refusal is the same bare 400, so a wrong code teaches the other side nothing. A code is good for
-//! one attempt (the hub takes it by value). A message 1 that is malformed (not the CBOR map with its
-//! four fields, or naming this server as the initiator) is refused first and leaves the code
-//! waiting; a well-formed one uses the code up, whoever sends it, so a stranger who can send one
-//! still can. Bodies are capped at 64 KiB and the routes answer 429 past 20 requests a minute from
+//! one attempt: it is used up when an answer is sent. A message 1 that can't be read (not the CBOR map
+//! with its four fields, a key share that is no key, or naming this server as the initiator) is
+//! refused and leaves the code waiting, so junk can't use it up. A message 3 that doesn't open
+//! leaves the pairing in progress as it was. Bodies are capped at 64 KiB and the routes answer 429 past 20 requests a minute from
 //! one source address (an IPv6 one by its /64) and past 300 across all of them, so one host can't
 //! use up the limit of the admin who is pairing.
 

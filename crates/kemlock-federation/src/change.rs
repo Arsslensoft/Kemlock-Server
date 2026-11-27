@@ -268,6 +268,37 @@ pub fn open(envelope: &[u8], keys: &dyn KeyDirectory) -> Result<ChangeRecord> {
     Ok(record)
 }
 
+/// The server a record says it is from, read without checking anything: what to look up the keys
+/// the origin used before its current one for, when the current one doesn't verify.
+pub fn claimed_origin(envelope: &[u8]) -> Result<ServerId> {
+    let signed = Signed::decode(envelope)?;
+    Ok(ChangeRecord::from_body(&signed.body)?.change.origin)
+}
+
+/// [`open`], for a record the origin signed with a key it has replaced since. `past` holds each key
+/// the origin used before its current one, with when this server replaced it (Unix seconds): a key
+/// verifies only a record dated up to then (and the 300 seconds of skew every other check allows),
+/// so a replaced key that leaks later can't sign new changes.
+pub fn open_with_past_keys(envelope: &[u8], past: &[(Vec<u8>, u64)]) -> Result<ChangeRecord> {
+    let signed = Signed::decode(envelope)?;
+    let record = ChangeRecord::from_body(&signed.body)?;
+    let made = record.change.hlc.millis() / 1000;
+    let verified = past.iter().any(|(key, replaced_at)| {
+        made <= replaced_at.saturating_add(MAX_FUTURE_MS / 1000)
+            && sig1::PublicKey::from_bytes(key)
+                .is_ok_and(|key| signed.verify(&key, CONTEXT).is_ok())
+    });
+    if !verified {
+        return Err(FedError::Refused(
+            "a change that none of the origin's keys signed",
+        ));
+    }
+    if record.to_body() != signed.body {
+        return Err(FedError::Invalid("the record body is not canonical"));
+    }
+    Ok(record)
+}
+
 /// How far ahead of this server's clock a record's HLC time may be, in milliseconds: the 300
 /// seconds of clock skew every other check here allows.
 pub const MAX_FUTURE_MS: u64 = 300_000;

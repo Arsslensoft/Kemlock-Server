@@ -16,9 +16,9 @@ use crate::tables::federation::{
     vault_federation,
 };
 use crate::tables::federation_keys::{
-    peer_key_history, peer_pending_addresses, peer_trusted_addresses,
+    peer_held_rotations, peer_key_history, peer_pending_addresses, peer_trusted_addresses,
 };
-use crate::tables::federation_wiring::federation_erasures;
+use crate::tables::federation_wiring::{federation_erasures, peer_blob_cursors, vault_rank_pins};
 use crate::tables::items::{self, owner_parts};
 use crate::tables::space_tables::item_collections;
 use crate::tables::{changes, server_meta};
@@ -663,6 +663,25 @@ impl ReplicaStore for SqlStore {
         )
     }
 
+    async fn newest_change_of(
+        &self,
+        origin: ServerId,
+    ) -> Result<Option<(u64, kemlock_domain::Hlc)>, StoreError> {
+        changes::Entity::find()
+            .filter(changes::Column::Origin.eq(origin.0))
+            .order_by_desc(changes::Column::Seq)
+            .one(self.reader())
+            .await
+            .store()?
+            .map(|row| {
+                Ok((
+                    from_i64(row.seq, "sequence number")?,
+                    kemlock_domain::Hlc(from_i64(row.hlc, "hlc")?),
+                ))
+            })
+            .transpose()
+    }
+
     async fn set_owner_signed_only(&self, owner: Owner, required: bool) -> Result<(), StoreError> {
         if required {
             kemlock_app::ports::ItemStore::require_signed_writes(
@@ -678,6 +697,32 @@ impl ReplicaStore for SqlStore {
 
     async fn owner_signed_only(&self, owner: Owner) -> Result<bool, StoreError> {
         kemlock_app::ports::ItemStore::signed_writes_required(self, owner).await
+    }
+
+    async fn revision_ranked(&self, owner: Owner) -> Result<bool, StoreError> {
+        let (owner_type, owner_id) = owner_parts(owner);
+        Ok(vault_rank_pins::Entity::find_by_id((owner_type, owner_id))
+            .one(self.writer())
+            .await
+            .store()?
+            .is_some())
+    }
+
+    async fn pin_revision_ranking(&self, owner: Owner) -> Result<(), StoreError> {
+        let (owner_type, owner_id) = owner_parts(owner);
+        let inserted = vault_rank_pins::Entity::insert(vault_rank_pins::ActiveModel {
+            owner_type: Set(owner_type),
+            owner_id: Set(owner_id),
+            pinned_at: Set(time::OffsetDateTime::now_utc().unix_timestamp()),
+        })
+        .exec(self.writer())
+        .await;
+        match inserted {
+            Ok(_) => Ok(()),
+            // Pinned already, or by another write between the read and this one.
+            Err(err) if crate::error::is_unique_violation(&err) => Ok(()),
+            Err(err) => Err(crate::error::map_db(err)),
+        }
     }
 
     async fn leaves(&self, owner: Owner) -> Result<Vec<Leaf>, StoreError> {
@@ -858,6 +903,16 @@ impl PeerRepo for SqlStore {
             .store()?;
         peer_trusted_addresses::Entity::delete_many()
             .filter(peer_trusted_addresses::Column::Peer.eq(id.0))
+            .exec(self.writer())
+            .await
+            .store()?;
+        peer_held_rotations::Entity::delete_many()
+            .filter(peer_held_rotations::Column::Server.eq(id.0))
+            .exec(self.writer())
+            .await
+            .store()?;
+        peer_blob_cursors::Entity::delete_many()
+            .filter(peer_blob_cursors::Column::Peer.eq(id.0))
             .exec(self.writer())
             .await
             .store()?;

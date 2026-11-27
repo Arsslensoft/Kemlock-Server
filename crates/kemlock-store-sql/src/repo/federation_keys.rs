@@ -6,11 +6,13 @@ use crate::error::StoreResult;
 use crate::store::SqlStore;
 use crate::tables::federation::peers;
 use crate::tables::federation_keys::{
-    key_records, learned_keys, peer_key_history, peer_pending_addresses,
+    key_records, learned_keys, peer_held_rotations, peer_key_history, peer_pending_addresses,
 };
 use kemlock_app::ports::StoreError;
 use kemlock_domain::ServerId;
-use kemlock_federation::keyrecs::{KeyStore, PastKey, PendingAddresses, StoredKeyRecord};
+use kemlock_federation::keyrecs::{
+    HeldRotation, KeyStore, MAX_HELD_ROTATIONS, PastKey, PendingAddresses, StoredKeyRecord,
+};
 use kemlock_federation::relay::{LearnedKey, OriginKeys};
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
@@ -188,6 +190,70 @@ impl KeyStore for SqlStore {
 
     async fn clear_pending_addresses(&self, peer: ServerId) -> Result<(), StoreError> {
         peer_pending_addresses::Entity::delete_by_id(peer.0)
+            .exec(self.writer())
+            .await
+            .store()?;
+        Ok(())
+    }
+
+    async fn put_held_rotation(&self, held: &HeldRotation) -> Result<bool, StoreError> {
+        let already = peer_held_rotations::Entity::find_by_id((
+            held.server.0,
+            held.fingerprint.clone(),
+        ))
+        .one(self.writer())
+        .await
+        .store()?
+        .is_some();
+        if already {
+            return Ok(true);
+        }
+        let waiting = peer_held_rotations::Entity::find()
+            .filter(peer_held_rotations::Column::Server.eq(held.server.0))
+            .all(self.writer())
+            .await
+            .store()?
+            .len();
+        if waiting >= MAX_HELD_ROTATIONS {
+            return Ok(false);
+        }
+        peer_held_rotations::Entity::insert(peer_held_rotations::ActiveModel {
+            server: Set(held.server.0),
+            fingerprint: Set(held.fingerprint.clone()),
+            issued_at: Set(to_i64(held.issued_at, "rotation time")?),
+            received_at: Set(to_i64(held.received_at, "rotation receipt time")?),
+            envelope: Set(held.envelope.clone()),
+        })
+        .exec(self.writer())
+        .await
+        .store()?;
+        Ok(true)
+    }
+
+    async fn held_rotations(&self) -> Result<Vec<HeldRotation>, StoreError> {
+        peer_held_rotations::Entity::find()
+            .order_by_asc(peer_held_rotations::Column::ReceivedAt)
+            .order_by_asc(peer_held_rotations::Column::Server)
+            .order_by_asc(peer_held_rotations::Column::Fingerprint)
+            .all(self.reader())
+            .await
+            .store()?
+            .into_iter()
+            .map(|row| {
+                Ok::<HeldRotation, StoreError>(HeldRotation {
+                    server: ServerId(row.server),
+                    fingerprint: row.fingerprint,
+                    issued_at: from_i64(row.issued_at, "rotation time")?,
+                    received_at: from_i64(row.received_at, "rotation receipt time")?,
+                    envelope: row.envelope,
+                })
+            })
+            .collect()
+    }
+
+    async fn drop_held_rotations(&self, server: ServerId) -> Result<(), StoreError> {
+        peer_held_rotations::Entity::delete_many()
+            .filter(peer_held_rotations::Column::Server.eq(server.0))
             .exec(self.writer())
             .await
             .store()?;

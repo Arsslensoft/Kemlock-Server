@@ -38,6 +38,13 @@ use std::time::{Duration, Instant};
 /// How long a lease on a peer lasts: well beyond one run, and a crashed holder only blocks that
 /// long.
 pub const LEASE_SECS: u64 = 5 * 60;
+/// The longest one run for one peer may take once it is connected. A peer that answers slowly, or
+/// keeps saying there is more, is cut off here, so it holds its own lease for no longer than it
+/// lasts; what was left is taken at the next run, and the run still counts as a success: it ends
+/// with what it did and a note on the vaults it didn't reach. A third of it is kept for moving
+/// files, which come last.
+pub const VISIT_DEADLINE: Duration = Duration::from_secs(4 * 60);
+const _: () = assert!(VISIT_DEADLINE.as_secs() < LEASE_SECS);
 /// The hash trees of a vault are compared this often.
 pub const RECONCILE_EVERY_SECS: u64 = 60 * 60;
 /// A peer is visited at least this often, whether or not anything changed.
@@ -160,6 +167,46 @@ pub enum RunOutcome {
     Done(Vec<VaultStatus>),
 }
 
+/// What a run's vault is at, while the phases of a visit go through the vaults.
+struct VaultRun {
+    vault: VaultFederation,
+    status: VaultStatus,
+    /// False once the vault's work was stopped: not accepted yet, a missed promotion, a failure.
+    active: bool,
+    /// Records the pull left out for now.
+    pull_retry: usize,
+    /// The comparison found items this server holds that the peer lacks: it is nudged to pull.
+    push: bool,
+}
+
+/// The note on a vault a visit didn't reach before its time ran out.
+const CUT_SHORT_NOTE: &str = "the visit's time ran out: the rest comes at the next visit";
+
+/// A peer's run is in progress while this is held.
+struct RunningGuard<'a> {
+    state: &'a Mutex<RunnerState>,
+    peer: ServerId,
+}
+
+impl<'a> RunningGuard<'a> {
+    fn take(state: &'a Mutex<RunnerState>, peer: ServerId) -> Option<RunningGuard<'a>> {
+        let mut held = state.lock().unwrap_or_else(PoisonError::into_inner);
+        held.running
+            .insert(peer)
+            .then_some(RunningGuard { state, peer })
+    }
+}
+
+impl Drop for RunningGuard<'_> {
+    fn drop(&mut self) {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .running
+            .remove(&self.peer);
+    }
+}
+
 #[derive(Debug, Default)]
 struct RunnerState {
     peers: HashMap<ServerId, PeerStatus>,
@@ -175,6 +222,10 @@ struct RunnerState {
     told_keys: HashSet<(ServerId, ServerId, String, u64)>,
     /// What the probes and visits found of each peer.
     health: HashMap<ServerId, PeerHealth>,
+    /// Peers a run is in progress for in this process: a peer never runs twice at once.
+    running: HashSet<ServerId>,
+    /// How many visits each peer has had, to rotate which vault goes first.
+    turns: HashMap<ServerId, usize>,
 }
 
 /// Runs replication for every paired peer.
@@ -184,6 +235,7 @@ pub struct PeerRunner<S, C> {
     holder: String,
     state: Mutex<RunnerState>,
     health_config: HealthConfig,
+    visit_deadline: Duration,
 }
 
 impl<S, C> std::fmt::Debug for PeerRunner<S, C> {
@@ -211,7 +263,14 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
             holder,
             state: Mutex::new(RunnerState::default()),
             health_config: HealthConfig::default(),
+            visit_deadline: VISIT_DEADLINE,
         }
+    }
+
+    /// Sets how long one run for one peer may take (the default is [`VISIT_DEADLINE`]).
+    pub fn with_visit_deadline(mut self, deadline: Duration) -> PeerRunner<S, C> {
+        self.visit_deadline = deadline;
+        self
     }
 
     /// Sets how the peers are probed (the default is [`HealthConfig::default`]).
@@ -366,6 +425,7 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
         state.told.retain(|(p, _), _| *p != peer);
         state.health.remove(&peer);
         state.announced.retain(|(p, _, _)| *p != peer);
+        state.turns.remove(&peer);
     }
 
     /// The vaults this server and `peer` both hold as a federated set.
@@ -434,8 +494,15 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
         false
     }
 
-    /// Visits every paired peer that is due, one after the other. Returns what each run did.
-    pub async fn tick(&self, now: u64) -> Vec<(ServerId, Result<RunOutcome>)> {
+    /// Starts a run for every paired peer that is due and returns the peers it started, without
+    /// waiting for them: each run is its own task under its own deadline, so one slow or hostile
+    /// peer can't slow the visits to the others, and a peer whose run is still going is not started
+    /// again. What a run did is logged when it ends.
+    pub async fn tick(self: &Arc<Self>, now: u64) -> Vec<ServerId>
+    where
+        S: 'static,
+        C: 'static,
+    {
         let peers = match self.replica.store().list_peers().await {
             Ok(peers) => peers,
             Err(e) => {
@@ -443,14 +510,25 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
                 return Vec::new();
             }
         };
-        let mut out = Vec::new();
+        let mut started = Vec::new();
         for peer in peers.into_iter().filter(|p| p.state == PeerState::Paired) {
-            if self.due(&peer, now).await {
-                let result = self.run_peer(peer.id, now).await;
-                out.push((peer.id, result));
+            if self.state().running.contains(&peer.id) || !self.due(&peer, now).await {
+                continue;
             }
+            started.push(peer.id);
+            let runner = self.clone();
+            let id = peer.id;
+            tokio::spawn(async move {
+                match runner.run_peer(id, now).await {
+                    Ok(RunOutcome::Done(vaults)) => {
+                        tracing::debug!(peer = %id, vaults = vaults.len(), "replicated with a peer");
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::info!(peer = %id, error = %e, "replication with a peer failed"),
+                }
+            });
         }
-        out
+        started
     }
 
     /// Ticks until the task is dropped or aborted.
@@ -463,15 +541,7 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
         every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             every.tick().await;
-            for (peer, result) in self.tick(unix_now()).await {
-                match result {
-                    Ok(RunOutcome::Done(vaults)) => {
-                        tracing::debug!(%peer, vaults = vaults.len(), "replicated with a peer");
-                    }
-                    Ok(_) => {}
-                    Err(e) => tracing::info!(%peer, error = %e, "replication with a peer failed"),
-                }
-            }
+            self.tick(unix_now()).await;
         }
     }
 
@@ -490,8 +560,11 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
         }
     }
 
-    /// One run for `peer`, if no other process is running one.
+    /// One run for `peer`, if no other process (or task of this one) is running one.
     pub async fn run_peer(&self, peer: ServerId, now: u64) -> Result<RunOutcome> {
+        let Some(_running) = RunningGuard::take(&self.state, peer) else {
+            return Ok(RunOutcome::Leased);
+        };
         let store = self.replica.store();
         let Some(stored) = store
             .get_peer(peer)
@@ -555,15 +628,38 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
             status.key_mismatch = None;
             was_down || status.last_success.is_none()
         };
-        let mut statuses = Vec::new();
-        let outcome = self
-            .sync_all(&mut channel, peer, returned, now, &mut statuses)
-            .await;
-        // A failed close after a good run is not a failed run.
-        if let Err(e) = self.connector.close(channel).await {
-            tracing::debug!(error = %e, "a peer session did not close cleanly");
+        let mut runs = self.vault_runs(peer, now).await?;
+        // The time limit is not a failure: what the run did is kept, the vaults it didn't reach
+        // carry a note, and the peer is visited again at once for the rest.
+        let hard = Instant::now() + self.visit_deadline;
+        let finished = tokio::time::timeout(
+            self.visit_deadline,
+            self.sync_all(&mut channel, peer, returned, now, hard, &mut runs),
+        )
+        .await;
+        let (outcome, incomplete, timed_out) = match finished {
+            Ok(Ok(complete)) => (Ok(()), !complete, false),
+            Ok(Err(e)) => (Err(e), false, false),
+            Err(_) => (Ok(()), true, true),
+        };
+        // A session cut off in the middle of a call is dropped, not closed: it can't answer.
+        if !timed_out {
+            // A failed close after a good run is not a failed run.
+            if let Err(e) = self.connector.close(channel).await {
+                tracing::debug!(error = %e, "a peer session did not close cleanly");
+            }
         }
+        let mut statuses: Vec<VaultStatus> = runs.into_iter().map(|run| run.status).collect();
         outcome?;
+        let cut_short = incomplete;
+        if cut_short {
+            self.state().dirty.insert(peer.id);
+            for status in &mut statuses {
+                if status.note.is_none() {
+                    status.note = Some(CUT_SHORT_NOTE.to_owned());
+                }
+            }
+        }
         let store = self.replica.store();
         if let Err(e) = store.touch_peer(peer.id, now).await {
             tracing::debug!(error = %e, "couldn't record the visit to a peer");
@@ -613,78 +709,153 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
         }
     }
 
+    /// One visit's work, in the order that matters when time runs out:
+    ///
+    /// 1. **Control**, for every vault: the offer, the home's records (members, keys, policies),
+    ///    the erasures owed to the peer, the promotions announced to it, and a nudge when it hasn't
+    ///    been told what this server holds.
+    /// 2. **Items**: pull, duplicate tags and event logs.
+    /// 3. **Comparison**: the hash trees.
+    /// 4. **Files**, last, with a third of the visit to themselves: attachments and Sends.
+    ///
+    /// The vaults go in a different order at each visit, so the first one can't use up the visit
+    /// every time. Returns whether everything was reached.
     async fn sync_all(
         &self,
         channel: &mut C::Chan,
         peer: &Peer,
         returned: bool,
         now: u64,
-        statuses: &mut Vec<VaultStatus>,
-    ) -> Result<()> {
-        for vault in self.shared_vaults(peer.id).await? {
-            let status = self.sync_vault(channel, peer, &vault, returned, now).await;
-            statuses.push(status);
+        hard: Instant,
+        runs: &mut [VaultRun],
+    ) -> Result<bool> {
+        let files_budget = self.visit_deadline / 3;
+        let soft = hard.checked_sub(files_budget).unwrap_or(hard);
+        let mut complete = true;
+
+        // 1. Control.
+        for run in runs.iter_mut() {
+            self.control_vault(channel, peer, run, now).await;
         }
         // Vaults this server erased, whose copies at the peer must go too. A failure leaves the
         // erasure queued for the next session; it never fails the run.
         if let Err(e) = self.replica.forward_erasures(channel, peer.id).await {
             tracing::info!(peer = %peer.id, error = %e, "couldn't tell a peer about erased vaults");
         }
-        self.announce_promotions(channel, peer.id).await
-    }
+        if let Err(e) = self.announce_promotions(channel, peer.id).await {
+            tracing::info!(peer = %peer.id, error = %e, "couldn't announce a promotion to a peer");
+        }
+        for run in runs.iter_mut().filter(|r| r.active) {
+            self.nudge_vault(channel, peer, run, false).await;
+        }
 
-    /// Syncs one vault with the peer. A failure is a note on the vault's status, not the run's:
-    /// the peer may simply not hold the vault yet.
-    async fn sync_vault(
-        &self,
-        channel: &mut C::Chan,
-        peer: &Peer,
-        vault: &VaultFederation,
-        returned: bool,
-        now: u64,
-    ) -> VaultStatus {
-        let mut status = VaultStatus::new(vault.owner, now);
-        if let Err(e) = self
-            .sync_vault_inner(channel, peer, vault, returned, now, &mut status)
-            .await
-        {
-            if is_unknown_vault(&e) {
-                status.note = Some("the peer doesn't hold this vault yet".to_owned());
-            } else {
-                tracing::info!(peer = %peer.id, vault = ?vault.owner, error = %e, "a vault didn't sync");
-                status.note = Some(e.to_string());
+        // 2. Items.
+        for run in runs.iter_mut().filter(|r| r.active) {
+            if Instant::now() >= soft {
+                complete = false;
+                break;
+            }
+            self.items_vault(channel, peer, run).await;
+        }
+
+        // 3. Comparison.
+        for run in runs.iter_mut().filter(|r| r.active) {
+            if Instant::now() >= soft {
+                complete = false;
+                break;
+            }
+            self.reconcile_vault(channel, peer, run, returned, now).await;
+        }
+        // What the comparison found that the peer lacks, and what the pull brought in.
+        for run in runs.iter_mut().filter(|r| r.active) {
+            self.nudge_vault(channel, peer, run, true).await;
+        }
+
+        // 4. Files.
+        let files_until = (Instant::now() + files_budget).min(hard);
+        for run in runs.iter_mut().filter(|r| r.active) {
+            if Instant::now() >= files_until {
+                complete = false;
+                break;
+            }
+            if !self.files_vault(channel, peer, run, files_until).await {
+                complete = false;
             }
         }
-        status
+        Ok(complete)
     }
 
-    async fn sync_vault_inner(
+    /// The vaults this server and `peer` share, as the runs of a visit, in an order that turns by
+    /// one at each visit: the first vault can't use up every visit.
+    async fn vault_runs(&self, peer: &Peer, now: u64) -> Result<Vec<VaultRun>> {
+        let mut vaults = self.shared_vaults(peer.id).await?;
+        if !vaults.is_empty() {
+            let turn = {
+                let mut state = self.state();
+                let turn = state.turns.entry(peer.id).or_insert(0);
+                let current = *turn;
+                *turn = turn.wrapping_add(1);
+                current
+            };
+            let count = vaults.len();
+            vaults.rotate_left(turn % count);
+        }
+        Ok(vaults
+            .into_iter()
+            .map(|vault| VaultRun {
+                status: VaultStatus::new(vault.owner, now),
+                vault,
+                active: true,
+                pull_retry: 0,
+                push: false,
+            })
+            .collect())
+    }
+
+    /// Sets the note a failure of one vault's work leaves: the peer may simply not hold the vault
+    /// yet. The vault's later steps are left out of this visit.
+    fn vault_failed(&self, peer: &Peer, run: &mut VaultRun, error: &FedError) {
+        if is_unknown_vault(error) {
+            run.status.note = Some("the peer doesn't hold this vault yet".to_owned());
+        } else {
+            tracing::info!(peer = %peer.id, vault = ?run.vault.owner, error = %error, "a vault didn't sync");
+            run.status.note = Some(error.to_string());
+        }
+        run.active = false;
+    }
+
+    async fn control_vault(&self, channel: &mut C::Chan, peer: &Peer, run: &mut VaultRun, now: u64) {
+        if let Err(e) = self.control_vault_inner(channel, peer, run, now).await {
+            self.vault_failed(peer, run, &e);
+        }
+    }
+
+    async fn control_vault_inner(
         &self,
         channel: &mut C::Chan,
         peer: &Peer,
-        vault: &VaultFederation,
-        returned: bool,
-        now: u64,
-        status: &mut VaultStatus,
+        run: &mut VaultRun,
+        _now: u64,
     ) -> Result<()> {
         let replica = &self.replica;
-        let owner = vault.owner;
-        if vault.home == replica.server_id() && vault.replicas.contains(&peer.id) {
+        let owner = run.vault.owner;
+        if run.vault.home == replica.server_id() && run.vault.replicas.contains(&peer.id) {
             let offer = replica.offer_vault(channel, peer.id, owner).await?;
-            status.offer = Some(offer);
+            run.status.offer = Some(offer);
             // The space's own records first: a replica applies a member's account only once it
             // knows the member belongs to the space.
             replica.publish_space_state(owner).await?;
             replica.publish_members(owner).await?;
             replica.publish_signed_writes(owner).await?;
             if offer != OfferState::Accepted {
-                status.note = Some(
+                run.status.note = Some(
                     match offer {
                         OfferState::Pending => "waiting for the peer's admin to accept the vault",
                         _ => "the peer's admin declined the vault",
                     }
                     .to_owned(),
                 );
+                run.active = false;
                 return Ok(());
             }
         }
@@ -699,40 +870,129 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
             Err(e) => tracing::info!(error = %e, "origin keys didn't sync"),
         }
 
-        let report = replica.pull(channel, peer.id, owner).await?;
-        // Read before `report.counts` moves into the status.
-        let pull_retry = report.counts.retry;
-        status.pulled = report.counts;
-
         let sync = replica.pull_home_records(channel, peer.id, owner).await?;
-        status.home_applied = sync.applied;
-        status.home_quarantined = sync.quarantined;
+        run.status.home_applied = sync.applied;
+        run.status.home_quarantined = sync.quarantined;
         if sync.behind {
             // A promotion was missed: nothing more of this vault until its record arrives (the
             // new home announces it when it visits).
-            status.behind = true;
-            status.note =
+            run.status.behind = true;
+            run.status.note =
                 Some("the peer is at a newer home epoch: a promotion was missed".to_owned());
-            return Ok(());
+            run.active = false;
         }
+        Ok(())
+    }
+
+    /// Tells the peer what this server holds, when it hasn't been told: before the work (`after`
+    /// false) so a peer that is behind starts pulling at once, and after it (`after` true), when the
+    /// pull and the comparison changed what is held or found something the peer lacks.
+    async fn nudge_vault(&self, channel: &mut C::Chan, peer: &Peer, run: &mut VaultRun, after: bool) {
+        let owner = run.vault.owner;
+        let result: Result<()> = async {
+            let latest = self.replica.store().latest(owner).await?;
+            let told = self.state().told.get(&(peer.id, owner)).cloned();
+            let push = after && run.push;
+            if push || told.as_ref() != Some(&latest) {
+                self.replica.nudge(channel, owner).await?;
+                self.state().told.insert((peer.id, owner), latest);
+            }
+            Ok(())
+        }
+        .await;
+        if let Err(e) = result {
+            self.vault_failed(peer, run, &e);
+        }
+    }
+
+    async fn items_vault(&self, channel: &mut C::Chan, peer: &Peer, run: &mut VaultRun) {
+        let replica = &self.replica;
+        let owner = run.vault.owner;
+        let report = match replica.pull(channel, peer.id, owner).await {
+            Ok(report) => report,
+            Err(e) => {
+                self.vault_failed(peer, run, &e);
+                return;
+            }
+        };
+        run.pull_retry = report.counts.retry;
+        if report.pages >= crate::message::MAX_PAGES_PER_VISIT {
+            // Stopped at the page limit: the rest is taken at the next visit, soon.
+            self.state().dirty.insert(peer.id);
+        }
+        run.status.pulled = report.counts;
 
         // Duplicate tags follow the revisions just pulled, where server matching is on.
         match replica.pull_tags(channel, peer.id, owner).await {
-            Ok(n) => status.tags_pulled = n,
+            Ok(n) => run.status.tags_pulled = n,
             Err(e) => tracing::info!(error = %e, "duplicate tags didn't sync"),
         }
 
         // The peer's event log, when its Send and our Pull for it are both on.
         match replica.pull_events(channel, peer.id, owner).await {
-            Ok(n) => status.events_pulled = n,
+            Ok(n) => run.status.events_pulled = n,
             Err(e) => tracing::info!(error = %e, "event logs didn't sync"),
         }
+    }
 
+    async fn reconcile_vault(
+        &self,
+        channel: &mut C::Chan,
+        peer: &Peer,
+        run: &mut VaultRun,
+        returned: bool,
+        now: u64,
+    ) {
+        let owner = run.vault.owner;
+        let due = {
+            let state = self.state();
+            let last = state.reconciled.get(&(peer.id, owner)).copied();
+            // A pull that left records out for now (a writer's keys not here yet, an origin over its
+            // quota) compares at once: the comparison fetches them again. One it refused for good
+            // waits for the regular comparison, or every visit would fetch it again.
+            returned
+                || run.pull_retry > 0
+                || last.is_none_or(|t| now >= t.saturating_add(RECONCILE_EVERY_SECS))
+        };
+        if !due {
+            return;
+        }
+        match self.replica.reconcile(channel, peer.id, owner).await {
+            Ok(reconciled) => {
+                run.status.in_step = Some(reconciled.in_step);
+                run.push = !reconciled.to_push.is_empty();
+                self.state().reconciled.insert((peer.id, owner), now);
+            }
+            Err(e) if is_unknown_vault(&e) => self.vault_failed(peer, run, &e),
+            Err(e @ (FedError::Refused(_) | FedError::Remote(_))) => {
+                // The peer (or this server) turned the comparison down, as it does when a vault
+                // was compared too often in the hour: a note, and the next one is a regular
+                // interval away. The visit goes on.
+                tracing::info!(peer = %peer.id, error = %e, "a comparison was turned down");
+                run.status.note = Some(format!("comparison turned down: {e}"));
+                self.state().reconciled.insert((peer.id, owner), now);
+            }
+            Err(e) => self.vault_failed(peer, run, &e),
+        }
+    }
+
+    /// Attachments and Sends of one vault, until `until`. False when it stopped for time.
+    async fn files_vault(
+        &self,
+        channel: &mut C::Chan,
+        peer: &Peer,
+        run: &mut VaultRun,
+        until: Instant,
+    ) -> bool {
+        let replica = &self.replica;
+        let owner = run.vault.owner;
+        let mut finished = true;
         if replica.files.is_some() {
-            match replica.sync_blobs(channel, peer.id, owner).await {
+            match replica.sync_blobs_until(channel, peer.id, owner, until).await {
                 Ok(files) => {
-                    status.files_fetched = files.fetched;
-                    status.files_deferred = files.deferred;
+                    run.status.files_fetched = files.fetched;
+                    run.status.files_deferred = files.deferred;
+                    finished = !files.unfinished;
                 }
                 Err(e) => tracing::info!(error = %e, "attachments didn't sync"),
             }
@@ -743,39 +1003,14 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
         if peer.advertises(crate::sendsync::SENDS_CAPABILITY) {
             match replica.sync_sends(channel, peer.id, owner).await {
                 Ok(sends) => {
-                    status.sends_copied = sends.rows + sends.updated;
-                    status.files_fetched += sends.fetched;
-                    status.files_deferred += sends.deferred;
+                    run.status.sends_copied = sends.rows + sends.updated;
+                    run.status.files_fetched += sends.fetched;
+                    run.status.files_deferred += sends.deferred;
                 }
                 Err(e) => tracing::info!(error = %e, "Sends didn't sync"),
             }
         }
-
-        let due = {
-            let state = self.state();
-            let last = state.reconciled.get(&(peer.id, owner)).copied();
-            // A pull that left records out for now (a writer's keys not here yet, an origin over its
-            // quota) compares at once: the comparison fetches them again. One it refused for good
-            // waits for the regular comparison, or every visit would fetch it again.
-            returned
-                || pull_retry > 0
-                || last.is_none_or(|t| now >= t.saturating_add(RECONCILE_EVERY_SECS))
-        };
-        let mut push = false;
-        if due {
-            let reconciled = replica.reconcile(channel, peer.id, owner).await?;
-            status.in_step = Some(reconciled.in_step);
-            push = !reconciled.to_push.is_empty();
-            self.state().reconciled.insert((peer.id, owner), now);
-        }
-
-        let latest = replica.store().latest(owner).await?;
-        let told = self.state().told.get(&(peer.id, owner)).cloned();
-        if push || told.as_ref() != Some(&latest) {
-            replica.nudge(channel, owner).await?;
-            self.state().told.insert((peer.id, owner), latest);
-        }
-        Ok(())
+        finished
     }
 
     /// Tells `peer` of every promotion this server made, once per run of this process. A peer that

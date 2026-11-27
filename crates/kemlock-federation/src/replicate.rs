@@ -24,13 +24,13 @@ use crate::hashtree::{self, Tree};
 use crate::home::{self, HomeRecord, Policy, PromotionRecord, VaultFederation, Verdict};
 use crate::identity::LocalIdentity;
 use crate::keyrecs::KeyStore;
-use crate::message::{MAX_LEAVES, MAX_PAGE, Request, Response, code};
+use crate::message::{MAX_LEAVES, MAX_PAGE, MAX_PAGES_PER_VISIT, Request, Response, code};
 use crate::outbox::Withholding;
 use crate::ports::{
     ApplyOutcome, Exported, HomeStatus, Peer, PeerRepo, PeerState, ReplicaStore, StoredHomeRecord,
     VaultRepo,
 };
-use crate::quota::{Admission, Meter, Quota};
+use crate::quota::{Admission, Meter, Quota, WorkLimits, WorkMeter};
 use crate::relay::OriginKeys;
 use crate::sendsync::SendSync;
 use crate::signed::Signed;
@@ -110,11 +110,13 @@ pub struct Counts {
     pub siblings: usize,
     /// Records already held or replaced.
     pub duplicates: usize,
-    /// Records left out: an item id another owner holds, a change from the future, a writer
-    /// signature that is missing or doesn't verify, an origin over its quota, and a rollback.
+    /// Records left out: an item id another owner holds, a change from the future, a record whose
+    /// origin signature no key of the origin's verifies, a writer signature that is missing or
+    /// doesn't verify, an origin over its quota, and a rollback.
     pub refused: usize,
     /// Of the refused, the ones a later comparison may apply: a change from the future or past an
-    /// origin's quota, a writer whose keys or space membership haven't arrived. The rest (a bad
+    /// origin's quota, an origin whose key hasn't arrived, a writer whose keys or space membership
+    /// haven't arrived. The rest (a bad
     /// signature, an unsigned change for a signed-only owner, a rollback) will be refused again, so
     /// a pull that left only those has nothing to compare.
     pub retry: usize,
@@ -176,6 +178,8 @@ pub struct Replica<S> {
     pub(crate) files: Option<Arc<dyn BlobFiles>>,
     quota: Quota,
     meter: Meter,
+    pub(crate) work: WorkMeter,
+    pub(crate) work_limits: WorkLimits,
 }
 
 impl<S> std::fmt::Debug for Replica<S> {
@@ -221,6 +225,8 @@ impl<S: FedStore> Replica<S> {
             files: None,
             quota: Quota::default(),
             meter: Meter::default(),
+            work: WorkMeter::default(),
+            work_limits: WorkLimits::default(),
         }
     }
 
@@ -233,6 +239,12 @@ impl<S: FedStore> Replica<S> {
     /// Sets what one origin may write to this server (docs/federation.md, "Per-origin quotas").
     pub fn with_quota(mut self, quota: Quota) -> Replica<S> {
         self.quota = quota;
+        self
+    }
+
+    /// Sets what one peer may make this server read or scan (docs/federation.md, "Amplification").
+    pub fn with_work_limits(mut self, limits: WorkLimits) -> Replica<S> {
+        self.work_limits = limits;
         self
     }
 
@@ -447,6 +459,7 @@ impl<S: FedStore> Replica<S> {
             }
             Request::Summary { vault } => {
                 self.authorize(peer, *vault).await?;
+                self.admit_scan(peer, *vault, now)?;
                 let tree = Tree::build(&self.store.leaves(*vault).await?);
                 Ok(answer(Response::Summary {
                     vault: *vault,
@@ -456,6 +469,7 @@ impl<S: FedStore> Replica<S> {
             }
             Request::Leaves { vault, buckets } => {
                 self.authorize(peer, *vault).await?;
+                self.admit_scan(peer, *vault, now)?;
                 let leaves: Vec<_> = self
                     .store
                     .leaves(*vault)
@@ -474,6 +488,8 @@ impl<S: FedStore> Replica<S> {
             Request::Fetch { vault, items } => {
                 self.authorize(peer, *vault).await?;
                 let mut records = Vec::new();
+                let mut bytes = 0usize;
+                let mut cut = false;
                 let withheld = self.store.withheld(peer, *vault).await?;
                 for entry in self.store.export_items(*vault, items).await? {
                     if withheld
@@ -482,13 +498,21 @@ impl<S: FedStore> Replica<S> {
                     {
                         continue;
                     }
-                    records.push(self.signed_record(&entry).await?);
+                    let envelope = self.signed_record(&entry).await?;
+                    // A page stops growing at the same size a pull's does; what is left is asked
+                    // for again (the answer says there is more).
+                    if !records.is_empty() && bytes + envelope.len() > PAGE_BYTES {
+                        cut = true;
+                        break;
+                    }
+                    bytes += envelope.len();
+                    records.push(envelope);
                 }
                 Ok(answer(Response::Changes {
                     vault: *vault,
                     records,
                     next: VersionVector::new(),
-                    more: false,
+                    more: cut,
                 }))
             }
             Request::HomeRecords {
@@ -598,7 +622,8 @@ impl<S: FedStore> Replica<S> {
             } => {
                 self.authorize(peer, *vault).await?;
                 Ok(answer(
-                    self.serve_blob_chunk(*vault, *blob, *offset, *len).await?,
+                    self.serve_blob_chunk(peer, *vault, *blob, *offset, *len, now)
+                        .await?,
                 ))
             }
             Request::Erase { vault } => {
@@ -636,6 +661,16 @@ impl<S: FedStore> Replica<S> {
         }
     }
 
+    /// Counts one scan of `vault` for `peer`: a summary or a list of leaves reads every item of the
+    /// vault, so one peer may ask for only so many in a window.
+    fn admit_scan(&self, peer: ServerId, vault: Owner, now: u64) -> Result<()> {
+        if self.work.allow_scan(&self.work_limits, peer, vault, now) {
+            Ok(())
+        } else {
+            Err(FedError::Refused("too many comparisons of this vault: try later"))
+        }
+    }
+
     /// The signed envelope of a stored version, signing it first if this server accepted it and
     /// hasn't sent it before.
     async fn signed_record(&self, entry: &Exported) -> Result<Vec<u8>> {
@@ -665,8 +700,60 @@ impl<S: FedStore> Replica<S> {
 
     // ---- catching up ----
 
-    /// Verifies and applies records of `vault`. A record from an origin whose key we don't hold,
-    /// or whose signature fails, fails the whole batch: nothing past it is applied.
+    /// How this server ranks the versions of `vault`: by revision from the first time every server
+    /// of its set advertises it, and by revision from then on.
+    pub(crate) async fn rank_of(&self, vault: Owner) -> Result<Rank> {
+        if self.store.revision_ranked(vault).await? {
+            return Ok(Rank::Revision);
+        }
+        if self
+            .vault_advertises(vault, writes::SIGNED_WRITES_CAPABILITY)
+            .await?
+        {
+            self.store.pin_revision_ranking(vault).await?;
+            return Ok(Rank::Revision);
+        }
+        Ok(Rank::Clock)
+    }
+
+    /// Opens a record: the origin's signature checked with the key we hold for it, or with one it
+    /// used before and replaced, for a record dated up to then. `None` when no key verifies it (an
+    /// origin whose key we don't hold, a revoked or unpaired one, a forgery, garbage), with whether a
+    /// later comparison may apply it once the origin's key arrives.
+    async fn open_envelope(
+        &self,
+        envelope: &[u8],
+        keys: &HashMap<ServerId, sig1::PublicKey>,
+    ) -> Result<std::result::Result<ChangeRecord, bool>> {
+        let failure = match change::open(envelope, keys) {
+            Ok(record) => return Ok(Ok(record)),
+            Err(e) => e,
+        };
+        let Ok(origin) = change::claimed_origin(envelope) else {
+            tracing::warn!(error = %failure, "a change that does not parse was left out");
+            return Ok(Err(false));
+        };
+        let past: Vec<(Vec<u8>, u64)> = self
+            .store
+            .past_keys(origin)
+            .await?
+            .into_iter()
+            .map(|past| (past.key, past.replaced_at))
+            .collect();
+        if !past.is_empty()
+            && let Ok(record) = change::open_with_past_keys(envelope, &past)
+        {
+            return Ok(Ok(record));
+        }
+        tracing::warn!(%origin, error = %failure, "a change that can't be verified was left out");
+        // An origin whose key may still arrive (a peer vouches for it) is worth asking for again.
+        Ok(Err(!keys.contains_key(&origin)))
+    }
+
+    /// Verifies and applies records of `vault`. A record that no key of its origin verifies is left
+    /// out and counted, and the rest of the batch goes on: one record that can never be checked
+    /// (signed by a key since replaced or revoked) must not hold the cursor, and every replica
+    /// behind it, still.
     pub(crate) async fn apply_envelopes(
         &self,
         from: ServerId,
@@ -682,20 +769,22 @@ impl<S: FedStore> Replica<S> {
             .ok_or(FedError::UnknownVault)?;
         let me = self.server_id();
         let now_ms = crate::session::unix_now().saturating_mul(1000);
-        // The head is chosen by revision first only while every server of the vault says it ranks so
+        // The head is chosen by revision first once every server of the vault says it ranks so
         // (`x-kemlock-signed-writes1`): servers must agree on the head, and one that ranks by clock
-        // alone would pick another.
-        let rank = if self
-            .vault_advertises(vault, writes::SIGNED_WRITES_CAPABILITY)
-            .await?
-        {
-            Rank::Revision
-        } else {
-            Rank::Clock
-        };
+        // alone would pick another. Once on it stays on for the vault: a server of the set that
+        // later leaves the capability out of its own descriptor must not turn rollback protection
+        // off for the rest.
+        let rank = self.rank_of(vault).await?;
         let mut counts = Counts::default();
         for envelope in envelopes {
-            let record = change::open(envelope, &keys)?;
+            let record = match self.open_envelope(envelope, &keys).await? {
+                Ok(record) => record,
+                Err(retry) => {
+                    counts.refused += 1;
+                    counts.retry += usize::from(retry);
+                    continue;
+                }
+            };
             if record.owner != vault {
                 return Err(FedError::Invalid("a record for another vault"));
             }
@@ -799,6 +888,11 @@ impl<S: FedStore> Replica<S> {
             if !more {
                 return Ok(report);
             }
+            if report.pages >= MAX_PAGES_PER_VISIT {
+                // Enough for one visit: the rest comes at the next, and the cursor is kept.
+                tracing::info!(%peer, pages = report.pages, "a pull stopped at its page limit");
+                return Ok(report);
+            }
             if cursor == since {
                 return Err(FedError::Refused("the peer has more but sent nothing new"));
             }
@@ -872,8 +966,13 @@ impl<S: FedStore> Replica<S> {
                     items: chunk.to_vec(),
                 })
                 .await?;
-            let (records, _, _) = expect_changes(response, vault)?;
+            let (records, _, more) = expect_changes(response, vault)?;
             fetched.add(&self.apply_envelopes(peer, vault, &records).await?);
+            if more {
+                // The peer cut the answer short: what it left out is asked for at the next
+                // comparison, which comes soon.
+                fetched.retry += 1;
+            }
         }
         Ok(ReconcileReport {
             in_step: false,
@@ -1189,6 +1288,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ranking_by_revision_stays_on_once_every_server_says_it_does() {
+        let t = two().await;
+        let a = t.a.server_id();
+        let address = vec!["https://a.example.org".to_owned()];
+        let capable = vec![writes::SIGNED_WRITES_CAPABILITY.to_owned()];
+        let set = |suites: Vec<String>| {
+            let b = &t.b;
+            let address = address.clone();
+            async move {
+                b.store
+                    .update_peer_descriptor(a, "A", &address, &suites)
+                    .await
+                    .expect("update");
+            }
+        };
+        // A server of the set that doesn't say it ranks by revision keeps the vault on the clock.
+        set(Vec::new()).await;
+        assert_eq!(t.b.rank_of(t.vault).await.expect("rank"), Rank::Clock);
+        set(capable).await;
+        assert_eq!(t.b.rank_of(t.vault).await.expect("rank"), Rank::Revision);
+        // It can't turn rollback protection off again by leaving the capability out.
+        set(Vec::new()).await;
+        assert_eq!(t.b.rank_of(t.vault).await.expect("rank"), Rank::Revision);
+    }
+
+    #[tokio::test]
     async fn a_pull_copies_items_and_a_second_pull_finds_nothing() {
         let t = two().await;
         for n in 0..3 {
@@ -1254,7 +1379,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_forged_record_fails_the_pull_and_moves_no_cursor() {
+    async fn a_peer_that_always_has_more_is_pulled_from_for_a_bounded_number_of_pages() {
+        use kemlock_domain::{ChangeId, Hlc};
+        let t = two().await;
+        struct Endless {
+            calls: u64,
+            origin: ServerId,
+        }
+        impl Channel for Endless {
+            async fn call(&mut self, request: &Request) -> Result<Response> {
+                let Request::Pull { vault, since, .. } = request else {
+                    return Err(FedError::Malformed("not a pull"));
+                };
+                self.calls += 1;
+                // Nothing to apply, but the cursor moves each time and there is always more.
+                let mut next = since.clone();
+                next.observe(&ChangeId {
+                    origin: self.origin,
+                    seq: self.calls,
+                    hlc: Hlc(1),
+                });
+                Ok(Response::Changes {
+                    vault: *vault,
+                    records: Vec::new(),
+                    next,
+                    more: true,
+                })
+            }
+        }
+        let mut channel = Endless {
+            calls: 0,
+            origin: ServerId::random(),
+        };
+        let report =
+            t.b.pull(&mut channel, t.a.server_id(), t.vault)
+                .await
+                .expect("a bounded pull");
+        assert_eq!(report.pages, MAX_PAGES_PER_VISIT);
+        assert_eq!(channel.calls, MAX_PAGES_PER_VISIT as u64);
+    }
+
+    #[tokio::test]
+    async fn a_forged_record_is_left_out_and_the_cursor_still_moves() {
         let t = two().await;
         t.a.store
             .put(draft(ItemId::random(), t.vault, None, 1, 1_000))
@@ -1289,19 +1455,72 @@ mod tests {
             remote: &t.a,
             caller: t.b.server_id(),
         });
-        assert!(
+        // The record is counted and left out, and the pull goes on: one record nobody can check
+        // must not hold the cursor, and every replica behind it, still.
+        let report =
             t.b.pull(&mut channel, t.a.server_id(), t.vault)
                 .await
-                .is_err()
+                .expect("pull");
+        assert_eq!(
+            (report.counts.applied, report.counts.refused, report.counts.retry),
+            (0, 1, 0)
         );
         assert_eq!(t.b.store.len(), 0);
         assert!(
-            t.b.store
+            !t.b.store
                 .peer_cursor(t.a.server_id(), t.vault)
                 .await
                 .expect("cursor")
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn changes_signed_before_the_origin_rotated_still_verify_and_later_ones_do_not() {
+        let t = two().await;
+        let a = t.a.server_id();
+        let now = crate::session::unix_now();
+        t.a.store
+            .put(draft(ItemId::random(), t.vault, None, 1, 1_000))
+            .expect("put");
+        // A signed that change with its old key. B learns that A rotated a while ago.
+        let old = t.a.identity().public.as_bytes().to_vec();
+        let new = crate::crypto::sign_public(&sig1::SigningKey::from_bytes(&[9; 64]))
+            .expect("a key");
+        t.b.store
+            .set_peer_identity(a, new.as_bytes())
+            .await
+            .expect("pinned");
+        t.b.store
+            .push_past_key(a, &old, now - 10_000)
+            .await
+            .expect("kept");
+        let mut channel = Direct {
+            remote: &t.a,
+            caller: t.b.server_id(),
+        };
+        let report =
+            t.b.pull(&mut channel, a, t.vault)
+                .await
+                .expect("pull");
+        assert_eq!((report.counts.applied, report.counts.refused), (1, 0));
+
+        // The old key does not sign what is dated after it was replaced.
+        t.a.store
+            .put(draft(
+                ItemId::random(),
+                t.vault,
+                None,
+                1,
+                (now - 5_000) * 1000,
+            ))
+            .expect("put");
+        let report =
+            t.b.pull(&mut channel, a, t.vault)
+                .await
+                .expect("pull");
+        assert_eq!((report.counts.applied, report.counts.refused), (0, 1));
+        assert_eq!(t.b.store.len(), 1);
     }
 
     #[tokio::test]

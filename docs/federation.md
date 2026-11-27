@@ -343,6 +343,15 @@ that peers already hold, so a peer's change can't be re-stamped, and re-stamping
 invalidate a signature peers may have taken. They stay as they are; such an item keeps winning the
 head against older versions until a write that names it in its lineage replaces it.
 
+**Records signed by a replaced key.** A record is checked with the key this server holds for its
+origin. When that fails, it is checked with the keys the origin used before and this server replaced
+(the history a rotation leaves, `past_keys`), and a past key counts only for a record dated up to the
+moment it was replaced plus 300 seconds, so a key that leaks after its replacement can't sign new
+changes. A record that no key of its origin verifies (a revoked or unpaired origin, a forgery, garbage)
+is left out and counted as refused, and the rest of the batch goes on: the cursor moves, so one such
+record can't hold every replica behind it. It is asked for again by a later comparison only when the
+origin's key is simply not known yet.
+
 ### Writer signatures
 
 A `kem1` record also carries the **writing account's** signature of the write
@@ -359,8 +368,13 @@ record checks, before it applies it:
    replicated member account), and the signature verifies over the statement rebuilt from the
    record's owner, item id, kind, revision, deleted flag, key version, ciphertext and item key, and
    for a `space:` owner the collection (field 16), which the writer must be allowed to edit: a
-   confirmed member with edit on it, or one taken out since, as the receiver's copy of the space
-   says; a collection it doesn't know yet is left out for now. A signed record of a space without
+   confirmed member with edit on it, or one taken out since who held edit on it through the grants that
+   stay with their row and whose record is dated (by its origin's HLC) no later than when they were
+   taken out plus 300 seconds, as the receiver's copy of the space says; a collection it doesn't
+   know yet is left out for now. Any record of a space that names a collection (signed or not,
+   `kem1` or `bw`) must name one of that space: another space's is refused, one not known yet waits.
+   A record's revision is refused above 4,294,967,295 or more than 10,000 above the highest the
+   receiver holds of the item, so no record can take the head of an item for good. A signed record of a space without
    a collection is refused, so a replica that moves a signed item to another collection, or strips
    it, breaks the origin's signature or the writer's.
    A record that fails is **refused**: counted, left out, the rest of the page applied. A writer who
@@ -424,7 +438,10 @@ higher sequence number. (The revision comes first so that a replay of an old rev
 clock that leaves the head out of its lineage stays a sibling and never takes the head; two
 concurrent edits of one revision are still ordered by clock. A server that doesn't say
 `x-kemlock-signed-writes1` ranks by clock alone and may pick another head when revisions differ, so
-the ranking is part of what every server of a set must be upgraded for.) It
+the ranking is part of what every server of a set must be upgraded for. A server ranks
+a vault by revision from the first time every server of its set says it does, and keeps doing so:
+a server that later leaves the capability out of its own descriptor does not turn rollback
+protection off for the others.) It
 is what devices sync and what Bitwarden apps see. The others are **siblings**, kept until a write
 supersedes them; the next Kemlock app to sync merges them with its field-level merge and writes a
 version whose lineage names every one. The rule depends only on the set of versions, so servers
@@ -486,7 +503,7 @@ A peer applies it only if it is for a federated vault it holds, its epoch is the
 previous home is the home the peer knows, its signer is a replica the peer already knows, and it
 keeps exactly the servers the peer knows. Two replicas that promote themselves at once both make a
 record for the next epoch; the first one a peer takes wins and the other fails the previous-home
-check, which is why an admin does it, after a fresh passkey or password check.
+check, which is why an admin does it, with a step-up token.
 
 **A promotion nobody asked for is held, at every server.** What a server does with a promotion
 another server announces is the admin setting `federation_promotion` (environment
@@ -505,8 +522,8 @@ another server announces is the admin setting `federation_promotion` (environmen
   server a promotion takes the vault from.
 
 The admin sees the held promotions at `GET /admin/v1/federation/promotions` (and as `heldPromotions`
-beside each vault), accepts one with `POST /admin/v1/federation/vaults/{owner}/demotion` (after a
-fresh passkey or password check) and refuses it with `DELETE` on the same path (with a step-up
+beside each vault), accepts one with `POST /admin/v1/federation/vaults/{owner}/demotion` (with a
+step-up token) and refuses it with `DELETE` on the same path (with a step-up
 token), naming the server with `?newHome=<server id>` when more than one waits; the console shows both beside the vault. Accepting checks the record again and applies it
 as above; refusing drops it, and the other server announces it again when it restarts. A changed
 set of servers drops a held promotion, which no longer fits it.
@@ -623,6 +640,10 @@ already holds the vault under another home or epoch, or whose account or space i
 `pending` like any other offer and keeps nothing, so an offer can't tell a peer which ids exist
 here. An accepted vault takes a new replica
 order the home sends under the same epoch; nothing is copied to a replica that hasn't accepted.
+An offer of a personal vault whose account this server holds as a copy that came from another server
+is kept, but its admin can accept it only as a re-homing (`POST .../offers/{owner}/accept?rehome=true`):
+the account then follows the offering server, so one acceptance of what looks like a new vault can't
+hand a peer an account another peer owns.
 
 **Files.** `Blobs` pages through the ready attachments of a vault in attachment id order; a replica
 adds a row for each it lacks and, for a file of at most 50 MiB, fetches it with `Blob` requests of
@@ -722,7 +743,18 @@ revoked or removed
 member is a "gone" record, which takes their grants, group seats and key copies out of the replica
 too. A replica applies them only when they are of the vault's current epoch and signed by its home;
 a stale-epoch one is quarantined like the rest and shows in the vault's quarantine list for its
-admins to redo or drop. A space's home may only change that space's own entities: a record that names a collection or group (as its own id, a parent, the group of a grant, the collection of a key copy, or one that is gone) that already exists in another space at the replica is refused and logged, and the records after it still apply. Writes to the home-only parts of a federated space
+admins to redo or drop. **A space homed at another server binds nobody here.** A replica applies the member, group, grant and
+key records of a space as its home made them, for any account id, an account that lives on the
+replica included: that is how a person whose account is on server B (and whose vault federates to
+A) is a confirmed member of a space at A, how a copy from a third server joins one, and how the users
+of an old home keep their membership after a promotion. So what a space's policies do is decided
+by who is its home, not by who its members are: a space whose home is not this server is left out of
+every policy check here (Require SSO, single space, two-step to join, no Sends, show the email,
+master password rules and the rest), and does not count toward what the spaces of this server say.
+Require SSO means this server's identity provider only. The residual: a foreign home can list a
+local account as a member of its own space. It has no effect on the account's sign-in or on its
+policies here, and a key copy sealed to the account's real public bundle opens only for the account.
+A space's home may only change that space's own entities: a record that names a collection or group (as its own id, a parent, the group of a grant, the collection of a key copy, or one that is gone) that already exists in another space at the replica is refused and logged, and the records after it still apply. Writes to the home-only parts of a federated space
 (`/kem/v1/spaces/{id}/` `members`, `collections`, `groups`, `grants`, `key-replacement`, `reseal` and
 `policies`) are refused at a server that is not the home with `409`, a
 `urn:kemlock:problem:home-only` problem that names the home (`home.server`, `home.address`) and the
@@ -780,8 +812,16 @@ every peer. Both are envelopes whose body is deterministic CBOR:
 A **rotation** is signed with `sig1("federation-key-rotation", body)` by the *old* key. The receiver
 accepts it only when the old key is the one it holds for that server, `issued at` is not more than
 300 seconds ahead of its clock (nor older than a descriptor lives, 37 days), and the new descriptor
-is for the same server, verifies under its own key and carries another key; it then pins the new
-key and remembers the old one, with when it replaced it. A rotation that keeps the server's
+is for the same server, verifies under its own key and carries another key. The old key may be a
+stolen one, and a thief can make a new key and sign both, so a rotation **pins nothing until this
+server's admin confirms it**, as a promotion does (unless `federation_promotion` is `auto`, which
+applies it at once): it is kept, with the SHA-256 fingerprint of the new key (at most eight for one
+server), and the console lists it (`GET /admin/v1/federation/rotations`). The admin compares the
+fingerprint with the peer's admin and confirms (`POST /admin/v1/federation/peers/{id}/rotation`,
+`?fingerprint=` when several wait) or refuses (`DELETE` on the same path), both with a step-up
+token. Until then the old key stays pinned and the new key's sessions are refused; a revocation of
+the old key counts as before. On confirmation the receiver pins the new key and remembers the old
+one, with when it replaced it. A rotation that keeps the server's
 addresses takes the descriptor's operator and suites at once. One that **brings other addresses**
 does not: this server keeps dialling the addresses it knew, and the new addresses, operator and
 suites wait for its admin (`GET /admin/v1/federation/address-changes`; `POST` on
@@ -808,8 +848,8 @@ after a rotation the new key's sessions are refused until the record is applied:
 its pending records to a peer before it opens a session to it. Each server keeps the newest record of
 each kind for each server and passes them on to its other peers, so a revocation reaches peers the
 revoked server isn't paired with. The admin console rotates with
-`POST /admin/v1/federation/identity/rotate` and revokes with `.../identity/revoke`, both after a
-fresh passkey or password check; a revoking server takes a new key and every peer must pair with it
+`POST /admin/v1/federation/identity/rotate` and revokes with `.../identity/revoke`, both with a
+step-up token; a revoking server takes a new key and every peer must pair with it
 again.
 
 **Relaying across a chain.** A vault's home and replicas need only form a connected chain of
@@ -859,8 +899,9 @@ peer's next session, soon after it is queued, and completes it when the peer ans
 that is down keeps it queued, and one that refuses (the sender is not the vault's home) leaves it
 queued too, to be tried at the regular visits.
 
-A replica accepts `Erase` only from a paired peer that is the vault's home by the settings it holds
-(or by the offer, for a vault its admin never accepted). It then deletes, in one transaction, the
+A replica accepts `Erase` only from a paired peer that is the vault's home by the settings it holds,
+that is, for a vault its admin accepted; an offer, accepted or not, is no ground for it (a vault with
+no settings is acknowledged, and a pending offer of that home is closed). It then deletes, in one transaction, the
 vault's items and every version of them, the change log, attachment rows, home records, cursors,
 the offer and the federation settings, and, for a personal vault, the copied account with its
 devices; then it deletes the attachment files. A personal vault whose account lives on the
@@ -878,8 +919,12 @@ The three pairing messages travel between the two servers as plain HTTP bodies, 
 the code alone: `POST /fed/v1/pair/start` (message 1 in, message 2 out) and
 `POST /fed/v1/pair/finish?initiator=<server id>` (message 3 in). The code is good for one attempt
 and 10 minutes, kept in memory. A message 1 that is malformed (not the CBOR map of the table above, a missing field, a version
-other than 1, the receiver's own id as the initiator) is refused without using the code up; one
-that is well formed uses it, right or wrong, so a stranger able to send one can still use the code up. The two routes answer 429 past 20 requests a minute
+other than 1, the receiver's own id as the initiator), and one whose key share the receiver can't
+read, is refused without using the code up: nothing about the code can make a message 1 fail, so
+the receiver keeps the code. The code is used up when an answer (message 2) is sent, right code or
+wrong. A message 3 that doesn't open leaves the pairing it names as it was, so junk sent in the
+initiator's name (its server id is no secret) can't cancel the pairing its admin is in the middle
+of; the pairing ends when a message 3 opens or after the 10 minutes. The two routes answer 429 past 20 requests a minute
 from one source address (the address the server's request layer settled, which honours a trusted
 proxy; an IPv6 address counts by its /64) and past 300 a minute from all of them together, so one
 host can't use up the limit of the admin who is pairing. After a successful exchange each side holds the other's verified
@@ -918,9 +963,11 @@ drops them (it is refused once the head has been sent to a peer).
 
 The federation screens of the web vault read more than the peer and vault rows. All of it is under
 `/admin/v1/federation`, behind the admin gate; every write (`POST`, `PUT`, `DELETE`) also needs a step-up
-token (`Step-Up-Token`, the one `/admin/v1/step-up` issues), and a step-up token is also the fresh
-check promotion and identity rotation ask for (a sign-in in the last five minutes counts too: the
-time of the sign-in the session began with, which a refresh keeps). The routes added for the screens are in the OpenAPI
+token (`Step-Up-Token`, the one `/admin/v1/step-up` issues). That includes promotion, accepting or
+refusing a demotion, and rotating or revoking the identity key: a sign-in in the last five minutes no
+longer stands in for the token. Each write that gets past that check is recorded in the audit log (the
+events list) as `federation.admin.<what>`, by the admin, naming the peer when the request is about
+one and never whose vault. The routes added for the screens are in the OpenAPI
 document at `/admin/v1/federation/openapi.json`.
 
 - **Identity keys.** Each peer and each waiting pairing carries `identityKey` (hex): the key pinned
@@ -1031,3 +1078,22 @@ estimate that falls to nothing once the peer has caught up.
 ## Not built yet
 
 Nothing is open.
+
+## Amplification limits
+
+A paired peer can ask for things that cost this server much more than they cost it. Each is bounded:
+
+- **Blob reads.** The store has no ranged read, so a chunk at offset N reads N plus the chunk from
+  the start of the file. A peer's `Blob` requests are counted at that cost over an hour (128 GiB by
+  default, which a 512 MiB file fetched whole uses half of), an offset of 512 MiB or more is refused,
+  and an offset past the end of the file is answered empty without reading it.
+- **Scans.** `Summary` and `Leaves` read every item of a vault: one peer may ask for 30 of either, for
+  one vault, in an hour (the hourly comparison needs two).
+- **Fetches.** An answer to `Fetch` stops at about 1.5 MB, like a pull page, and says `more`; the
+  requester then compares again soon.
+- **Hash-tree diff.** The two lists of leaves are compared by item id, in time linear in their size.
+- **CBOR.** A message decodes to at most 131,072 values (the existing limits on depth and on a count
+  being no larger than the bytes left stay), so a few MiB of one-byte integers can't take hundreds of
+  MiB to decode.
+- **Pages.** A pull, a file list and an event pull stop after 100 pages for a vault in one visit, and
+  one run for one peer after four minutes (the lease lasts five); the rest comes at the next visit.

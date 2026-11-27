@@ -43,8 +43,22 @@ impl<R: SpaceRepo + SpaceChainRepo, P: PolicyRepo, F: TwoFactorRepo> JoinGuard<R
         if is_exempt(role) {
             return Ok(());
         }
+        // A space another server is the home of binds nobody here, and doesn't count toward what
+        // the spaces of this server say (single space and the rest).
+        let memberships = self.spaces.memberships(user).await?;
+        let binding = self
+            .spaces
+            .spaces_binding_here(&memberships.iter().map(|m| m.space).collect::<Vec<_>>())
+            .await?;
+        if !self.spaces.spaces_binding_here(&[space]).await?.contains(&space) {
+            return Ok(());
+        }
         let here = self.policies.space_policies(space).await?.policies;
-        let others = others_of(&self.spaces, user, space).await?;
+        let others: Vec<Member> = others_of(&self.spaces, user, space)
+            .await?
+            .into_iter()
+            .filter(|m| binding.contains(&m.space))
+            .collect();
         let ids: Vec<SpaceId> = others.iter().map(|m| m.space).collect();
         let theirs = self.policies.policies_of_spaces(&ids).await?;
         verdict(
@@ -70,7 +84,18 @@ pub async fn check_join<R: SpaceRepo, F: TwoFactorRepo>(
     if is_exempt(role) {
         return Ok(());
     }
+    // As in [`JoinGuard::check`]: a space another server is the home of binds nobody here.
+    if !spaces.spaces_binding_here(&[space]).await?.contains(&space) {
+        return Ok(());
+    }
     let others = others_of(spaces, user, space).await?;
+    let binding = spaces
+        .spaces_binding_here(&others.iter().map(|m| m.space).collect::<Vec<_>>())
+        .await?;
+    let others: Vec<Member> = others
+        .into_iter()
+        .filter(|m| binding.contains(&m.space))
+        .collect();
     let mut ids: Vec<SpaceId> = vec![space];
     ids.extend(others.iter().map(|m| m.space));
     let mut policies = spaces.join_policies_of(&ids).await?;

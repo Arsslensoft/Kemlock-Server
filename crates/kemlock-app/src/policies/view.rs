@@ -14,7 +14,12 @@ pub(crate) async fn effective_of<R: SpaceRepo, P: PolicyRepo>(
     policies: &P,
     user: UserId,
 ) -> Result<EffectivePolicies, StoreError> {
-    let memberships = spaces.memberships(user).await?;
+    let mut memberships = spaces.memberships(user).await?;
+    // Only the spaces this server is the home of (or doesn't federate) bind its accounts.
+    let binding = spaces
+        .spaces_binding_here(&memberships.iter().map(|m| m.space).collect::<Vec<_>>())
+        .await?;
+    memberships.retain(|m| binding.contains(&m.space));
     if memberships.is_empty() {
         return Ok(EffectivePolicies::default());
     }

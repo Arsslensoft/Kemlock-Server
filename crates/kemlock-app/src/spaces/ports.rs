@@ -101,6 +101,21 @@ pub trait SpaceRepo: Send + Sync {
         id: SpaceId,
     ) -> impl Future<Output = Result<Option<SpaceState>, StoreError>> + Send;
 
+    /// Which of these spaces have a say over the accounts of this server. A space another server
+    /// is the home of (it is federated here as a replica) decides nothing about who signs in here:
+    /// its policies (Require SSO, single space, two-step to join, no Sends, ...) bind its own
+    /// server's accounts, and a home could otherwise list any local account as a member and lock it
+    /// out. Every check of a policy asks this first.
+    ///
+    /// The default is all of them, for a store that keeps no federation.
+    fn spaces_binding_here(
+        &self,
+        ids: &[SpaceId],
+    ) -> impl Future<Output = Result<Vec<SpaceId>, StoreError>> + Send {
+        let all = ids.to_vec();
+        async move { Ok(all) }
+    }
+
     /// The account's rows in every space, in any state.
     fn memberships(
         &self,

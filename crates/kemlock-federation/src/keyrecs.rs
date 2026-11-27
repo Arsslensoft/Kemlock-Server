@@ -29,6 +29,7 @@
 use crate::cbor::Value;
 use crate::descriptor::SignedDescriptor;
 use crate::error::{FedError, Result};
+use crate::extra::PromotionMode;
 use crate::identity::LocalIdentity;
 use crate::ports::PeerState;
 use crate::relay::LearnedKey;
@@ -197,6 +198,38 @@ pub struct PendingAddresses {
     pub received_at: u64,
 }
 
+/// The most rotations held for one server. More are refused: a thief can't push the owner's out,
+/// and an admin who sees several clears them and asks the owner to rotate again.
+pub const MAX_HELD_ROTATIONS: usize = 8;
+
+/// A rotation a peer signed that this server's admin has not confirmed. A rotation is signed by the
+/// key it replaces, which may be stolen, so it pins nothing until the admin says it is the owner's
+/// (unless this server is set to `auto`, as for promotions).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeldRotation {
+    pub server: ServerId,
+    /// SHA-256 of the new identity key, in hex: what the admin compares with the peer's admin.
+    pub fingerprint: String,
+    /// Unix seconds the record says.
+    pub issued_at: u64,
+    /// Unix seconds this server received it.
+    pub received_at: u64,
+    /// The signed envelope.
+    pub envelope: Vec<u8>,
+}
+
+/// What the console shows of a held rotation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeldRotationView {
+    pub server: ServerId,
+    pub fingerprint: String,
+    pub issued_at: u64,
+    pub received_at: u64,
+    pub operator: String,
+    /// The addresses the new descriptor lists.
+    pub addresses: Vec<String>,
+}
+
 /// A key record as stored, to pass on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoredKeyRecord {
@@ -271,6 +304,22 @@ pub trait KeyStore: Send + Sync {
     fn clear_pending_addresses(&self, _peer: ServerId) -> impl Future<Output = R<()>> + Send {
         ready(Ok(()))
     }
+
+    /// Keeps a rotation for the admin. True when it is held (a repeat of one already held is), false
+    /// when [`MAX_HELD_ROTATIONS`] of that server already wait.
+    fn put_held_rotation(&self, _held: &HeldRotation) -> impl Future<Output = R<bool>> + Send {
+        ready(Ok(false))
+    }
+
+    /// Every rotation waiting for the admin, oldest first.
+    fn held_rotations(&self) -> impl Future<Output = R<Vec<HeldRotation>>> + Send {
+        ready(Ok(Vec::new()))
+    }
+
+    /// Drops every rotation held for `server`.
+    fn drop_held_rotations(&self, _server: ServerId) -> impl Future<Output = R<()>> + Send {
+        ready(Ok(()))
+    }
 }
 
 /// Makes this server's next identity key and keeps it where the identity is kept. The server id and
@@ -309,6 +358,8 @@ pub enum KeyRecordOutcome {
     Applied,
     /// It was already applied, or is about a key this server no longer holds.
     Known,
+    /// A rotation: kept for the admin to confirm, and nothing is trusted that wasn't.
+    Held,
 }
 
 /// Whether two address lists name the same places: ignoring order, case and a trailing slash.
@@ -323,6 +374,17 @@ fn same_addresses(a: &[String], b: &[String]) -> bool {
         out
     };
     normal(a) == normal(b)
+}
+
+/// SHA-256 of an identity key, in lower-case hex.
+pub fn fingerprint_of(key: &[u8]) -> String {
+    use std::fmt::Write as _;
+    crate::crypto::sha256(key)
+        .iter()
+        .fold(String::with_capacity(64), |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        })
 }
 
 fn public_key(bytes: &[u8]) -> Result<sig1::PublicKey> {
@@ -344,6 +406,17 @@ impl<S: FedStore> Replica<S> {
     ///   answers a thief's rotation, and a rotation signed by a key that turned out stolen can't be
     ///   told from the thief's. The peer must be paired again.
     pub async fn accept_key_record(&self, envelope: &[u8], now: u64) -> Result<KeyRecordOutcome> {
+        self.take_key_record(envelope, now, false).await
+    }
+
+    /// [`accept_key_record`](Self::accept_key_record); `confirmed` says the admin confirmed this
+    /// rotation, so it is not held again.
+    async fn take_key_record(
+        &self,
+        envelope: &[u8],
+        now: u64,
+        confirmed: bool,
+    ) -> Result<KeyRecordOutcome> {
         if envelope.len() > MAX_RECORD {
             return Err(FedError::Malformed("a key record is too large"));
         }
@@ -417,6 +490,28 @@ impl<S: FedStore> Replica<S> {
                 new.verify(now, Some(&new_key))?;
                 if new.descriptor.identity_key.as_bytes().as_slice() == held.as_slice() {
                     return Err(FedError::Refused("a rotation to the same key"));
+                }
+                // The old key signed it, and the old key may be stolen: a thief can make a new key
+                // and sign both. Nothing is pinned until the admin says it is the owner's, unless
+                // this server takes promotions at once too.
+                if !confirmed && self.store.promotion_mode().await? == PromotionMode::Hold {
+                    let kept = self
+                        .store
+                        .put_held_rotation(&HeldRotation {
+                            server,
+                            fingerprint: fingerprint_of(new.descriptor.identity_key.as_bytes()),
+                            issued_at: record.issued_at(),
+                            received_at: now,
+                            envelope: envelope.to_vec(),
+                        })
+                        .await?;
+                    if !kept {
+                        return Err(FedError::Refused(
+                            "too many rotations of this server wait for the admin",
+                        ));
+                    }
+                    tracing::warn!(%server, "a peer rotated its identity key: held for the admin");
+                    return Ok(KeyRecordOutcome::Held);
                 }
                 if let Some(known) = &peer {
                     self.store
@@ -511,6 +606,69 @@ impl<S: FedStore> Replica<S> {
             })
             .await?;
         Ok(outcome)
+    }
+
+    /// The rotations that wait for the admin to confirm.
+    pub async fn held_rotations(&self) -> Result<Vec<HeldRotationView>> {
+        let mut out = Vec::new();
+        for held in self.store.held_rotations().await? {
+            let Ok(signed) = Signed::decode(&held.envelope) else {
+                continue;
+            };
+            let Ok(KeyRecord::Rotation { new_descriptor, .. }) =
+                KeyRecord::from_body(&signed.body)
+            else {
+                continue;
+            };
+            let Ok(new) = SignedDescriptor::parse(&new_descriptor) else {
+                continue;
+            };
+            out.push(HeldRotationView {
+                server: held.server,
+                fingerprint: held.fingerprint,
+                issued_at: held.issued_at,
+                received_at: held.received_at,
+                operator: new.descriptor.operator.clone(),
+                addresses: new.descriptor.addresses.clone(),
+            });
+        }
+        Ok(out)
+    }
+
+    /// The admin confirms the rotation held for `server` (the one whose new key has `fingerprint`,
+    /// or the only one that waits): the new key is pinned now, and the other rotations held for the
+    /// server are dropped. `Refused` when none waits, or several do and none is named.
+    pub async fn accept_held_rotation(
+        &self,
+        server: ServerId,
+        fingerprint: Option<&str>,
+        now: u64,
+    ) -> Result<KeyRecordOutcome> {
+        let mut waiting: Vec<HeldRotation> = self
+            .store
+            .held_rotations()
+            .await?
+            .into_iter()
+            .filter(|h| h.server == server)
+            .filter(|h| fingerprint.is_none_or(|f| h.fingerprint.eq_ignore_ascii_case(f)))
+            .collect();
+        if waiting.len() > 1 {
+            return Err(FedError::Refused(
+                "several rotations wait for this server: name the key",
+            ));
+        }
+        let held = waiting
+            .pop()
+            .ok_or(FedError::Refused("no rotation waits for this server"))?;
+        let outcome = self.take_key_record(&held.envelope, now, true).await?;
+        self.store.drop_held_rotations(server).await?;
+        Ok(outcome)
+    }
+
+    /// The admin refuses the rotations held for `server`: they are dropped and the key stays.
+    pub async fn refuse_held_rotations(&self, server: ServerId) -> Result<()> {
+        self.store.drop_held_rotations(server).await?;
+        Ok(())
     }
 
     /// The address changes that came with rotations and wait for the admin.
@@ -674,7 +832,16 @@ mod tests {
         let b = Replica::new(MemoryStore::new(ib.server), Arc::new(ib.clone()));
         a.pin_peer(&ib.descriptor, NOW).await.expect("pin");
         b.pin_peer(&old.descriptor, NOW).await.expect("pin");
+        // Most of these tests are about what a rotation does once it is taken; a server that holds
+        // rotations for its admin is the one `held_*` tests make.
+        b.store.set_promotion_mode(PromotionMode::Auto);
         Pair { a, b, old }
+    }
+
+    async fn pair_that_holds() -> Pair {
+        let p = pair().await;
+        p.b.store.set_promotion_mode(PromotionMode::Hold);
+        p
     }
 
     /// A new identity for the same server, with another signing key.
@@ -768,6 +935,122 @@ mod tests {
             .await
             .expect("get")
             .expect("peer")
+    }
+
+
+    #[tokio::test]
+    async fn a_rotation_is_held_for_the_admin_and_pins_nothing_until_confirmed() {
+        let p = pair_that_holds().await;
+        let new = next(&p.old, 5);
+        let (_, rotation) = rotation_record(&p.old, &new, NOW).expect("a record");
+        let envelope = rotation.encode();
+
+        assert_eq!(
+            p.b.accept_key_record(&envelope, NOW).await,
+            Ok(KeyRecordOutcome::Held)
+        );
+        // The old key is still the one pinned, and nothing is passed on.
+        let kept = peer_of(&p).await;
+        assert_eq!(kept.identity_key, p.old.public.as_bytes().to_vec());
+        assert!(p.b.store.key_records().await.expect("records").is_empty());
+        // The admin sees it, with the new key's fingerprint, and a repeat is not a second one.
+        assert_eq!(
+            p.b.accept_key_record(&envelope, NOW).await,
+            Ok(KeyRecordOutcome::Held)
+        );
+        let waiting = p.b.held_rotations().await.expect("list");
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(waiting[0].server, p.old.server);
+        assert_eq!(waiting[0].fingerprint, fingerprint_of(new.public.as_bytes()));
+
+        // Confirmed, it takes effect like any rotation, and the old key is remembered.
+        assert_eq!(
+            p.b.accept_held_rotation(p.old.server, None, NOW).await,
+            Ok(KeyRecordOutcome::Applied)
+        );
+        assert_eq!(
+            peer_of(&p).await.identity_key,
+            new.public.as_bytes().to_vec()
+        );
+        assert!(p.b.held_rotations().await.expect("list").is_empty());
+        assert_eq!(p.b.store.past_keys(p.old.server).await.expect("past").len(), 1);
+        assert_eq!(p.b.store.key_records().await.expect("records").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_admin_names_which_of_several_held_rotations_is_the_owners() {
+        let p = pair_that_holds().await;
+        let owners = next(&p.old, 5);
+        let thiefs = next(&p.old, 6);
+        for new in [&thiefs, &owners] {
+            let (_, rotation) = rotation_record(&p.old, new, NOW).expect("a record");
+            assert_eq!(
+                p.b.accept_key_record(&rotation.encode(), NOW).await,
+                Ok(KeyRecordOutcome::Held)
+            );
+        }
+        // Two wait: the admin has to say which.
+        assert!(
+            p.b.accept_held_rotation(p.old.server, None, NOW)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            peer_of(&p).await.identity_key,
+            p.old.public.as_bytes().to_vec()
+        );
+        let fingerprint = fingerprint_of(owners.public.as_bytes());
+        assert_eq!(
+            p.b.accept_held_rotation(p.old.server, Some(&fingerprint), NOW)
+                .await,
+            Ok(KeyRecordOutcome::Applied)
+        );
+        assert_eq!(
+            peer_of(&p).await.identity_key,
+            owners.public.as_bytes().to_vec()
+        );
+        // The thief's is gone with it: it was signed by a key that was replaced.
+        assert!(p.b.held_rotations().await.expect("list").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_refused_rotation_is_dropped_and_a_revocation_still_counts_at_once() {
+        let p = pair_that_holds().await;
+        let thief = next(&p.old, 5);
+        let (_, rotation) = rotation_record(&p.old, &thief, NOW).expect("a record");
+        p.b.accept_key_record(&rotation.encode(), NOW)
+            .await
+            .expect("held");
+        p.b.refuse_held_rotations(p.old.server).await.expect("refused");
+        assert!(p.b.held_rotations().await.expect("list").is_empty());
+        assert!(p.b.accept_held_rotation(p.old.server, None, NOW).await.is_err());
+        assert_eq!(
+            peer_of(&p).await.identity_key,
+            p.old.public.as_bytes().to_vec()
+        );
+        // The owner's revocation of the stolen key was never in the way: the held key revokes.
+        let (_, revocation) = revocation_record(&p.old, NOW).expect("a record");
+        assert_eq!(
+            p.b.accept_key_record(&revocation.encode(), NOW + 60).await,
+            Ok(KeyRecordOutcome::Applied)
+        );
+        assert_eq!(peer_of(&p).await.state, PeerState::Revoked);
+    }
+
+    #[tokio::test]
+    async fn only_a_few_rotations_wait_for_one_server() {
+        let p = pair_that_holds().await;
+        for seed in 0..MAX_HELD_ROTATIONS {
+            let new = next(&p.old, 20 + u8::try_from(seed).expect("small"));
+            let (_, rotation) = rotation_record(&p.old, &new, NOW).expect("a record");
+            assert_eq!(
+                p.b.accept_key_record(&rotation.encode(), NOW).await,
+                Ok(KeyRecordOutcome::Held)
+            );
+        }
+        let one_more = next(&p.old, 99);
+        let (_, rotation) = rotation_record(&p.old, &one_more, NOW).expect("a record");
+        assert!(p.b.accept_key_record(&rotation.encode(), NOW).await.is_err());
     }
 
     #[tokio::test]

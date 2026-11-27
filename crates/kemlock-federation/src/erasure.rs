@@ -17,7 +17,7 @@
 
 use crate::error::{FedError, Result};
 use crate::extra::PendingErasure;
-use crate::message::{Request, Response};
+use crate::message::{OfferState, Request, Response};
 use crate::ports::PeerState;
 use crate::replicate::{Channel, FedStore, Replica};
 use kemlock_domain::{Owner, ServerId};
@@ -41,18 +41,23 @@ impl<S: FedStore> Replica<S> {
         if !paired {
             return Err(FedError::UnknownPeer);
         }
-        let settings = self.store.get_vault(vault).await?;
-        let offer = self.store.offer(vault).await?;
-        let home = match (&settings, &offer) {
-            (Some(settings), _) => settings.home,
-            (None, Some(offer)) => offer.home,
-            // Nothing held, nothing to delete: acknowledged, so the home can stop asking.
-            (None, None) => {
-                tracing::info!(%peer, ?vault, "an erasure of a vault this server doesn't hold");
-                return Ok(());
+        // Only a vault this server's admin accepted can be erased: an offer is not consent, and one
+        // that was declined, or came from a peer that isn't the home of an account copied from
+        // another, must not make its sender the home of anything here.
+        let Some(settings) = self.store.get_vault(vault).await? else {
+            // Nothing held, nothing to delete: acknowledged, so the home can stop asking. An offer
+            // it made for the vault is closed, so the admin isn't asked about a vault that's gone.
+            if let Some(mut offer) = self.store.offer(vault).await?
+                && offer.home == peer
+                && offer.state != OfferState::Accepted
+            {
+                offer.state = OfferState::Declined;
+                self.store.put_offer(&offer).await?;
             }
+            tracing::info!(%peer, ?vault, "an erasure of a vault this server doesn't hold");
+            return Ok(());
         };
-        if home != peer {
+        if settings.home != peer {
             return Err(FedError::Refused("only a vault's home may erase it"));
         }
 
@@ -191,5 +196,52 @@ mod tests {
                 .expect("a visit"),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn an_offer_is_no_ground_for_an_erasure_but_an_accepted_vault_is() {
+        use crate::extra::{FedAdminRepo as _, StoredOffer};
+        use crate::ports::ReplicaStore as _;
+        use crate::testing::draft;
+        use kemlock_domain::ItemId;
+        let ia = identity(1, NOW, &Suite::IMPLEMENTED);
+        let ib = identity(2, NOW, &Suite::IMPLEMENTED);
+        let (a_id, b_id) = (ia.server, ib.server);
+        let b = Replica::new(MemoryStore::new(b_id), Arc::new(ib.clone()));
+        b.pin_peer(&ia.descriptor, NOW).await.expect("pin");
+        // B holds items of a vault it never accepted, with a declined offer of A on file.
+        let vault = Owner::User(UserId::random());
+        b.store
+            .put(draft(ItemId::random(), vault, None, 1, 1_000))
+            .expect("an item");
+        b.store
+            .put_offer(&StoredOffer {
+                vault,
+                home: a_id,
+                epoch: 1,
+                replicas: vec![b_id],
+                state: OfferState::Declined,
+                received_at: NOW,
+            })
+            .await
+            .expect("offer");
+        b.receive_erasure(a_id, vault).await.expect("acknowledged");
+        assert_eq!(
+            b.store.leaves(vault).await.expect("leaves").len(),
+            1,
+            "an offer on file erased nothing"
+        );
+
+        // Once the admin accepted the vault, a peer that isn't its home may not erase it, and its
+        // home may.
+        b.accept_vault(vault, a_id, vec![b_id])
+            .await
+            .expect("accept");
+        let other = identity(3, NOW, &Suite::IMPLEMENTED);
+        b.pin_peer(&other.descriptor, NOW).await.expect("pin");
+        assert!(b.receive_erasure(other.server, vault).await.is_err());
+        assert_eq!(b.store.leaves(vault).await.expect("leaves").len(), 1);
+        b.receive_erasure(a_id, vault).await.expect("erased");
+        assert!(b.store.leaves(vault).await.expect("leaves").is_empty());
     }
 }

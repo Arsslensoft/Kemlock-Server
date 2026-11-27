@@ -19,6 +19,10 @@ pub const MAX_ITEMS: usize = 4096;
 pub const MAX_RECORDS: usize = 1024;
 /// The most items a pull page may ask for.
 pub const MAX_PAGE: u32 = 500;
+/// The most pages one pull, file listing or event pull takes from one peer for one vault in one
+/// visit. A peer that keeps saying there is more can't hold the visit (and so every other vault and
+/// peer behind it) for ever: what is left waits for the next visit, which comes at once.
+pub const MAX_PAGES_PER_VISIT: usize = 100;
 /// The most leaves one response carries.
 pub const MAX_LEAVES: usize = 16_384;
 /// The longest error detail.

@@ -12,7 +12,8 @@ use crate::tables::events;
 use crate::tables::federation::{item_siblings, peers};
 use crate::tables::federation_keys::peer_trusted_addresses;
 use crate::tables::federation_wiring::{
-    federation_erasures, peer_acknowledgements, replicated_accounts, vault_offers,
+    federation_erasures, peer_acknowledgements, peer_blob_cursors, replicated_accounts,
+    vault_offers,
 };
 use crate::tables::items::{owner_from, owner_parts};
 use crate::tables::settings;
@@ -24,8 +25,8 @@ use kemlock_domain::{
     UserId,
 };
 use kemlock_federation::extra::{
-    Acknowledgement, BlobSync, ErasureOutbox, FedAdminRepo, Leases, MemberApply, MemberStore,
-    PendingErasure, PromotionMode, StoredOffer, VaultErased, VaultErasure,
+    AccountStanding, Acknowledgement, BlobSync, ErasureOutbox, FedAdminRepo, Leases, MemberApply,
+    MemberStore, PendingErasure, PromotionMode, StoredOffer, VaultErased, VaultErasure,
 };
 use kemlock_federation::home::Policy;
 use kemlock_federation::insight::{MismatchRecord, PeerSecurityRecord, VaultInfo};
@@ -328,6 +329,7 @@ impl MemberStore for SqlStore {
         vault: Owner,
         user: UserId,
         collection: kemlock_domain::spaces::CollectionId,
+        made_secs: u64,
     ) -> Result<Option<bool>, StoreError> {
         let Owner::Space(space) = vault else {
             return Ok(Some(false));
@@ -343,10 +345,41 @@ impl MemberStore for SqlStore {
         };
         Ok(Some(match member.state {
             MemberState::Confirmed => state.access(user, collection).is_some_and(|a| a.edit),
-            // Taken out since: what they signed before is theirs.
-            MemberState::Revoked => true,
+            // Taken out since: what they signed before is theirs, and only where they could edit
+            // (their grants stay with the row) and only up to when they were taken out.
+            MemberState::Revoked => {
+                member.revoked_at.is_some_and(|at| {
+                    let until = u64::try_from(at.unix_timestamp())
+                        .unwrap_or(0)
+                        .saturating_add(kemlock_federation::extra::WRITE_SKEW_SECS);
+                    made_secs <= until
+                }) && state.access(user, collection).is_some_and(|a| a.edit)
+            }
             _ => false,
         }))
+    }
+
+    async fn space_has_collection(
+        &self,
+        vault: Owner,
+        collection: kemlock_domain::spaces::CollectionId,
+    ) -> Result<Option<bool>, StoreError> {
+        let Owner::Space(space) = vault else {
+            return Ok(Some(false));
+        };
+        let Some(state) = SpaceRepo::load(self, space).await? else {
+            return Ok(None);
+        };
+        if state.collection(collection).is_some() {
+            return Ok(Some(true));
+        }
+        // Another space's collection is a refusal; one nobody here holds yet may still arrive.
+        let elsewhere = crate::tables::space_tables::collections::Entity::find_by_id(collection.0)
+            .one(self.reader())
+            .await
+            .store()?
+            .is_some();
+        Ok(if elsewhere { Some(false) } else { None })
     }
 
     async fn writer_ids(&self, vault: Owner) -> Result<Vec<UserId>, StoreError> {
@@ -588,9 +621,64 @@ impl MemberStore for SqlStore {
             .store()?
             .is_some())
     }
+
+    async fn account_standing(&self, user: UserId) -> Result<AccountStanding, StoreError> {
+        let copy = replicated_accounts::Entity::find_by_id(user.0)
+            .one(self.writer())
+            .await
+            .store()?;
+        if let Some(copy) = copy {
+            return Ok(AccountStanding::Copy(ServerId(copy.home)));
+        }
+        Ok(if UserRepo::by_id(self, user).await?.is_some() {
+            AccountStanding::Local
+        } else {
+            AccountStanding::Unknown
+        })
+    }
 }
 
 impl BlobSync for SqlStore {
+    async fn blob_cursor(&self, peer: ServerId, vault: Owner) -> Result<[u8; 16], StoreError> {
+        let (owner_type, owner_id) = owner_parts(vault);
+        Ok(
+            peer_blob_cursors::Entity::find_by_id((peer.0, owner_type, owner_id))
+                .one(self.reader())
+                .await
+                .store()?
+                .map_or([0; 16], |row| *row.after.as_bytes()),
+        )
+    }
+
+    async fn set_blob_cursor(
+        &self,
+        peer: ServerId,
+        vault: Owner,
+        after: [u8; 16],
+    ) -> Result<(), StoreError> {
+        let (owner_type, owner_id) = owner_parts(vault);
+        let conflict = OnConflict::columns([
+            peer_blob_cursors::Column::Peer,
+            peer_blob_cursors::Column::OwnerType,
+            peer_blob_cursors::Column::OwnerId,
+        ])
+        .update_column(peer_blob_cursors::Column::After)
+        .to_owned();
+        let inserted = peer_blob_cursors::Entity::insert(peer_blob_cursors::ActiveModel {
+            peer: Set(peer.0),
+            owner_type: Set(owner_type),
+            owner_id: Set(owner_id),
+            after: Set(Uuid::from_bytes(after)),
+        })
+        .on_conflict(conflict)
+        .exec(self.writer())
+        .await;
+        match inserted {
+            Ok(_) | Err(sea_orm::DbErr::RecordNotInserted) => Ok(()),
+            Err(err) => Err(map_db(err)),
+        }
+    }
+
     async fn attachments_after(
         &self,
         owner: Owner,
