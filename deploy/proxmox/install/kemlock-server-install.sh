@@ -324,6 +324,14 @@ command_user="kemlock:kemlock"
 command_background=true
 pidfile="/run/${RC_SVCNAME}.pid"
 directory="/opt/kemlock-server"
+# The part of the Debian unit's sandbox that OpenRC can apply: no privilege gain through setuid
+# files or file capabilities (NoNewPrivileges), a 0077 umask (UMask) and the same limits
+# (LimitNOFILE, LimitNPROC). OpenRC has no read-only file system, private /tmp, system call
+# filter or address-family restriction; the container itself (unprivileged by default) and the
+# kemlock user, who can write only to the data folder, are what is left.
+no_new_privs="yes"
+umask="077"
+rc_ulimit="-n 65535 -u 4096"
 output_log="/var/log/kemlock-server.log"
 error_log="/var/log/kemlock-server.log"
 
