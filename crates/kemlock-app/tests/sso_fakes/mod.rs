@@ -11,7 +11,7 @@ use kemlock_app::sso::ports::{
 };
 use kemlock_app::sso::{
     ClientConfig, GroupAssignment, IdentityClaims, LogoutClaims, SsoError, SsoIdentity,
-    SsoSettings, VerifiedDomain,
+    SsoSession, SsoSettings, VerifiedDomain,
 };
 use kemlock_domain::UserId;
 use std::collections::{HashMap, HashSet};
@@ -26,6 +26,7 @@ struct ReposInner {
     settings: Option<SsoSettings>,
     identities: Vec<SsoIdentity>,
     domains: HashMap<String, VerifiedDomain>,
+    sessions: Vec<SsoSession>,
 }
 
 #[derive(Clone, Default)]
@@ -42,6 +43,10 @@ impl FakeSsoRepos {
 
     pub(crate) fn settings(&self) -> Option<SsoSettings> {
         self.lock().settings.clone()
+    }
+
+    pub(crate) fn sessions(&self) -> Vec<SsoSession> {
+        self.lock().sessions.clone()
     }
 
     pub(crate) fn identities(&self) -> Vec<SsoIdentity> {
@@ -128,6 +133,33 @@ impl SsoIdentityRepo for FakeSsoRepos {
             }
             None => Err(StoreError::NotFound),
         }
+    }
+
+    async fn record_sso_session(&self, session: &SsoSession) -> Result<(), StoreError> {
+        let mut g = self.lock();
+        g.sessions.retain(|s| s.device != session.device);
+        g.sessions.push(session.clone());
+        Ok(())
+    }
+
+    async fn sso_sessions(
+        &self,
+        issuer: &str,
+        subject: Option<&str>,
+        session_id: Option<&str>,
+    ) -> Result<Vec<SsoSession>, StoreError> {
+        if subject.is_none() && session_id.is_none() {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .lock()
+            .sessions
+            .iter()
+            .filter(|s| s.issuer == issuer)
+            .filter(|s| subject.is_none_or(|v| s.subject == v))
+            .filter(|s| session_id.is_none_or(|v| s.session_id.as_deref() == Some(v)))
+            .cloned()
+            .collect())
     }
 }
 

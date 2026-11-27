@@ -4,7 +4,7 @@
 use crate::error::AppError;
 use crate::ports::SecretSeal;
 use crate::sso::error::SsoError;
-use kemlock_domain::{SpaceId, UserId};
+use kemlock_domain::{DeviceId, SpaceId, UserId};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use time::OffsetDateTime;
@@ -189,7 +189,23 @@ pub struct SsoIdentity {
     /// linked it was never shown to be the account's owner (it may have been abandoned at the
     /// challenge), so that account's second step is always asked. Links of accounts with no
     /// second step, and accounts SSO made, are confirmed, as every identity was before this field.
+    /// A link to an account that has a second step is no longer stored at all (see `SsoFinish`);
+    /// those the store holds from before are unconfirmed (migration `m20261204_060003`), so that
+    /// account's second step is asked at each sign-in with them.
     pub confirmed: bool,
+}
+
+/// A device an SSO sign-in started, with the identity that signed it in. A back-channel logout ends
+/// these devices and no others: a device signed in by password, or by another identity, stays.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SsoSession {
+    pub device: DeviceId,
+    pub user: UserId,
+    pub issuer: String,
+    pub subject: String,
+    /// The provider's session id (`sid`), when its ID token carried one.
+    pub session_id: Option<String>,
+    pub started_at: OffsetDateTime,
 }
 
 /// An email domain an admin claims, and whether DNS proves it.

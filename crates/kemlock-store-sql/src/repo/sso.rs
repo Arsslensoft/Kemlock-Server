@@ -3,10 +3,11 @@
 use crate::convert::utc;
 use crate::error::{StoreResult, is_unique_violation, map_db};
 use crate::store::SqlStore;
-use crate::tables::sso::{domains, identities, settings};
+use crate::tables::sso::{domains, identities, sessions, settings};
 use kemlock_app::ports::StoreError;
 use kemlock_app::sso::{
-    SsoIdentity, SsoIdentityRepo, SsoSettings, SsoSettingsRepo, VerifiedDomain, VerifiedDomainRepo,
+    SsoIdentity, SsoIdentityRepo, SsoSession, SsoSettings, SsoSettingsRepo, VerifiedDomain,
+    VerifiedDomainRepo,
 };
 use kemlock_domain::UserId;
 use sea_orm::ActiveValue::{NotSet, Set};
@@ -119,6 +120,55 @@ impl SsoIdentityRepo for SqlStore {
             return Err(StoreError::NotFound);
         }
         Ok(())
+    }
+
+    async fn record_sso_session(&self, session: &SsoSession) -> Result<(), StoreError> {
+        let conflict = OnConflict::column(sessions::Column::DeviceId)
+            .update_columns([
+                sessions::Column::UserId,
+                sessions::Column::Issuer,
+                sessions::Column::Subject,
+                sessions::Column::SessionId,
+                sessions::Column::StartedAt,
+            ])
+            .to_owned();
+        let written = sessions::Entity::insert(sessions::active(session))
+            .on_conflict(conflict)
+            .exec(self.writer())
+            .await;
+        match written {
+            Ok(_) => Ok(()),
+            // MySQL counts a replaced row with identical values as zero rows affected.
+            Err(sea_orm::DbErr::RecordNotInserted) => Ok(()),
+            Err(err) if is_unique_violation(&err) => Err(StoreError::Duplicate),
+            Err(err) => Err(map_db(err)),
+        }
+    }
+
+    async fn sso_sessions(
+        &self,
+        issuer: &str,
+        subject: Option<&str>,
+        session_id: Option<&str>,
+    ) -> Result<Vec<SsoSession>, StoreError> {
+        // A token that names neither a subject nor a session names no one.
+        if subject.is_none() && session_id.is_none() {
+            return Ok(Vec::new());
+        }
+        let mut query = sessions::Entity::find().filter(sessions::Column::Issuer.eq(issuer));
+        if let Some(subject) = subject {
+            query = query.filter(sessions::Column::Subject.eq(subject));
+        }
+        if let Some(session_id) = session_id {
+            query = query.filter(sessions::Column::SessionId.eq(session_id));
+        }
+        Ok(query
+            .all(self.writer())
+            .await
+            .store()?
+            .into_iter()
+            .map(sessions::Model::into_domain)
+            .collect())
     }
 }
 

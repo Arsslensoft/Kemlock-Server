@@ -43,7 +43,7 @@ pub use logout::{LogoutOutcome, SsoLogout};
 pub use methods::SignInMethods;
 pub use model::{
     ClientConfig, GroupAssignment, GroupRule, IdentityClaims, LogoutClaims, SpaceRole, SsoIdentity,
-    SsoSettings, VerifiedDomain,
+    SsoSession, SsoSettings, VerifiedDomain,
 };
 pub use policy::{RequireSso, SignInMethod};
 pub use ports::{
