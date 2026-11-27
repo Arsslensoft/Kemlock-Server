@@ -72,10 +72,35 @@ variables
 color
 catch_errors
 
+# Writes the current kemlock-fetch-release before an update uses it: a container installed by an
+# older version of the install script has a helper that checks the SHA-256 only. The helper is
+# cut out of the install script (the heredoc in write_fetch_helper) that this repository serves
+# beside this script, the one a new install would run, so an update verifies like an install. Any
+# failure stops the update before anything is touched.
+kemlock_refresh_helper() {
+  local src helper
+  src="$(mktemp)"
+  helper="$(mktemp)"
+  if ! curl -fsSL -o "$src" "${COMMUNITY_SCRIPTS_URL}/install/kemlock-server-install.sh"; then
+    rm -f "$src" "$helper"
+    msg_error "Could not download the current release verifier; the running version is unchanged"
+    exit 1
+  fi
+  awk '/^  cat <<.EOT. >\/usr\/local\/bin\/kemlock-fetch-release$/ {f=1; next} f && /^EOT$/ {exit} f' "$src" >"$helper"
+  if [[ "$(head -n 1 "$helper")" != "#!/bin/sh" ]] || ! grep -q 'cosign' "$helper"; then
+    rm -f "$src" "$helper"
+    msg_error "The release verifier in the install script is not what was expected; the running version is unchanged"
+    exit 1
+  fi
+  install -m 0755 "$helper" /usr/local/bin/kemlock-fetch-release
+  rm -f "$src" "$helper"
+}
+
 # Downloads the latest release and checks its SHA-256 and cosign signature, with the
 # helper the install script wrote (kemlock-fetch-release). Nothing is stopped or replaced until it
 # passes; if it fails, the running version stays.
 kemlock_stage_release() {
+  kemlock_refresh_helper
   KEMLOCK_STAGE="$(mktemp -d)"
   msg_info "Downloading and verifying the release"
   if ! KEMLOCK_VERSION="$(/usr/local/bin/kemlock-fetch-release "$KEMLOCK_STAGE")"; then
