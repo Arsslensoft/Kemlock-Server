@@ -86,6 +86,9 @@ impl<R: SpaceRepo, P: PolicyRepo, V: EventLog, C: Clock> SetPolicies<R, P, V, C>
                 "only an owner or an admin sets a space's policies",
             ));
         }
+        // On a chained space the policies are the chain's `policies` record: a route that set them
+        // would change what is enforced with nothing signed (docs/crypto.md, "Space chain").
+        crate::spaces::ensure_unchained(&self.spaces, space).await?;
         new.validate()?;
         let now = self.clock.now();
         self.policies

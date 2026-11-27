@@ -693,6 +693,18 @@ pub(super) async fn apply_in(
             .await
             .store()?;
     }
+    // The policy settings a chain's `policies` record set, so what the server enforces is what
+    // the chain says.
+    if let Some((policies, by)) = &changes.policies {
+        super::policies::upsert_policies(
+            txn,
+            changes.space_id,
+            policies,
+            *by,
+            time::OffsetDateTime::now_utc(),
+        )
+        .await?;
+    }
     Ok(())
 }
 

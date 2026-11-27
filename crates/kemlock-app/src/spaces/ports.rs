@@ -4,6 +4,7 @@
 
 use super::chain::{ExternalChangeMode, PendingExternal};
 use crate::ports::StoreError;
+use kemlock_domain::policies::SpacePolicies;
 use kemlock_domain::spaces::{
     Collection, CollectionGrant, CollectionId, Grantee, Group, GroupId, KeyCopy, Member, Space,
     SpaceState,
@@ -39,6 +40,9 @@ pub struct SpaceChanges {
     pub grants_removed: Vec<(CollectionId, Grantee)>,
     pub key_copies: Vec<KeyCopy>,
     pub key_copies_removed: Vec<(CollectionId, UserId)>,
+    /// The space's policy settings and the account that set them: written in the same transaction,
+    /// by a chain append whose records set the space's policies (`kemlock_app::spaces::chain_project`).
+    pub policies: Option<(SpacePolicies, UserId)>,
 }
 
 impl SpaceChanges {
@@ -57,6 +61,7 @@ impl SpaceChanges {
             grants_removed: Vec::new(),
             key_copies: Vec::new(),
             key_copies_removed: Vec::new(),
+            policies: None,
         }
     }
 }

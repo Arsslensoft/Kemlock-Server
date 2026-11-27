@@ -11,7 +11,7 @@ use kemlock_domain::policies::{PoliciesBySpace, SpacePolicies};
 use kemlock_domain::spaces::{MemberState, SpaceRole};
 use kemlock_domain::{SpaceId, UserId};
 use sea_orm::sea_query::OnConflict;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -34,42 +34,7 @@ impl PolicyRepo for SqlStore {
         by: UserId,
         at: OffsetDateTime,
     ) -> Result<(), StoreError> {
-        let conflict = OnConflict::column(policies::Column::SpaceId)
-            .update_columns([
-                policies::Column::RequireSso,
-                policies::Column::TwoStep,
-                policies::Column::SingleSpace,
-                policies::Column::DisableExport,
-                policies::Column::DisableSend,
-                policies::Column::AlwaysShowEmail,
-                policies::Column::NoPinUnlock,
-                policies::Column::CentralOwnership,
-                policies::Column::NoCardItems,
-                policies::Column::MpOn,
-                policies::Column::MpMinLength,
-                policies::Column::MpMinComplexity,
-                policies::Column::MpRequireUpper,
-                policies::Column::MpRequireLower,
-                policies::Column::MpRequireNumbers,
-                policies::Column::MpRequireSpecial,
-                policies::Column::MpEnforceOnLogin,
-                policies::Column::TimeoutMinutes,
-                policies::Column::TimeoutAction,
-                policies::Column::UpdatedAt,
-                policies::Column::UpdatedBy,
-            ])
-            .to_owned();
-        let written = policies::Entity::insert(policies::active(space.0, value, by, at))
-            .on_conflict(conflict)
-            .exec(self.writer())
-            .await;
-        match written {
-            Ok(_) => Ok(()),
-            // MySQL counts a replaced row with identical values as zero rows affected.
-            Err(sea_orm::DbErr::RecordNotInserted) => Ok(()),
-            Err(err) if is_unique_violation(&err) => Err(StoreError::Duplicate),
-            Err(err) => Err(map_db(err)),
-        }
+        upsert_policies(self.writer(), space, value, by, at).await
     }
 
     async fn policies_of_spaces(&self, spaces: &[SpaceId]) -> Result<PoliciesBySpace, StoreError> {
@@ -87,6 +52,53 @@ impl PolicyRepo for SqlStore {
             out.insert(SpaceId(row.space_id), row.policies()?);
         }
         Ok(out)
+    }
+}
+
+/// Writes a space's policy settings on `db`, a connection or a transaction: the one write of
+/// `space_policy_settings`, for `PolicyRepo::put_space_policies` and a chain append alike.
+pub(super) async fn upsert_policies<C: ConnectionTrait>(
+    db: &C,
+    space: SpaceId,
+    value: &SpacePolicies,
+    by: UserId,
+    at: OffsetDateTime,
+) -> Result<(), StoreError> {
+    let conflict = OnConflict::column(policies::Column::SpaceId)
+        .update_columns([
+            policies::Column::RequireSso,
+            policies::Column::TwoStep,
+            policies::Column::SingleSpace,
+            policies::Column::DisableExport,
+            policies::Column::DisableSend,
+            policies::Column::AlwaysShowEmail,
+            policies::Column::NoPinUnlock,
+            policies::Column::CentralOwnership,
+            policies::Column::NoCardItems,
+            policies::Column::MpOn,
+            policies::Column::MpMinLength,
+            policies::Column::MpMinComplexity,
+            policies::Column::MpRequireUpper,
+            policies::Column::MpRequireLower,
+            policies::Column::MpRequireNumbers,
+            policies::Column::MpRequireSpecial,
+            policies::Column::MpEnforceOnLogin,
+            policies::Column::TimeoutMinutes,
+            policies::Column::TimeoutAction,
+            policies::Column::UpdatedAt,
+            policies::Column::UpdatedBy,
+        ])
+        .to_owned();
+    let written = policies::Entity::insert(policies::active(space.0, value, by, at))
+        .on_conflict(conflict)
+        .exec(db)
+        .await;
+    match written {
+        Ok(_) => Ok(()),
+        // MySQL counts a replaced row with identical values as zero rows affected.
+        Err(sea_orm::DbErr::RecordNotInserted) => Ok(()),
+        Err(err) if is_unique_violation(&err) => Err(StoreError::Duplicate),
+        Err(err) => Err(map_db(err)),
     }
 }
 

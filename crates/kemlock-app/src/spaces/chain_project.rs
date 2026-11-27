@@ -10,6 +10,7 @@
 use super::chain::{StoredName, StoredSeal};
 use super::ports::SpaceChanges;
 use kemlock_crypto::space_chain as sc;
+use kemlock_domain::policies::{MasterPasswordPolicy, SpacePolicies, TimeoutAction};
 use kemlock_domain::spaces::{
     Collection, CollectionGrant, CollectionId, CollectionPermission, Confirmation,
     CustomPermissions, Grantee, Group, GroupId, KeyCopy, Member, MemberState, Space, SpaceRole,
@@ -69,6 +70,52 @@ fn grantee_of(grantee: &sc::Grantee) -> Grantee {
     match grantee {
         sc::Grantee::User(id) => Grantee::Member(user_of(id)),
         sc::Grantee::Group(id) => Grantee::Group(group_of(id)),
+    }
+}
+
+/// The server's policy settings the chain's `policies` record sets (docs/crypto.md, "Space chain",
+/// `policies`): one to one, with `0` and `false` everywhere in `masterPassword` for no rules, a
+/// `minLength` or `minComplexity` of `0` for none, and `minutes: 0` for no timeout. The chain's
+/// account recovery and duplicate matching switches have no setting here.
+pub fn policies_of(policies: &sc::Policies) -> SpacePolicies {
+    let mp = &policies.master_password;
+    let master_password = (*mp != sc::MasterPasswordPolicy::default()).then(|| {
+        MasterPasswordPolicy {
+            min_length: (mp.min_length > 0).then_some(u32::from(mp.min_length)),
+            min_complexity: (mp.min_complexity > 0).then_some(mp.min_complexity),
+            require_upper: mp.require_upper,
+            require_lower: mp.require_lower,
+            require_numbers: mp.require_numbers,
+            require_special: mp.require_special,
+            enforce_on_login: mp.enforce_on_login,
+        }
+    });
+    let timeout = &policies.session_timeout;
+    let (minutes, action) = if timeout.minutes == 0 {
+        (None, None)
+    } else {
+        (
+            Some(timeout.minutes),
+            match timeout.action {
+                sc::TimeoutAction::None => None,
+                sc::TimeoutAction::Lock => Some(TimeoutAction::Lock),
+                sc::TimeoutAction::LogOut => Some(TimeoutAction::LogOut),
+            },
+        )
+    };
+    SpacePolicies {
+        require_sso: policies.require_sso,
+        two_step: policies.two_step,
+        master_password,
+        single_space: policies.single_space,
+        disable_export: policies.disable_export,
+        disable_send: policies.disable_send,
+        always_show_email: policies.always_show_email,
+        session_timeout_minutes: minutes,
+        session_timeout_action: action,
+        no_pin_unlock: policies.no_pin_unlock,
+        central_ownership: policies.central_ownership,
+        no_card_items: policies.no_card_items,
     }
 }
 
@@ -385,6 +432,43 @@ mod tests {
         assert!(bits.contains(CustomPermissions::CREATE_COLLECTIONS));
         assert!(!bits.contains(CustomPermissions::MANAGE_GROUPS));
         assert_eq!(custom_of(&BTreeSet::new()), CustomPermissions::NONE);
+    }
+
+    #[test]
+    fn the_chains_policies_map_to_the_servers_settings() {
+        let none = policies_of(&sc::Policies::default());
+        assert_eq!(none, SpacePolicies::default());
+
+        let set = sc::Policies {
+            require_sso: true,
+            two_step: true,
+            single_space: true,
+            master_password: sc::MasterPasswordPolicy {
+                min_length: 14,
+                require_numbers: true,
+                ..sc::MasterPasswordPolicy::default()
+            },
+            session_timeout: sc::SessionTimeoutPolicy {
+                action: sc::TimeoutAction::LogOut,
+                minutes: 30,
+            },
+            ..sc::Policies::default()
+        };
+        let mapped = policies_of(&set);
+        assert!(mapped.require_sso && mapped.two_step && mapped.single_space);
+        assert!(!mapped.disable_send);
+        assert_eq!(
+            mapped.master_password,
+            Some(MasterPasswordPolicy {
+                min_length: Some(14),
+                min_complexity: None,
+                require_numbers: true,
+                ..MasterPasswordPolicy::default()
+            })
+        );
+        assert_eq!(mapped.session_timeout_minutes, Some(30));
+        assert_eq!(mapped.session_timeout_action, Some(TimeoutAction::LogOut));
+        assert!(mapped.validate().is_ok());
     }
 
     #[test]

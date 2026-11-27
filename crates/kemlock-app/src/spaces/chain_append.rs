@@ -14,7 +14,9 @@ use super::chain::{
     AppendOutcome, ChainAppend, ChainHead, ChainUsage, HomeGate, PendingChange, PendingExternal,
     SpaceChainRepo, StoredName, StoredRecord, StoredSeal,
 };
-use super::chain_project::{Batch, custom_of, id_of, permission_of, project, role_of, user_of};
+use super::chain_project::{
+    Batch, custom_of, id_of, permission_of, policies_of, project, role_of, user_of,
+};
 use super::error::SpacesError;
 use super::ports::{SpaceItemInfo, SpaceRepo};
 use super::support::record;
@@ -412,7 +414,7 @@ where
         let newest = writes.last().map(|(draft, _)| draft.id);
 
         let holders = self.spaces.holders(space).await?;
-        let changes = project(
+        let mut changes = project(
             space,
             existing.as_ref(),
             &holders,
@@ -423,6 +425,15 @@ where
             },
             now,
         );
+        // A `create` or a `policies` record sets the space's policy settings: what the server
+        // enforces (Require SSO, two-step login, one space per member, the Send rules) is what the
+        // chain says, and nothing else sets it on a chained space (M14).
+        if accepted
+            .iter()
+            .any(|(rec, _, _)| matches!(rec.body, Body::Create { .. } | Body::Policies { .. }))
+        {
+            changes.policies = Some((policies_of(&state.policies), actor.user));
+        }
         let creating = matches!(accepted[0].0.body, Body::Create { .. });
         let state_after = Arc::new(state.clone());
         let records: Vec<StoredRecord> = accepted

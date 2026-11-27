@@ -578,3 +578,25 @@ async fn a_space_without_a_chain_counts_its_confirmed_rows_as_before() {
         Err(PoliciesError::OtherSpaceSingle)
     );
 }
+
+#[tokio::test]
+async fn a_chained_space_takes_its_policies_from_its_chain_only() {
+    let p = Policies::new();
+    let (space, sam) = p.space("sam@example.org").await;
+    let ana = p.w.user("ana@example.org").await;
+    chain_of(&p, space, sam, ana, false).await;
+    let refused = p
+        .set()
+        .execute(&actor(sam), space, strict())
+        .await
+        .expect_err("a route that sets policies with no record is refused");
+    assert!(matches!(refused, PoliciesError::Invalid(_)), "{refused:?}");
+    assert_eq!(p.policies.stored(space), None);
+
+    // A space with no chain is set as before.
+    let (plain, zed) = p.space("zed@example.org").await;
+    p.set()
+        .execute(&actor(zed), plain, strict())
+        .await
+        .expect("an unchained space takes the route");
+}
