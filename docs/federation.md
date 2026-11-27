@@ -368,8 +368,13 @@ record checks, before it applies it:
    replicated member account), and the signature verifies over the statement rebuilt from the
    record's owner, item id, kind, revision, deleted flag, key version, ciphertext and item key, and
    for a `space:` owner the collection (field 16), which the writer must be allowed to edit: a
-   confirmed member with edit on it, or one taken out since, as the receiver's copy of the space
-   says; a collection it doesn't know yet is left out for now. A signed record of a space without
+   confirmed member with edit on it, or one taken out since who held edit on it through the grants that
+   stay with their row and whose record is dated (by its origin's HLC) no later than when they were
+   taken out plus 300 seconds, as the receiver's copy of the space says; a collection it doesn't
+   know yet is left out for now. Any record of a space that names a collection (signed or not,
+   `kem1` or `bw`) must name one of that space: another space's is refused, one not known yet waits.
+   A record's revision is refused above 4,294,967,295 or more than 10,000 above the highest the
+   receiver holds of the item, so no record can take the head of an item for good. A signed record of a space without
    a collection is refused, so a replica that moves a signed item to another collection, or strips
    it, breaks the origin's signature or the writer's.
    A record that fails is **refused**: counted, left out, the rest of the page applied. A writer who
@@ -738,7 +743,12 @@ revoked or removed
 member is a "gone" record, which takes their grants, group seats and key copies out of the replica
 too. A replica applies them only when they are of the vault's current epoch and signed by its home;
 a stale-epoch one is quarantined like the rest and shows in the vault's quarantine list for its
-admins to redo or drop. A space's home may only change that space's own entities: a record that names a collection or group (as its own id, a parent, the group of a grant, the collection of a key copy, or one that is gone) that already exists in another space at the replica is refused and logged, and the records after it still apply. Writes to the home-only parts of a federated space
+admins to redo or drop. A space's home may only speak for accounts that are its own: a `space-member`, `space-keys`, group
+seat or grant that names an account **of the replica** (not a copy), or a copy that came from another
+server, is refused (the seat and the grant are left out of the group and the collection; a seat
+planted earlier for a local account is taken out), because a member's policies, Require SSO among
+them, bind them. An account the replica holds no copy of yet may be named: the member record comes
+before the account's. A space's home may only change that space's own entities: a record that names a collection or group (as its own id, a parent, the group of a grant, the collection of a key copy, or one that is gone) that already exists in another space at the replica is refused and logged, and the records after it still apply. Writes to the home-only parts of a federated space
 (`/kem/v1/spaces/{id}/` `members`, `collections`, `groups`, `grants`, `key-replacement`, `reseal` and
 `policies`) are refused at a server that is not the home with `409`, a
 `urn:kemlock:problem:home-only` problem that names the home (`home.server`, `home.address`) and the
