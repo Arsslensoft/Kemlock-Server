@@ -1786,7 +1786,9 @@ async fn sso_settings_are_saved_and_the_secret_is_never_returned() {
         "openid is implied"
     );
     assert_eq!(shown["groupRules"][0]["role"], "admin");
-    assert_eq!(shown["linkByEmail"], true);
+    // A new install links by email only when the admin turns it on, and asks for a proven domain.
+    assert_eq!(shown["linkByEmail"], false);
+    assert_eq!(shown["requireVerifiedDomain"], true);
 
     // The stored secret is sealed: the SSO area can open it, the table doesn't hold it in clear.
     let stored = rig.sso.settings().expect("stored");
@@ -1805,6 +1807,17 @@ async fn sso_settings_are_saved_and_the_secret_is_never_returned() {
         .json();
     assert_eq!(kept["displayName"], "Renamed");
     assert_eq!(kept["clientSecretSet"], true);
+    // A new issuer takes a new secret: the stored one would go to the provider at the new address.
+    let mut moved = keep.clone();
+    moved["issuer"] = json!("https://other.example.org/realms/kemlock");
+    let refused = root
+        .write("PUT", "/admin/v1/sso", Some(moved), &token)
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{:?}", refused.json());
+    assert_eq!(
+        rig.sso.settings().expect("stored").issuer,
+        "https://idp.example.org/realms/kemlock"
+    );
     keep["clearClientSecret"] = json!(true);
     let cleared = root
         .write("PUT", "/admin/v1/sso", Some(keep), &token)

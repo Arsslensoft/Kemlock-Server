@@ -119,20 +119,27 @@ are open to people you don't know, or limited to a domain.
 
 ### Single sign-on and linking by email (`SSO_*`)
 
-`SSO_SIGNUPS_MATCH_EMAIL` (default `true`, as in Vaultwarden) lets a person's first sign-in with the
-provider link to the account that already has the email the provider vouches for. That is the risk
-to weigh: whoever controls an address at the provider (an open sign-up, an alias, a mail domain the
+`SSO_SIGNUPS_MATCH_EMAIL` (default `false` for a new install; Vaultwarden's default is `true`) lets a
+person's first sign-in with the provider link to the account that already has the email the provider
+vouches for. A new install also asks for a proven domain (`KEMLOCK_SSO_REQUIRE_VERIFIED_DOMAIN`, default
+`true`; the console's "Only accept people whose email domain is verified here"). A server whose settings
+are stored already keeps the values it has. That is the risk to weigh: whoever controls an address at the provider (an open sign-up, an alias, a mail domain the
 provider doesn't check) gets the Kemlock account of that address. Kemlock narrows it:
 
 - the provider's `email_verified` must be true (`SSO_ALLOW_UNKNOWN_EMAIL_VERIFICATION` accepts a
   token with no such claim only where the domain is proven by DNS in the console);
 - an account whose email was never confirmed (see `SIGNUPS_VERIFY`) is never linked;
-- a link made to an account that has a second step is recorded as unconfirmed, and the account's
-  own second step is asked at every sign-in with it, whatever the provider's `amr` says (abandoning
-  the first challenge and signing in again doesn't help). The `amr` skip ("Via SSO") applies only
-  to identities of accounts SSO made, links made while the account had no second step, and
-  identities linked before this rule; An administrator's account counts as an admin only with a second step turned on, so
-  linking to one by email asks for it before any token is issued.
+- an account that has a second step is not linked at all: its own second step is asked at every
+  sign-in the provider makes by email, whatever the provider's `amr` says, and nothing is stored
+  that an abandoned challenge could leave behind. The `amr` skip ("Via SSO") applies only to
+  identities of accounts SSO made and links made while the account had no second step. Links of
+  accounts with a second step that were stored before this rule are unconfirmed from the update on,
+  so their second step is asked at each sign-in too. An administrator's account counts as an admin
+  only with a second step turned on, so linking to one by email asks for it before any token is
+  issued;
+- a back-channel logout ends only the devices that identity (or that provider session, `sid`)
+  signed in, never the account's other devices. Devices SSO signed in before the update have no
+  record and are not ended by a logout.
 
 Safer settings: set `SSO_SIGNUPS_MATCH_EMAIL=false` and let SSO make its own accounts (an existing
 account then stays out of SSO and the sign-in answers `sso-linking-off`); or keep it on, require a

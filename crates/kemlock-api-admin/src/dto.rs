@@ -558,9 +558,9 @@ impl From<&SsoView> for SsoDto {
                     .map(|s| (*s).to_owned())
                     .collect(),
                 allow_unknown_email_verification: false,
-                link_by_email: true,
+                link_by_email: false,
                 create_accounts: true,
-                require_verified_domain: false,
+                require_verified_domain: true,
                 group_rules: Vec::new(),
                 updated_at: None,
                 callback_url: v.callback_url.clone(),
@@ -586,11 +586,11 @@ pub struct SsoRequest {
     pub scopes: Vec<String>,
     #[serde(default)]
     pub allow_unknown_email_verification: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub link_by_email: bool,
     #[serde(default = "default_true")]
     pub create_accounts: bool,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub require_verified_domain: bool,
     #[serde(default)]
     pub group_rules: Vec<GroupRuleDto>,
