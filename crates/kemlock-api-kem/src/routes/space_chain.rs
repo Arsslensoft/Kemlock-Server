@@ -736,7 +736,7 @@ async fn check_rewrites<S, P, K, R>(
     env: &Env<S, P, K, R>,
     actor: UserId,
     space: SpaceId,
-    request: &AppendRequest,
+    request: &mut AppendRequest,
 ) -> Result<(), Problem>
 where
     S: Store,
@@ -771,12 +771,10 @@ where
             ));
         }
     }
-    let writes: Vec<_> = request
-        .writes
-        .iter()
-        .map(|(collection, write)| (write.clone(), Some(*collection)))
-        .collect();
-    super::write_sig::verify_writes_blocking(&env.api.store, actor, writes).await
+    // The writes go to the blocking task and come back, so none is copied.
+    let writes = std::mem::take(&mut request.writes);
+    request.writes = super::write_sig::verify_writes_blocking(&env.api.store, actor, writes).await?;
+    Ok(())
 }
 
 /// What an append does once its body is read: the same for a new request and for the answer to a
@@ -794,8 +792,8 @@ where
     K: TokenSigner + Clone + 'static,
     R: SpaceRepo + SpaceChainRepo + Clone + 'static,
 {
-    let request = read_request(body)?;
-    check_rewrites(env, actor.user, space, &request).await?;
+    let mut request = read_request(body)?;
+    check_rewrites(env, actor.user, space, &mut request).await?;
     let invited = invitees(&request);
     let append = append_use_case(env);
     let head = match pending {

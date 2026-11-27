@@ -65,23 +65,28 @@ pub(crate) async fn verify_writes<U: UserRepo>(
     check_writes(&account, actor, writes)
 }
 
-/// [`verify_writes`] for many writes: the signatures are checked on a blocking thread, one after
-/// another, so a request of hundreds of them doesn't hold a runtime worker.
+/// [`verify_writes`] for many writes into collections: the signatures are checked on a blocking
+/// thread, one after another, so a request of hundreds of them doesn't hold a runtime worker. The
+/// writes move into the task and come back, checked, so none is copied.
 pub(crate) async fn verify_writes_blocking<U: UserRepo>(
     users: &U,
     actor: UserId,
-    writes: Vec<(ItemWrite, Option<CollectionId>)>,
-) -> Result<(), Problem> {
+    writes: Vec<(CollectionId, ItemWrite)>,
+) -> Result<Vec<(CollectionId, ItemWrite)>, Problem> {
     let refs: Vec<(&ItemWrite, Option<CollectionId>)> =
-        writes.iter().map(|(w, c)| (w, *c)).collect();
-    let Some(account) = signer_of(users, actor, &refs).await? else {
-        return Ok(());
-    };
+        writes.iter().map(|(c, w)| (w, Some(*c))).collect();
+    let account = signer_of(users, actor, &refs).await?;
     drop(refs);
+    let Some(account) = account else {
+        return Ok(writes);
+    };
     tokio::task::spawn_blocking(move || {
-        let refs: Vec<(&ItemWrite, Option<CollectionId>)> =
-            writes.iter().map(|(w, c)| (w, *c)).collect();
-        check_writes(&account, actor, &refs)
+        let checked = {
+            let refs: Vec<(&ItemWrite, Option<CollectionId>)> =
+                writes.iter().map(|(c, w)| (w, Some(*c))).collect();
+            check_writes(&account, actor, &refs)
+        };
+        checked.map(|()| writes)
     })
     .await
     .map_err(|_| Problem::from(AppError::Store("a signature check didn't finish".to_owned())))?
