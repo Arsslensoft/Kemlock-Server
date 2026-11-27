@@ -179,6 +179,13 @@ impl<S: BwStore> MembershipFacts for OrgMembership<S> {
             if member.state != kemlock_domain::spaces::MemberState::Confirmed {
                 continue;
             }
+            // On a space with a chain only the chain confirms: a row some other route wrote binds
+            // nobody (a Bitwarden confirm has no signed `confirm` record).
+            if let Some(confirmed) = SpaceRepo::chain_confirmed_members(&self.0, member.space).await?
+                && !confirmed.contains(&user)
+            {
+                continue;
+            }
             // Whether the space requires SSO is `space_policy_settings`'s word, the one the Kemlock
             // API reads too, so a member bound there is bound here.
             let enabled = SpaceRepo::require_sso_of(&self.0, &[member.space])

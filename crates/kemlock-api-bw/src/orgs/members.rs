@@ -13,6 +13,7 @@ use crate::events::kind;
 use kemlock_app::bitwarden::BwAccountRepo;
 use kemlock_app::notices::{BwOrgInviteNotice, InvitationNotice, Notice};
 use kemlock_app::ports::UserRepo;
+use kemlock_app::spaces::SpaceRepo;
 use kemlock_domain::spaces::{CollectionGrant, CollectionId, Grantee, GroupId};
 use kemlock_domain::{Email, User, UserId};
 use serde::{Deserialize, Serialize};
@@ -571,6 +572,14 @@ pub(crate) async fn confirm<S: BwStore>(
     if doc.atype != USER && ctx.doc.atype != OWNER {
         return Err(BwError::msg(
             "Only Owners can confirm Managers, Admins or Owners",
+        ));
+    }
+    // A space with a chain confirms a member only with a signed `confirm` record, which no Bitwarden
+    // client can make; a row this route confirmed would bind the member by the space's policies
+    // (Require SSO) with none. The Kemlock app confirms them, and the key follows from there.
+    if SpaceRepo::is_chained(&app.store, ctx.org.id).await? {
+        return Err(BwError::msg(
+            "This organization's members are confirmed in the Kemlock app, where the confirmation is signed",
         ));
     }
     if doc.status != ACCEPTED {

@@ -730,3 +730,67 @@ async fn a_member_the_space_row_confirmed_stays_invited_until_they_accept_here()
         .expect("bob's row");
     assert_eq!(row.state, MemberState::Confirmed);
 }
+
+/// A space with a chain is confirmed only by a signed `confirm` record, which a Bitwarden client
+/// can't make: the Bitwarden confirm route is refused there, so no row is made Confirmed (and
+/// Require SSO binds no one) without the chain.
+#[tokio::test]
+async fn a_bitwarden_confirm_on_a_chained_space_is_refused() {
+    use kemlock_app::spaces::{
+        AppendOutcome, ChainAppend, ChainHead, SpaceChainRepo, SpaceChanges, StoredRecord,
+    };
+    let h = Harness::new().await;
+    let (eve, eve_id) = h.signed_in("eve@example.com").await;
+    let (_bob, bob_id) = h.signed_in("bob@example.com").await;
+    let org = organization(&h, &eve).await;
+    invite(&h, &eve, &org, "bob@example.com").await;
+    h.accept_in_space(&org, bob_id).await;
+
+    // The space has a chain from here (one record is enough to make it one; these tests don't
+    // verify it).
+    let space = kemlock_domain::SpaceId(org.parse().expect("an organization id"));
+    let first = StoredRecord {
+        seq: 0,
+        link: [1; 32],
+        epoch: 1,
+        by: eve_id,
+        at: 1_780_000_000,
+        entry: vec![1; 300],
+        signature: vec![1; 3373],
+        cosignature: None,
+    };
+    let outcome = SpaceChainRepo::chain_append(
+        &h.store,
+        space,
+        ChainAppend {
+            expected: None,
+            records: vec![first.clone()],
+            seals: Vec::new(),
+            names: Vec::new(),
+            changes: SpaceChanges::new(space),
+            creating: false,
+            held: Vec::new(),
+            writes: Vec::new(),
+            answers: None,
+            state: None,
+        },
+    )
+    .await
+    .expect("the append");
+    assert_eq!(
+        outcome,
+        AppendOutcome::Appended(ChainHead {
+            seq: 0,
+            link: first.link,
+            epoch: first.epoch,
+        })
+    );
+
+    let (status, body) = confirm(&h, &eve, &org, bob_id).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        body["message"],
+        "This organization's members are confirmed in the Kemlock app, where the confirmation is signed"
+    );
+    assert_eq!(status_of(&h, &eve, &org, "bob@example.com").await, Some(1));
+}
