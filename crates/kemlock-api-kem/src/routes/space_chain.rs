@@ -43,7 +43,7 @@ use kemlock_app::{AppError, b64url};
 use kemlock_crypto::space_chain::{KeyRef, NameTarget, Reason, SignedRecord};
 use kemlock_domain::spaces::CollectionId;
 use kemlock_domain::spaces::CustomPermissions;
-use kemlock_domain::{ItemId, Revision, SpaceId, UserId};
+use kemlock_domain::{ItemError, ItemId, Revision, SpaceId, UserId};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use utoipa::{OpenApi, ToSchema};
@@ -356,6 +356,9 @@ impl From<AppendError> for Problem {
                 "A held item isn't in a collection the request rotates",
             )
             .detail(why),
+            AppendError::SignatureRequired => {
+                Problem::from(AppError::Item(ItemError::SignatureRequired))
+            }
             AppendError::NotFound => Problem::not_found(),
             AppendError::Store(message) => Problem::from(AppError::Store(message)),
         }
@@ -458,6 +461,29 @@ fn read_request(body: &ChainBody) -> Result<AppendRequest, Problem> {
     })
 }
 
+/// The signatures of the items a key replacement re-writes, checked as the signature of any item
+/// write is (docs/crypto.md, "Signed item writes"): by the signed-in account, over the statement
+/// rebuilt from the write and the collection it names. An unsigned re-write is left to the use
+/// case, which knows whether the space takes signed writes only.
+async fn verify_rewrites<S, P, K, R>(
+    env: &Env<S, P, K, R>,
+    actor: UserId,
+    request: &AppendRequest,
+) -> Result<(), Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: SpaceRepo + SpaceChainRepo + Clone + 'static,
+{
+    let writes: Vec<_> = request
+        .writes
+        .iter()
+        .map(|(collection, write)| (write, Some(*collection)))
+        .collect();
+    super::write_sig::verify_writes(&env.api.store, actor, &writes).await
+}
+
 async fn append_chain<S, P, K, R>(
     State(env): State<Env<S, P, K, R>>,
     caller: Caller,
@@ -473,6 +499,7 @@ where
     let space = space_id(&id)?;
     let request = read_request(&body)?;
     let actor = caller.actor();
+    verify_rewrites(&env, actor.user, &request).await?;
     let invited = invitees(&request);
     let head = append_use_case(&env)
         .execute(&actor, space, request)
@@ -497,6 +524,7 @@ where
     let pending: Uuid = pending.parse().map_err(|_| bad("the id isn't a UUID"))?;
     let request = read_request(&body)?;
     let actor = caller.actor();
+    verify_rewrites(&env, actor.user, &request).await?;
     let invited = invitees(&request);
     let head = append_use_case(&env)
         .answer(&actor, space, pending, request)

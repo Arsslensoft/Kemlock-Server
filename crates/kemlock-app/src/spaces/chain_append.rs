@@ -86,6 +86,9 @@ pub enum AppendError {
     /// The request holds an item that isn't in a collection whose key one of its `keys` records
     /// replaces (`422`).
     HeldNotRotated(&'static str),
+    /// The space takes signed writes only and a re-written `kem1` item carries no signature
+    /// (`422` `signature-required`; docs/crypto.md, "Signed item writes").
+    SignatureRequired,
     /// The space isn't there for this caller.
     NotFound,
     Store(String),
@@ -644,6 +647,12 @@ where
                         "an item can't be re-written as asked: its revision or its sealed parts are wrong",
                     )
                 })?;
+            // The re-write is a write like any other: a space that takes signed writes only
+            // refuses a `kem1` one that carries no signature. Asked after the access and revision
+            // checks, so a caller who may not re-write the item learns nothing of the flag.
+            if crate::signed_writes::refuses_unsigned(&self.items, &draft).await? {
+                return Err(AppendError::SignatureRequired);
+            }
             drafts.push((draft, *collection));
         }
         Ok(drafts)
