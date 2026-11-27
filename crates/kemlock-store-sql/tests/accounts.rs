@@ -130,6 +130,22 @@ async fn devices(store: &SqlStore) {
     DeviceRepo::upsert(store, &newer).await.expect("upsert");
     DeviceRepo::upsert(store, &older).await.expect("upsert");
 
+    // Another account can't take a device id over, whatever its use case read first: nothing of
+    // the device changes.
+    let thief = user(&unique_email("device-thief"));
+    UserRepo::insert(store, &thief).await.expect("insert thief");
+    let mut taken = older.clone();
+    taken.user = thief.id;
+    taken.name = "Taken".to_owned();
+    assert_eq!(
+        DeviceRepo::upsert(store, &taken).await,
+        Err(StoreError::Duplicate)
+    );
+    assert_eq!(
+        DeviceRepo::get(store, older.id).await.expect("get"),
+        Some(older.clone())
+    );
+
     assert_eq!(
         DeviceRepo::get(store, older.id).await.expect("get"),
         Some(older.clone())

@@ -6,7 +6,8 @@ use crate::store::SqlStore;
 use crate::tables::{devices, refresh_tokens};
 use kemlock_app::ports::{DeviceRepo, StoreError};
 use kemlock_domain::{Device, DeviceId, UserId};
-use sea_orm::sea_query::{Expr, OnConflict};
+use sea_orm::ActiveValue::NotSet;
+use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, TransactionTrait};
 use time::OffsetDateTime;
 
@@ -20,28 +21,47 @@ impl DeviceRepo for SqlStore {
             .transpose()
     }
 
+    /// Inserts the device, or updates it when the id is the same account's. An id that is another
+    /// account's is `Duplicate`, however the two requests raced: the update names the account, so
+    /// a device is never moved between accounts (the use case checks the owner first, but reads and
+    /// writes are separate statements).
     async fn upsert(&self, device: &Device) -> Result<(), StoreError> {
-        let conflict = OnConflict::column(devices::Column::Id)
-            .update_columns([
-                devices::Column::UserId,
-                devices::Column::Name,
-                devices::Column::Kind,
-                devices::Column::DpopJkt,
-                devices::Column::CreatedAt,
-                devices::Column::LastSeenAt,
-            ])
-            .to_owned();
-        let inserted = devices::Entity::insert(devices::active(device))
-            .on_conflict(conflict)
-            .exec(self.writer())
-            .await;
-        match inserted {
-            Ok(_) => Ok(()),
-            // MySQL counts a replaced row with identical values as zero rows affected.
-            Err(sea_orm::DbErr::RecordNotInserted) => Ok(()),
-            Err(err) if is_unique_violation(&err) => Err(StoreError::Duplicate),
-            Err(err) => Err(map_db(err)),
+        // A few rounds, for a row that is deleted between the insert and the update.
+        for _ in 0..3 {
+            match devices::Entity::insert(devices::active(device))
+                .exec(self.writer())
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(err) if is_unique_violation(&err) => {}
+                Err(err) => return Err(map_db(err)),
+            }
+            let updated = devices::Entity::update_many()
+                .set(devices::ActiveModel {
+                    id: NotSet,
+                    user_id: NotSet,
+                    ..devices::active(device)
+                })
+                .filter(devices::Column::Id.eq(device.id.0))
+                .filter(devices::Column::UserId.eq(device.user.0))
+                .exec(self.writer())
+                .await
+                .store()?;
+            if updated.rows_affected > 0 {
+                return Ok(());
+            }
+            // MySQL counts a row written with the values it had as not affected.
+            match devices::Entity::find_by_id(device.id.0)
+                .one(self.writer())
+                .await
+                .store()?
+            {
+                Some(row) if row.user_id == device.user.0 => return Ok(()),
+                Some(_) => return Err(StoreError::Duplicate),
+                None => {}
+            }
         }
+        Err(StoreError::Duplicate)
     }
 
     async fn touch_seen(
