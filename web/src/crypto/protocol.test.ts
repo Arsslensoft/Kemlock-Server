@@ -785,7 +785,22 @@ describe('the dispatcher', () => {
       },
     ]);
     expect(json).toBe('{"name":"vpn"}');
-    expect(vault.openSpaceItem).toHaveBeenCalledWith(UUID, UUID, UUID, 'login', 3n, 'c2k', 'a2s', 2);
+    expect(vault.openSpaceItem).toHaveBeenCalledWith(UUID, UUID, UUID, 'login', 3n, 'c2k', 'a2s', 2, undefined);
+    // A revision not known to be accepted is passed on as such, so a marked key holds it.
+    await dispatch('openSpaceItem', [
+      {
+        spaceId: UUID,
+        collectionId: UUID,
+        id: UUID,
+        kind: 'login',
+        revision: 4,
+        keyVersion: 2,
+        ciphertext: 'c2k',
+        itemKey: 'a2s',
+        accepted: false,
+      },
+    ]);
+    expect(vault.openSpaceItem).toHaveBeenLastCalledWith(UUID, UUID, UUID, 'login', 4n, 'c2k', 'a2s', 2, false);
   });
 
   it('signs and checks manifests in the module, with the manifest and signature as they are', async () => {

@@ -88,6 +88,12 @@ export interface SpaceSigner {
    * server to a bundle it made up.
    */
   vouched?: boolean;
+  /**
+   * Whether the signer it last answered for in `space` was a member or had been taken out. A write
+   * signed by a member taken out counts only up to what this browser accepted before their removal
+   * (`writes.ts`, `vault.ts`). Left out, every signer is a member.
+   */
+  standing?: (space: string, signer: string) => 'member' | 'removed' | undefined;
 }
 
 export interface KeeperDeps {
@@ -526,7 +532,7 @@ export function createManifestKeeper(deps: KeeperDeps) {
       anomalies.set(`${dto.owner}|${dto.id}`, {
         owner: dto.owner,
         id: dto.id,
-        verdict: verdict === 'invalid' ? 'forged' : 'unsigned',
+        verdict: verdict === 'invalid' ? 'forged' : verdict === 'former' ? 'after-removal' : 'unsigned',
         revision: dto.revision,
       });
       publishWarning();

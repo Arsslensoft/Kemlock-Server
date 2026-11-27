@@ -174,6 +174,18 @@ describe('the signer of a space with a chain', () => {
     expect(await run.signer(SPACE, SIGNER)).toBeNull();
   });
 
+  it('says whether the signer it answered for was taken out, for a write that counts only up to what was accepted', async () => {
+    const former = { former: true };
+    const gone = await setup([member(SIGNER, 'revoked')], { pin: [SIGNER] });
+    await gone.signer(SPACE, SIGNER, former);
+    expect(gone.signer.standing?.(SPACE, SIGNER)).toBe('removed');
+    const here = await setup([member(SIGNER, 'confirmed', bundleOf(SIGNER), 'owner')], { pin: [SIGNER] });
+    await here.signer(SPACE, SIGNER, former);
+    expect(here.signer.standing?.(SPACE, SIGNER)).toBe('member');
+    // Nothing said of a signer it was not asked about.
+    expect(here.signer.standing?.(SPACE, ME)).toBeUndefined();
+  });
+
   it('holds this account to the bundle its own keys make', async () => {
     const trust = chained([confirmed(ME)], {
       grants: [{ collection: 'c1', grantee: `user:${ME}`, permission: 'manage' }],
@@ -223,6 +235,18 @@ describe('the signer of a space with no chain', () => {
     expect(await (await setup([accepted], { pin: [SIGNER] })).signer(SPACE, SIGNER, former)).toBeNull();
     // Keys nobody confirmed that this browser can trace are not vouched, taken out or not.
     expect(await (await setup([gone])).signer(SPACE, SIGNER, former)).toBeNull();
+  });
+
+  it('says whether the signer it answered for was taken out, for a write that counts only up to what was accepted', async () => {
+    const former = { former: true };
+    const gone = await setup([member(SIGNER, 'revoked')], { pin: [SIGNER] });
+    await gone.signer(SPACE, SIGNER, former);
+    expect(gone.signer.standing?.(SPACE, SIGNER)).toBe('removed');
+    const here = await setup([member(SIGNER, 'confirmed', bundleOf(SIGNER), 'owner')], { pin: [SIGNER] });
+    await here.signer(SPACE, SIGNER, former);
+    expect(here.signer.standing?.(SPACE, SIGNER)).toBe('member');
+    // Nothing said of a signer it was not asked about.
+    expect(here.signer.standing?.(SPACE, ME)).toBeUndefined();
   });
 
   it('holds this account to the bundle its own keys make', async () => {

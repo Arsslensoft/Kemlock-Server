@@ -69,7 +69,9 @@ export type FlaggedVerdict =
   /** A revision whose write signature fails: never taken in. */
   | 'forged'
   /** A newer revision, without a signature, of an item of an owner whose writes are signed. */
-  | 'unsigned';
+  | 'unsigned'
+  /** A revision signed by a member the space has taken out, above what was accepted before: never taken in. */
+  | 'after-removal';
 
 export interface Finding {
   id: string;

@@ -248,3 +248,78 @@ describe('an unsigned revision of an item this browser saw signed', () => {
     expect(second.rejected).toHaveBeenCalledWith(expect.objectContaining({ id: A, revision: 2 }), 'unsigned');
   });
 });
+
+describe('a revision signed by a member the space has taken out', () => {
+  /** A vault whose write checker says every revision is a former member's. */
+  function formerSetup(options: { floor?: Record<string, number>; manifestRevisions?: Record<string, number> } = {}) {
+    const store = new VaultStore();
+    const pages: ItemDto[][] = [];
+    const rejected = vi.fn();
+    const served = vi.fn();
+    const floors = memoryFloorStore();
+    const deps: VaultDeps = {
+      api: {
+        putItem: vi.fn(),
+        putBatch: vi.fn(),
+        async sync(): Promise<SyncResult> {
+          return { notModified: false, page: { items: pages.shift() ?? [], cursor: 'c', more: false } };
+        },
+      },
+      crypto,
+      writes: { beginSync: () => undefined, verdict: async () => 'former' as const },
+      rejected,
+      served,
+      floors: {
+        load: async (owner: string) => ({ ...(options.floor ?? {}), ...(await floors.load(ACCOUNT, owner)) }),
+        save: (owner: string, floor: Record<string, number>) => floors.save(ACCOUNT, owner, floor),
+      },
+      acceptedManifest: async (owner) => ({
+        owner,
+        counter: 1,
+        entries: Object.entries(options.manifestRevisions ?? {}).map(([id, revision]) => ({
+          id,
+          revision,
+          hash: '0'.repeat(64),
+          deleted: false,
+        })),
+      }),
+    };
+    const sync = async (...next: ItemDto[]) => {
+      pages.push(next);
+      await syncVault(deps, store);
+    };
+    return { store, sync, rejected, served, floors };
+  }
+
+  it('is not taken in above the floor, raises nothing, and is shown', async () => {
+    const { store, sync, rejected, floors } = formerSetup({ floor: { [A]: 3 } });
+    await sync(await sealed(A, 4));
+    expect(store.items.has(A)).toBe(false);
+    expect(rejected).toHaveBeenCalledWith(expect.objectContaining({ id: A, revision: 4 }), 'former');
+    expect(await floors.load(ACCOUNT, OWN)).toEqual({});
+  });
+
+  it('is taken in at or below the floor, and raises nothing', async () => {
+    const { store, sync, rejected, floors } = formerSetup({ floor: { [A]: 3 } });
+    await sync(await sealed(A, 3));
+    expect(store.items.get(A)?.revision).toBe(3);
+    expect(rejected).not.toHaveBeenCalled();
+    expect(await floors.load(ACCOUNT, OWN)).toEqual({});
+  });
+
+  it('is taken in at or below the accepted manifest’s entry, on a browser with no floor', async () => {
+    const { store, sync, rejected } = formerSetup({ manifestRevisions: { [A]: 2 } });
+    await sync(await sealed(A, 2));
+    expect(store.items.get(A)?.revision).toBe(2);
+    await sync(await sealed(A, 3));
+    expect(store.items.get(A)?.revision).toBe(2);
+    expect(rejected).toHaveBeenCalledWith(expect.objectContaining({ id: A, revision: 3 }), 'former');
+  });
+
+  it('is not taken in for an item neither the floor nor the manifest knows', async () => {
+    const { store, sync, rejected } = formerSetup();
+    await sync(await sealed(B, 1));
+    expect(store.items.has(B)).toBe(false);
+    expect(rejected).toHaveBeenCalledWith(expect.objectContaining({ id: B }), 'former');
+  });
+});

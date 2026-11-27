@@ -171,12 +171,16 @@ impl SpaceKeys {
 
     /// Whether an item of `collection` may be opened under `version`: for a chained space, the
     /// collection is one the chain has, at a key version it has made. A marked key doesn't hide
-    /// what was accepted before it was marked.
+    /// what was accepted before it was marked (`accepted`: the caller knows this revision is at or
+    /// below what this browser accepted before, by its signed floor or the accepted manifest), but a
+    /// revision that is not known to be one is held, not opened: after the mark, a member taken out
+    /// still holds the key and could have written it.
     fn allow_item_open(
         &self,
         space: &[u8; 16],
         collection: &[u8; 16],
         version: u32,
+        accepted: bool,
     ) -> Result<(), Error> {
         if self.refused.contains(space) {
             return Err(Error::Invalid);
@@ -188,7 +192,8 @@ impl SpaceKeys {
             return Err(Error::Invalid);
         }
         match check_item_revision(&held.state, collection, version) {
-            Ok(()) | Err(ItemRefusal::KeyMarked) => Ok(()),
+            Ok(()) => Ok(()),
+            Err(ItemRefusal::KeyMarked) if accepted => Ok(()),
             Err(_) => Err(Error::Invalid),
         }
     }
@@ -709,12 +714,26 @@ impl Session {
         })
     }
 
-    /// Opens an item of a space's collection with the collection key of the version it says.
+    /// Opens an item of a space's collection with the collection key of the version it says, as one
+    /// this browser accepted before (a marked key doesn't hide it): the way an unlock reopens what
+    /// it already holds, and the way a key replacement reads the items it seals again.
     pub(crate) fn open_space_item(
         &self,
         space: &[u8; 16],
         collection: &[u8; 16],
         item: &SealedItemRef<'_>,
+    ) -> Result<Zeroizing<Vec<u8>>, Error> {
+        self.open_space_item_as(space, collection, item, true)
+    }
+
+    /// As [`Session::open_space_item`], saying whether the revision is one this browser accepted
+    /// before the key was marked. When it is not, an item under a marked key is held, not opened.
+    pub(crate) fn open_space_item_as(
+        &self,
+        space: &[u8; 16],
+        collection: &[u8; 16],
+        item: &SealedItemRef<'_>,
+        accepted: bool,
     ) -> Result<Zeroizing<Vec<u8>>, Error> {
         if *item.owner != Owner::space(*space) {
             return Err(Error::Invalid);
@@ -723,7 +742,7 @@ impl Session {
         let version = item.key_version.ok_or(Error::Invalid)?;
         unlocked
             .spaces
-            .allow_item_open(space, collection, version)?;
+            .allow_item_open(space, collection, version, accepted)?;
         let wrap = unlocked
             .spaces
             .collection(space, collection, version)?

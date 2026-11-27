@@ -28,7 +28,13 @@ import { parseBundle } from '@/sharing/bundle';
 import type { BundleHistory } from './bundleHistory';
 import type { SpaceSigner } from './keeper';
 
-export type WriteVerdict = 'signed' | 'unsigned' | 'invalid' | 'unknown';
+/**
+ * `former`: the signature verifies, and its writer is a member the space has taken out. What they
+ * wrote while they were a member counts, but a revision above what this browser accepted before
+ * (its signed floor, the accepted manifest) may have been made after, by whoever holds their key,
+ * so the vault takes in no such revision (`vault.ts`).
+ */
+export type WriteVerdict = 'signed' | 'former' | 'unsigned' | 'invalid' | 'unknown';
 
 export interface WriteCheckerDeps {
   crypto: Pick<CryptoPort, 'itemWriteVerifyOwn' | 'itemWriteVerify' | 'ownKeyVersion'>;
@@ -125,7 +131,8 @@ export function createWriteChecker(deps: WriteCheckerDeps): WriteChecker {
           if (!past) return 'unknown';
           signer = past;
         }
-        return (await deps.crypto.itemWriteVerify(signer, fields, writeSignature)) ? 'signed' : 'invalid';
+        if (!(await deps.crypto.itemWriteVerify(signer, fields, writeSignature))) return 'invalid';
+        return deps.spaceSigner.standing?.(space, writer) === 'removed' ? 'former' : 'signed';
       } catch {
         // The worker is locked, or the member list could not be reached: no verdict.
         return 'unknown';

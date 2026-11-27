@@ -30,6 +30,7 @@ export function ManifestNoticeView({ warning }: { warning: ManifestWarning }) {
   const implausible = count('implausible');
   const forged = count('forged');
   const unsigned = count('unsigned');
+  const afterRemoval = count('after-removal');
   return (
     <Notice tone="warn" live>
       {mismatch ? (
@@ -48,6 +49,7 @@ export function ManifestNoticeView({ warning }: { warning: ManifestWarning }) {
       {implausible > 0 ? <p>{t('manifest.notice.implausible', { count: implausible })}</p> : null}
       {forged > 0 ? <p>{t('manifest.notice.forged', { count: forged })}</p> : null}
       {unsigned > 0 ? <p>{t('manifest.notice.unsigned', { count: unsigned })}</p> : null}
+      {afterRemoval > 0 ? <p>{t('manifest.notice.afterRemoval', { count: afterRemoval })}</p> : null}
       {mismatch ? <p className="hint">{t('manifest.notice.hint')}</p> : null}
     </Notice>
   );

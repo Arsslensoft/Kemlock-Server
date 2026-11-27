@@ -2322,6 +2322,15 @@ made as a chain wherever the client can build one.
   - after it verifies a record that marks `c` or the space key, it accepts no revision in `c` newer
     than the ones it already accepted, until the `keys` record that replaces the marked key;
   - an item that names a deleted or unknown collection is refused.
+  - **What a member taken out counts for.** A write whose signature verifies under a member the
+    space has taken out is theirs, but only for what they wrote while they were a member. A client
+    takes in such a revision only at or below the highest revision of that item it accepted before
+    (its **signed floor**, and the entry of the latest manifest it accepted), never above it, and it
+    raises the floor by none. The server can serve a revision a removed member's key makes after the
+    removal, and without this it would pass as signed, raise the floor and replace items with stubs
+    nobody can open. A revision under a marked key opens only on the same footing: the worker opens an
+    item of a marked collection (or of a space whose key is marked) only when the page says it is one
+    accepted before the mark (`accepted` of `openSpaceItem`); any other is held, not opened.
 
   Refused revisions are held and shown, as unlisted items are. The member who replaces `c`'s key
   writes again only the items it accepted and the latest manifest lists, under the new version, and

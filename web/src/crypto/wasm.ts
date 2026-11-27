@@ -161,6 +161,7 @@ export interface WasmVault {
     ciphertext: string,
     itemKey: string,
     keyVersion: number,
+    accepted?: boolean,
   ): string;
   newSpace(spaceId: string, collectionId: string, spaceName: string, collectionName: string): string;
   openSpace(spaceId: string, keyVersion: number, sealed: string, unsigned?: boolean): void;

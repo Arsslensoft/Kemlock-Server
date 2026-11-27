@@ -118,6 +118,12 @@ export interface OpenSpaceItemInput {
   keyVersion: number;
   ciphertext: Uint8Array;
   itemKey: Uint8Array;
+  /**
+   * Whether this revision is one this browser accepted before the key was marked (at or below its
+   * signed floor or the accepted manifest). An item under a marked key that is not is held, not
+   * opened. Left out, it is taken as accepted.
+   */
+  accepted?: boolean;
 }
 
 /** A new device's one-time key for an approval request. */

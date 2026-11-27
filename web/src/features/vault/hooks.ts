@@ -46,6 +46,9 @@ const deps: VaultDeps = {
   crypto: vaultCrypto,
   ensureSpaceKeys: spaceKeys.ensure,
   writes: writeChecker,
+  // What a member taken out of a space could still sign, and what opens under a marked key, is held
+  // to the last manifest this browser accepted.
+  acceptedManifest: (owner) => manifestKeeper.acceptedManifest(owner),
   // What this browser has seen signed is kept across reloads, sealed by the worker.
   floors: {
     load: async (owner) => {

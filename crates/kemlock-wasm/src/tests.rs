@@ -3109,6 +3109,36 @@ fn marked_keys_are_replaced_with_their_names_and_items_sealed_again() {
     let view = verdict_json(&mut owner, &space, &chain);
     assert_eq!(view["space"]["marked"], true);
 
+    // While the keys are marked an item opens only when it is one this browser accepted before the
+    // mark (`accepted`): a revision that is not is held, not opened, because the member who was taken
+    // out still holds the key and could have made it.
+    {
+        let owner_ref = Owner::space(space);
+        let held = SealedItemRef {
+            id: &item,
+            owner: &owner_ref,
+            kind: "login",
+            revision: 1,
+            ciphertext: &sealed.ciphertext,
+            item_key: &sealed.item_key,
+            key_version: Some(sealed.key_version),
+        };
+        assert_eq!(
+            owner
+                .open_space_item_as(&space, &general, &held, true)
+                .expect("accepted before the mark: it opens")
+                .as_slice(),
+            br#"{"name":"vpn"}"#
+        );
+        assert_eq!(
+            owner.open_space_item_as(&space, &general, &held, false),
+            Err(Error::Invalid)
+        );
+        // The way the page reads what it already holds, and a key replacement reads items to seal
+        // again, is as accepted.
+        assert!(owner.open_space_item(&space, &general, &held).is_ok());
+    }
+
     // An item that doesn't open, beside the one sealed above.
     let junk = [0xC6u8; 16];
     let served = |target: &str| {

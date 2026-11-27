@@ -1062,7 +1062,9 @@ impl Vault {
         })
     }
 
-    /// Opens an item of a space's collection and returns its JSON. `key_version` is the
+    /// Opens an item of a space's collection and returns its JSON. `accepted` says the revision is one
+    /// this browser accepted before its key was marked (default true): without it an item under a
+    /// marked key is held, not opened. `key_version` is the
     /// collection key version the item says.
     #[wasm_bindgen(js_name = openSpaceItem)]
     #[allow(clippy::too_many_arguments)]
@@ -1076,6 +1078,7 @@ impl Vault {
         ciphertext: &str,
         item_key: &str,
         key_version: u32,
+        accepted: Option<bool>,
     ) -> Result<String, JsError> {
         let space = ids::parse_uuid(space_id).map_err(fail)?;
         let collection = ids::parse_uuid(collection_id).map_err(fail)?;
@@ -1085,7 +1088,7 @@ impl Vault {
         let owner = kemlock_crypto::owner::Owner::space(space);
         let plain = self
             .session
-            .open_space_item(
+            .open_space_item_as(
                 &space,
                 &collection,
                 &SealedItemRef {
@@ -1097,6 +1100,7 @@ impl Vault {
                     item_key: &item_key,
                     key_version: Some(key_version),
                 },
+                accepted.unwrap_or(true),
             )
             .map_err(fail)?;
         String::from_utf8(plain.to_vec()).map_err(|_| fail(Error::Invalid))

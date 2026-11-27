@@ -549,7 +549,7 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
       );
     },
     async openSpaceItem(input) {
-      const { spaceId, collectionId, id, kind, revision, ciphertext, itemKey, keyVersion } = input;
+      const { spaceId, collectionId, id, kind, revision, ciphertext, itemKey, keyVersion, accepted } = input;
       return (await current()).openSpaceItem(
         spaceId,
         collectionId,
@@ -559,6 +559,7 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
         ciphertext,
         itemKey,
         toKeyVersion(keyVersion),
+        accepted,
       );
     },
     async manifestSign(manifest) {
