@@ -125,8 +125,10 @@ pub(crate) fn reconcile(doc: &MemberDoc, row: &Member) -> MemberDoc {
         MemberState::Revoked => held,
         MemberState::Invited => INVITED,
         MemberState::Accepted => ACCEPTED,
-        // The row has no Bitwarden key to give: a member only it confirmed waits for one.
-        MemberState::Confirmed if held == INVITED => ACCEPTED,
+        // A member the row confirmed while the Bitwarden side still has them invited has not
+        // accepted there: the invitee's own acceptance is what a Bitwarden member needs, so they stay
+        // invited, and an administrator is not made to look as if they had accepted. (A member who
+        // accepted holds ACCEPTED or CONFIRMED already, and the row's state adds nothing.)
         MemberState::Confirmed => held,
     };
     out.status = if row.state == MemberState::Revoked {
@@ -661,7 +663,7 @@ mod tests {
             ),
         );
         assert_eq!(accepted.status, ACCEPTED);
-        // A row that confirmed them gives no Bitwarden key, so they still wait for one.
+        // A row that confirmed them does not make them accepted: they have not accepted here.
         let confirmed = reconcile(
             &invited,
             &row(
@@ -670,7 +672,8 @@ mod tests {
                 MemberState::Confirmed,
             ),
         );
-        assert_eq!(confirmed.status, ACCEPTED);
+        assert_eq!(confirmed.status, INVITED);
+        assert!(confirmed.akey.is_empty());
         // A row invited again after a removal is not the old confirmed membership.
         let again = reconcile(
             &doc(USER, false, CONFIRMED),
