@@ -48,13 +48,27 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+          # The whole history of every branch, so the tag check below can ask whether the tagged
+          # commit is on the default branch.
+          fetch-depth: 0
       - id: plan
         env:
           DOCKERHUB_IMAGE: ${{ vars.DOCKERHUB_IMAGE }}
           QUAY_IMAGE: ${{ vars.QUAY_IMAGE }}
           FIPS: ${{ vars.KEMLOCK_FIPS_IMAGE }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
+          # A release comes only from a commit that went through the default branch's pull request
+          # rules. Every other job needs this one, so a tag on any other commit builds, signs and
+          # publishes nothing. (tools/repo-settings.sh also protects the tags themselves.)
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            git fetch --no-tags origin "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
+            if ! git merge-base --is-ancestor "$GITHUB_SHA" "refs/remotes/origin/$DEFAULT_BRANCH"; then
+              echo "::error::Tag $GITHUB_REF_NAME ($GITHUB_SHA) is not on $DEFAULT_BRANCH; refusing to release it"
+              exit 1
+            fi
+          fi
           images="$GHCR_IMAGE"
           [ -z "$DOCKERHUB_IMAGE" ] || images="$images"$'\n'"$DOCKERHUB_IMAGE"
           [ -z "$QUAY_IMAGE" ] || images="$images"$'\n'"$QUAY_IMAGE"

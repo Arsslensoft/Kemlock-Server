@@ -19,6 +19,8 @@
 #      auto-merge workflow needs that);
 #   4. a ruleset on the default branch: pull request, approval, the required checks `ci-ok` and
 #      `DCO`, linear history, no force push, no deletion;
+#   4b. a ruleset on version tags (v1.2.3 and 1.2.3): only admins may create, move or delete one,
+#      so a write token cannot cut a signed release from any commit;
 #   5. the labels .github/labeler.yml and dependabot.yml use.
 #
 # The ruleset lets repository admins bypass it through a pull request only (never by pushing to
@@ -37,7 +39,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) dry=1; shift ;;
     --repo) repo="${2:?--repo needs owner/name}"; shift 2 ;;
-    -h|--help) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "repo-settings: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -169,6 +171,42 @@ else
   printf '%s' "$ruleset" | api POST "repos/$repo/rulesets" && ok created || warn "ruleset creation"
 fi
 echo "    (checks: ci-ok, DCO; approvals: $approvals; signed commits: $([ "$signed" = 1 ] && echo required || echo optional))"
+
+# --- 4b. The ruleset on release tags -----------------------------------------------------------
+# release.yml publishes a signed image on any version tag. Without this, anyone with write access
+# can push a tag on any commit (even an unreviewed branch) and cut a release. Only repository
+# admins (role 5) may create, move or delete a version tag; release.yml also refuses a tag that is
+# not on the default branch.
+step "Ruleset \"release-tags\" on version tags"
+tag_ruleset="$(cat <<'JSON'
+{
+  "name": "release-tags",
+  "target": "tag",
+  "enforcement": "active",
+  "conditions": { "ref_name": { "include": ["refs/tags/v[0-9]*", "refs/tags/[0-9]*"], "exclude": [] } },
+  "bypass_actors": [
+    { "actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always" }
+  ],
+  "rules": [
+    { "type": "creation" },
+    { "type": "update" },
+    { "type": "deletion" },
+    { "type": "non_fast_forward" }
+  ]
+}
+JSON
+)"
+tag_existing=""
+if [ "$dry" = 0 ]; then
+  tag_existing="$(gh api "repos/$repo/rulesets" --jq '.[] | select(.name == "release-tags") | .id' | head -n 1)"
+fi
+if [ -n "$tag_existing" ]; then
+  echo "    updating ruleset $tag_existing"
+  printf '%s' "$tag_ruleset" | api PUT "repos/$repo/rulesets/$tag_existing" && ok updated || warn "tag ruleset update"
+else
+  echo "    creating the ruleset"
+  printf '%s' "$tag_ruleset" | api POST "repos/$repo/rulesets" && ok created || warn "tag ruleset creation"
+fi
 
 # --- 5. Labels ---------------------------------------------------------------------------------
 step "Labels used by .github/labeler.yml and .github/dependabot.yml"
