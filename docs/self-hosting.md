@@ -488,13 +488,17 @@ WebSocket through it. Kemlock serves the API, the web vault and both WebSocket r
   `upstream` block defaults to 60 seconds; if you raise those past 125 seconds, a request can be
   sent down a connection that is closing and fail with a 502). One client address may hold
   `KEMLOCK_MAX_CONNECTIONS_PER_IP` connections at once (default 64, `max_connections_per_ip` in
-  `kemlock.toml`, 0 for no limit; an IPv6 address counts by its /64), and further connections from
+  `kemlock.toml`, 0 for no limit; an IPv6 address counts by its /56), and further connections from
   it are closed. The addresses in `KEMLOCK_TRUSTED_PROXIES` are exempt, because behind a proxy
   every connection comes from the proxy. `KEMLOCK_MAX_CONNECTIONS` caps all connections together
-  (default 0, no limit): further clients wait in the operating system's queue until one ends, so
-  one client can fill it, which is why the per-address limit is the one on by default. Both count
-  WebSockets for as long as their socket is open. Raise the open-file limit with them
-  (`LimitNOFILE` in systemd, `--ulimit nofile` in Docker).
+  (default 4096, and never more than three quarters of the open-file limit the server runs under,
+  read at start from `/proc/self/limits`; 0 for no limit): further clients wait in the operating
+  system's queue until one ends, so a client that holds many connections can fill it, which is why
+  the per-address limit is there too. Both count WebSockets for as long as their socket is open.
+  Raise the open-file limit if you raise them (`LimitNOFILE` in systemd, `--ulimit nofile` in
+  Docker). An HTTP/2 connection is pinged every 30 seconds and dropped when the peer doesn't
+  answer within 20, is held to 100 streams and 32 KiB of request headers, and is ended gracefully
+  once it has had no request in flight for 125 seconds.
 - IPv6. Kemlock listens dual-stack on `[::]` by default. Rate limits count an IPv6 client by its
   /56 (the failed-password limit per account counts by /64), so a host that rotates through the
   /64s of its site shares one count.

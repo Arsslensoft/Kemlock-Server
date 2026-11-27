@@ -38,13 +38,15 @@ pub const IGNORED_VAULTWARDEN_VARS: &[&str] = &[
     "LOG_FILE",
 ];
 
-/// How many connections the server holds at once unless `KEMLOCK_MAX_CONNECTIONS` says otherwise:
-/// no limit. A cap on all clients lets one of them fill it, so the limit that is on by default is
-/// the one for each address.
-pub const DEFAULT_MAX_CONNECTIONS: usize = 0;
+/// How many connections the server holds at once unless `KEMLOCK_MAX_CONNECTIONS` says otherwise.
+/// Every connection takes a file descriptor, so a cap below the open-file limit keeps the server
+/// able to open its database and files when clients fill it; the listener lowers it further to
+/// three quarters of the limit it reads at start (see `listener::fd_budget`). Past it clients wait
+/// in the operating system's queue until a connection ends. 0 is no limit.
+pub const DEFAULT_MAX_CONNECTIONS: usize = 4096;
 
 /// How many connections one client address may hold at once unless
-/// `KEMLOCK_MAX_CONNECTIONS_PER_IP` says otherwise.
+/// `KEMLOCK_MAX_CONNECTIONS_PER_IP` says otherwise. An IPv6 address counts by its /56.
 pub const DEFAULT_MAX_CONNECTIONS_PER_IP: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -104,11 +106,11 @@ pub struct Config {
     /// seconds; 0 turns the probes off. Default 60. Failed probes back off up to ten minutes.
     pub federation_probe_seconds: u64,
     /// `KEMLOCK_MAX_CONNECTIONS`: how many connections the server holds at once, WebSockets
-    /// included; further ones wait in the operating system's queue until one ends. 0 (the default)
-    /// is no limit.
+    /// included; further ones wait in the operating system's queue until one ends. Default 4096,
+    /// and never more than three quarters of the open-file limit. 0 is no limit.
     pub max_connections: usize,
     /// `KEMLOCK_MAX_CONNECTIONS_PER_IP`: how many connections one client address (an IPv6 one by
-    /// its /64) may hold at once; the addresses in `KEMLOCK_TRUSTED_PROXIES` are exempt. 0 is no
+    /// its /56) may hold at once; the addresses in `KEMLOCK_TRUSTED_PROXIES` are exempt. 0 is no
     /// limit. Default 64.
     pub max_connections_per_ip: usize,
     /// Vaultwarden settings that were set and are not used.
@@ -688,7 +690,7 @@ mod tests {
     }
 
     #[test]
-    fn the_total_of_connections_is_limited_only_when_the_operator_says_so() {
+    fn the_total_of_connections_has_a_default_and_the_operator_can_change_it() {
         let c = config(&[], None).expect("valid");
         assert_eq!(c.max_connections, DEFAULT_MAX_CONNECTIONS);
         let c = config(&[("KEMLOCK_MAX_CONNECTIONS", " 200 ")], None).expect("valid");
@@ -712,9 +714,9 @@ mod tests {
     }
 
     #[test]
-    fn each_address_is_limited_but_the_total_is_not_by_default() {
+    fn each_address_and_the_total_are_limited_by_default() {
         let c = config(&[], None).expect("valid");
-        assert_eq!(c.max_connections, 0);
+        assert_eq!(c.max_connections, 4096);
         assert_eq!(c.max_connections_per_ip, 64);
         let c = config(&[("KEMLOCK_MAX_CONNECTIONS_PER_IP", " 8 ")], None).expect("valid");
         assert_eq!(c.max_connections_per_ip, 8);
