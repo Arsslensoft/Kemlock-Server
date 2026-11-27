@@ -128,6 +128,16 @@ where
 /// How often an open socket checks that its session is still good.
 pub const RECHECK_EVERY: Duration = Duration::from_secs(60);
 
+/// The most a frame or message from the client may hold, in bytes. The socket expects nothing
+/// from the client but pings and a close, so a few KiB is far more than it needs, and a frame
+/// larger than that is refused before it is buffered (the default is 64 MiB).
+pub const MAX_CLIENT_MESSAGE_BYTES: usize = 4 * 1024;
+
+/// Whether a frame is only a ping or a pong: all a client may send besides a close.
+fn is_control(message: &Message) -> bool {
+    matches!(message, Message::Ping(_) | Message::Pong(_))
+}
+
 /// How long a socket opened with a token that expires at `expires_at` (Unix seconds) may stay
 /// open at `now`; zero when the token is already past it.
 pub fn until_expiry(expires_at: i64, now: i64) -> Duration {
@@ -135,8 +145,8 @@ pub fn until_expiry(expires_at: i64, now: i64) -> Duration {
 }
 
 /// Serves one socket until either side closes, the session ends or the token that opened it
-/// expires: forwards the nudges of any of `owners`, ignores what the client sends except for
-/// closing.
+/// expires: forwards the nudges of any of `owners`, ignores pings and pongs and ends on a close
+/// or on any other frame the client sends.
 ///
 /// A socket outlives the request that opened it, so the request's authentication has to be
 /// enforced for as long as it is open. It closes at `lifetime` (the access token's remaining
@@ -189,7 +199,9 @@ pub async fn serve_socket<F, Fut, G, Own>(
             incoming = socket.recv() => {
                 match incoming {
                     None | Some(Err(_) | Ok(Message::Close(_))) => break,
-                    Some(Ok(_)) => {}
+                    Some(Ok(message)) if is_control(&message) => {}
+                    // The socket only ever sends: a client that sends data is not one of ours.
+                    Some(Ok(_)) => break,
                 }
             }
         }
@@ -229,6 +241,15 @@ mod tests {
         assert_eq!(until_expiry(i64::MIN, i64::MAX), Duration::ZERO);
     }
 
+
+    #[test]
+    fn a_client_may_send_pings_and_pongs_and_nothing_else() {
+        assert!(is_control(&Message::Ping(Vec::<u8>::new().into())));
+        assert!(is_control(&Message::Pong(Vec::<u8>::new().into())));
+        assert!(!is_control(&Message::Text("x".into())));
+        assert!(!is_control(&Message::Binary(vec![1].into())));
+        assert!(!is_control(&Message::Close(None)));
+    }
     #[tokio::test]
     async fn a_removed_members_space_stops_nudging_their_socket_at_the_next_check() {
         let user = Owner::User(UserId::random());

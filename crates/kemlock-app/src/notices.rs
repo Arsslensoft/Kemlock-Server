@@ -55,7 +55,8 @@ pub struct TwoStepRecoveredNotice {
 pub struct TwoStepChangedNotice {
     pub to: Email,
     pub at: OffsetDateTime,
-    /// `email`, `yubikey`, `duo` or `security-key`.
+    /// `email`, `yubikey`, `duo`, `totp` or `security-key`; or `passkey`, which is a way in beside
+    /// the password and not a second step.
     pub method: &'static str,
     /// Turned on (true) or off (false).
     pub on: bool,

@@ -87,7 +87,7 @@ impl core::fmt::Display for PieceProblem {
 impl std::error::Error for PieceProblem {}
 
 /// One piece of a Recovery Kit, read from its text.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct KitPiece {
     /// Ties the pieces of one kit together: 8 base32 characters.
     pub kit_id: String,
@@ -99,6 +99,19 @@ pub struct KitPiece {
     pub index: u8,
     /// This piece's share of the kit key, wiped when the piece is dropped.
     pub y: Zeroizing<[u8; KIT_KEY_LEN]>,
+}
+
+/// Never prints the share: a piece's text is a secret that opens the kit with the others, and a
+/// `{:?}` in a log or a failed assertion is how one would leak.
+impl core::fmt::Debug for KitPiece {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("KitPiece")
+            .field("kit_id", &self.kit_id)
+            .field("threshold", &self.threshold)
+            .field("shares", &self.shares)
+            .field("index", &self.index)
+            .finish_non_exhaustive()
+    }
 }
 
 // ---- GF(2^8), the AES field (x^8 + x^4 + x^3 + x + 1), generator 3 ----

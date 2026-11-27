@@ -141,6 +141,30 @@ describe('a sign-out the server did not answer', () => {
     }
   });
 
+  it('stops when the person signs in again', async () => {
+    vi.useFakeTimers();
+    const fetched = vi.fn(async (_url: string, _init?: RequestInit) => new Response(null, { status: 204 }));
+    vi.stubGlobal('fetch', fetched);
+    const send = vi.spyOn(api, 'send').mockImplementation(() => new Promise<void>(() => undefined));
+    try {
+      session.signedIn({ email: 'sam@example.co', userId: 'u', deviceId: 'device-1', admin: false });
+      session.tokenStore.set(held());
+      const done = signOut();
+      await vi.advanceTimersByTimeAsync(SERVER_SIGN_OUT_MS);
+      await done;
+      expect(session.getState().status).toBe('signed-out');
+      // A new sign-in before the first retry: the old session is not ended from here.
+      session.signedIn({ email: 'sam@example.co', userId: 'u', deviceId: 'device-1', admin: false });
+      await vi.advanceTimersByTimeAsync(REVOKE_RETRY_MS.reduce((a, b) => a + b, 0));
+      expect(fetched).not.toHaveBeenCalled();
+    } finally {
+      session.end();
+      send.mockRestore();
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps trying after a failure, and stops at the server’s answer', async () => {
     vi.useFakeTimers();
     try {

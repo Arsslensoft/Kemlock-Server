@@ -575,6 +575,31 @@ async fn check_login_state_accepts_only_genuine_fresh_states() {
 }
 
 #[tokio::test]
+async fn check_login_state_for_wants_the_state_made_for_that_email() {
+    let (world, _user) = signed_in_world().await;
+    let (login_state, _) = login_messages(&world, EMAIL, &PASSWORD, "jkt-1")
+        .await
+        .expect("messages");
+    assert_eq!(
+        world.sign_in().check_login_state_for(&login_state, EMAIL),
+        Ok(())
+    );
+    // The email is compared as the sign-in name is: trimmed and lower-cased.
+    assert_eq!(
+        world
+            .sign_in()
+            .check_login_state_for(&login_state, " Sam@Example.org "),
+        Ok(())
+    );
+    assert!(matches!(
+        world
+            .sign_in()
+            .check_login_state_for(&login_state, "alex@example.org"),
+        Err(AppError::Invalid(_))
+    ));
+}
+
+#[tokio::test]
 async fn a_disabled_account_gets_no_session_with_the_right_password() {
     let (world, user) = signed_in_world().await;
     world.store.set_account_disabled(user, true);
@@ -788,4 +813,87 @@ async fn an_account_held_for_its_email_is_refused_once_the_password_checks_out()
     sign_in_with(&world, EMAIL, &PASSWORD, device("Pixel"), "jkt-1")
         .await
         .expect("signs in once confirmed");
+}
+
+#[tokio::test]
+async fn an_account_at_its_device_cap_refuses_a_new_device_but_not_a_known_one() {
+    use kemlock_app::ports::{Clock, DeviceRepo};
+    use kemlock_app::session::MAX_DEVICES_PER_ACCOUNT;
+    use kemlock_domain::{Device, DeviceId};
+    let (world, user) = signed_in_world().await;
+    let now = Clock::now(&world.env);
+    let first = DeviceId::random();
+    for n in 0..MAX_DEVICES_PER_ACCOUNT {
+        let id = if n == 0 { first } else { DeviceId::random() };
+        DeviceRepo::upsert(
+            &world.store,
+            &Device {
+                id,
+                user,
+                name: format!("Phone {n}"),
+                kind: DeviceKind::KemlockAndroid,
+                dpop_jkt: Some(format!("jkt-{n}")),
+                created_at: now,
+                last_seen_at: now,
+            },
+        )
+        .await
+        .expect("stored");
+    }
+
+    let refused = sign_in_with(&world, EMAIL, &PASSWORD, device("One too many"), "jkt-new")
+        .await
+        .map(|_| ());
+    assert!(
+        matches!(refused, Err(AppError::Invalid(text)) if text.contains("too many")),
+        "{refused:?}"
+    );
+    assert_eq!(world.store.devices_of(user).len(), MAX_DEVICES_PER_ACCOUNT);
+
+    // A device the account already has signs in again, with a new key.
+    let mut known = device("Phone 0");
+    known.id = Some(first);
+    sign_in_with(&world, EMAIL, &PASSWORD, known, "jkt-0-rotated")
+        .await
+        .expect("a known device is not a new one");
+}
+
+#[tokio::test]
+async fn every_second_step_finish_checks_the_policy_and_a_pending_erasure() {
+    use kemlock_app::sso::{SpaceMembership, SpaceRole};
+    use kemlock_domain::SpaceId;
+    let (world, user) = two_step_world().await;
+    let challenge = challenge_for(&world).await;
+    assert_eq!(world.sign_in().check_second_step_allowed(&challenge).await, Ok(()));
+
+    // A space turns Require SSO on after the password step: the second step is refused for
+    // whatever method answers it, not only for the authenticator app.
+    let space = SpaceId::random();
+    world.store.set_memberships(
+        user,
+        vec![SpaceMembership {
+            space,
+            role: SpaceRole::Member,
+            require_sso: true,
+        }],
+    );
+    assert_eq!(
+        world.sign_in().check_second_step_allowed(&challenge).await,
+        Err(AppError::SsoRequired { space })
+    );
+    world.store.set_memberships(user, Vec::new());
+    assert_eq!(world.sign_in().check_second_step_allowed(&challenge).await, Ok(()));
+
+    // A disabled account, and one waiting out its erasure, are refused too.
+    world.store.set_account_disabled(user, true);
+    assert_eq!(
+        world.sign_in().check_second_step_allowed(&challenge).await,
+        Err(AppError::AccountDisabled)
+    );
+    world.store.set_account_disabled(user, false);
+    // A challenge that is garbage is refused as one.
+    assert!(matches!(
+        world.sign_in().check_second_step_allowed(&[1, 2, 3]).await,
+        Err(AppError::Invalid(_))
+    ));
 }

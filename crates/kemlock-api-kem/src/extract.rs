@@ -3,7 +3,7 @@
 
 use crate::dpop::{DpopError, Pending};
 use crate::problem::{Problem, rate_limited};
-use crate::ratelimit::{client_ip, ip_key, joined_header};
+use crate::ratelimit::{Proxy, client_ip, ip_key, ip_key_48, joined_header};
 use crate::state::{Api, Crypto, Store};
 use axum::body::{Body as HttpBody, Bytes};
 use axum::extract::{ConnectInfo, FromRequest, FromRequestParts, Request};
@@ -99,11 +99,11 @@ const FORWARDING_HEADERS: [&str; 5] = [
 pub fn is_secure_connection(
     peer: IpAddr,
     headers: &HeaderMap,
-    trusted_proxies: &[IpAddr],
+    trusted_proxies: &[Proxy],
     ip_header: Option<&str>,
 ) -> bool {
     let peer = peer.to_canonical();
-    if trusted_proxies.iter().any(|p| p.to_canonical() == peer) {
+    if trusted_proxies.iter().any(|proxy| proxy.contains(peer)) {
         // The nearest proxy appends last, so the last value is the one a trusted proxy wrote.
         return headers
             .get_all("x-forwarded-proto")
@@ -240,7 +240,8 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> FromRequestParts<Api
             .proof
             .check(&ip_key(ip), api.now())
             .map_err(rate_limited)?;
-        let jkt = verify_proof(parts, api, None, Some(&ip_key(ip)))?;
+        // The open set's share is per /48, not per /56: a free /48 holds 256 of the /56s.
+        let jkt = verify_proof(parts, api, None, Some(&ip_key_48(ip)))?;
         Ok(Proof { jkt, ip })
     }
 }
@@ -300,6 +301,29 @@ pub struct Authed {
     pub security_stamp: Uuid,
 }
 
+/// How recent the sign-in behind a session must be for the changes that weaken an account's
+/// defences or open it to a new device (see [`Authed::require_fresh_sign_in`]).
+pub const FRESH_SIGN_IN_SECS: i64 = 15 * 60;
+
+impl Authed {
+    /// Whether the sign-in this session began with happened in the last [`FRESH_SIGN_IN_SECS`]. A
+    /// refresh keeps `auth_time`, so a session that has only ever been refreshed, such as a token
+    /// pair taken from a device, can read and sync but can't make these changes: the person signs
+    /// in again (the password, a passkey, SSO, or a device approval, each with its own second step)
+    /// and repeats the request. A 403 `reauth-required`.
+    pub fn require_fresh_sign_in(&self, now: i64) -> Result<(), Problem> {
+        if now.saturating_sub(self.auth_time) <= FRESH_SIGN_IN_SECS {
+            return Ok(());
+        }
+        Err(Problem::new(
+            StatusCode::FORBIDDEN,
+            "reauth-required",
+            "Sign in again to do this",
+        )
+        .detail("this change needs a sign-in from the last 15 minutes: sign in again, then repeat it"))
+    }
+}
+
 /// Marks a 401 as a refused token (RFC 9449, section 7.1); other problems pass unchanged.
 fn invalid_token(problem: Problem) -> Problem {
     if problem.status == StatusCode::UNAUTHORIZED {
@@ -345,12 +369,33 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> FromRequestParts<Api
             .device_proof
             .check(&format!("device:{}", claims.device.0), api.now())
             .map_err(rate_limited)?;
-        let jkt = verify_proof(parts, api, Some(token), None)?;
+        // The proof is checked now but remembered only once the session behind the token is
+        // found good, in the account's own share of the set: a token that is signed but refused
+        // takes no room, and no number of devices lets one account fill the set for everybody.
+        let proof = proof_header(parts, api)?;
+        let pending = api
+            .dpop
+            .verify_unrecorded_with(
+                proof,
+                parts.method.as_str(),
+                parts.uri.path(),
+                api.now(),
+                Some(token),
+            )
+            .map_err(|e| dpop_problem(api, e))?;
+        let jkt = pending.jkt.clone();
         let actor = api
             .authenticate()
             .execute(token, &jkt)
             .await
             .map_err(|e| invalid_token(Problem::from(e)))?;
+        api.dpop
+            .record_for_account(
+                &pending,
+                format!("user:{}", claims.user).as_bytes(),
+                api.now(),
+            )
+            .map_err(|e| dpop_problem(api, e))?;
         // The device used the API; the device list shows it beside the Bitwarden API's use.
         api.note_use(actor.device).await;
         Ok(Authed {
@@ -429,7 +474,7 @@ mod tests {
     #[test]
     fn a_trusted_proxy_says_which_scheme_the_client_used() {
         let proxy = ip("10.0.0.1");
-        let trusted = [proxy];
+        let trusted = [Proxy::from(proxy)];
         let check =
             |pairs: &[(&str, &str)]| is_secure_connection(proxy, &headers(pairs), &trusted, None);
         assert!(check(&[("x-forwarded-proto", "https")]));
@@ -447,7 +492,7 @@ mod tests {
         assert!(!is_secure_connection(
             ip("127.0.0.1"),
             &headers(&[("x-forwarded-proto", "http")]),
-            &[ip("127.0.0.1")],
+            &[Proxy::from(ip("127.0.0.1"))],
             None
         ));
         // And an IPv4 proxy matches its mapped form.
@@ -461,7 +506,7 @@ mod tests {
 
     #[test]
     fn only_a_trusted_proxy_is_believed() {
-        let trusted = [ip("10.0.0.1")];
+        let trusted = [Proxy::from(ip("10.0.0.1"))];
         let https = headers(&[("x-forwarded-proto", "https")]);
         assert!(!is_secure_connection(
             ip("10.0.0.2"),

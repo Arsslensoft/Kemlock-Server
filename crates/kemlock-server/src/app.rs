@@ -13,6 +13,7 @@ use crate::live::{self, Layered, SettingsWatch, SwitchMailer};
 use crate::migration::VaultwardenMove;
 use crate::notify;
 use crate::passkeys;
+use crate::security_headers;
 use crate::sends::{self, SendJobs};
 use crate::source;
 use crate::sso;
@@ -370,10 +371,10 @@ where
     )
     .map_err(RunError::Config)?;
     let router = Router::new()
-        .merge(health::router(HealthState {
-            store: store.clone(),
-            data_folder: config.data_folder.clone(),
-        }))
+        .merge(health::router(HealthState::new(
+            store.clone(),
+            config.data_folder.clone(),
+        )))
         // /LICENSE.txt, /NOTICE.txt and /THIRD-PARTY-NOTICES.txt, ahead of the web vault.
         .merge(source::router(source::third_party_paths()))
         .merge(kemlock_api_kem::router(api.clone(), store.clone()))
@@ -484,6 +485,11 @@ where
         .layer(axum::middleware::from_fn_with_state(
             client_addr::ClientAddrSettings::from_config(config),
             client_addr::settle_client_address,
+        ))
+        // Outside everything, so even a refusal from a layer below carries them.
+        .layer(axum::middleware::from_fn_with_state(
+            security_headers::SecurityHeaders::for_domain(&config.domain),
+            security_headers::add_security_headers,
         ));
     // What the Kemlock API and the admin console read of the Bitwarden API: the link that accepts
     // an invitation. A server with the Bitwarden API off has none, and they answer as for a space

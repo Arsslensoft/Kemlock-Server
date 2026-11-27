@@ -269,6 +269,7 @@ where
     // A genuine, fresh challenge names the account its failures count against; the attempt is
     // reserved before the code is looked at.
     let user = step.challenge_user(&challenge)?;
+    api.sign_in().check_second_step_allowed(&challenge).await?;
     attempts::reserve_second_step(api, user, now).await?;
     let finished = step
         .verify(TwoStepInput {
@@ -356,6 +357,7 @@ where
     // A genuine, fresh challenge names the account its failures count against; the attempt is
     // reserved before the code is looked at.
     let user = step.challenge_user(&challenge)?;
+    api.sign_in().check_second_step_allowed(&challenge).await?;
     attempts::reserve_second_step(&api, user, now).await?;
     let finished = step.recover(&challenge, &request.code, &proof.jkt).await;
     attempts::settle_second_step(&api, user, &finished).await;
@@ -537,6 +539,24 @@ where
 
 const PROOF_NEEDED: &str = "a fresh proof is needed to add a second step beside one that is on";
 
+/// Turning on the first second step takes no proof (there is none to give), so a session alone
+/// could do it: it asks for a sign-in from the last 15 minutes instead. With a step already on,
+/// the fresh proof of [`require_proof_to_add`] is what asks.
+pub(crate) async fn require_fresh_for_first_step<S, P, K>(
+    api: &Api<S, P, K>,
+    authed: &Authed,
+) -> Result<(), Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+{
+    if methods_on(api, authed.actor.user).await?.is_empty() {
+        authed.require_fresh_sign_in(api.now())?;
+    }
+    Ok(())
+}
+
 /// What lets a method be turned on. With no method on, a session alone may add the first step.
 /// With one or more on, the request must carry a fresh proof, the one a removal takes (a mailed
 /// code, a current code of the authenticator app, or the recovery code), so a stolen session
@@ -618,10 +638,10 @@ where
     let response = serde_json::to_vec(&assertion.webauthn)
         .map_err(|_| AppError::Invalid("the security key's answer isn't valid"))?;
     // Reserved before the answer is looked at; only a right answer gives the attempt back.
-    attempts::reserve_second_step(api, user, api.now()).await?;
+    attempts::reserve_step_up(api, user, api.now()).await?;
     match checker.verify(user, response).await {
         Ok(()) => {
-            attempts::forget_second_step(api, user).await;
+            attempts::forget_step_up(api, user).await;
             Ok(())
         }
         Err(kemlock_app::passkeys::SecurityKeyError::NoChallenge) => Err(AppError::Invalid(
@@ -691,9 +711,9 @@ where
         FreshProof::Assertion(assertion) => return check_assertion(api, user, assertion).await,
     };
     // Reserved before the code is looked at; only a right code gives the attempt back.
-    attempts::reserve_second_step(api, user, api.now()).await?;
+    attempts::reserve_step_up(api, user, api.now()).await?;
     if second_step_proof(api, user, proof, recovery).await {
-        attempts::forget_second_step(api, user).await;
+        attempts::forget_step_up(api, user).await;
         return Ok(());
     }
     Err(AppError::Invalid("the code is wrong or has run out: ask for another").into())
@@ -888,17 +908,17 @@ where
         FreshProof::Assertion(assertion) => return check_assertion(api, user, assertion).await,
     };
     // Reserved before the code is looked at; only a right code gives the attempt back.
-    attempts::reserve_second_step(api, user, api.now()).await?;
+    attempts::reserve_step_up(api, user, api.now()).await?;
     // Without mail, a current code of the authenticator app or the account's recovery code proves
     // it just as well. A TOTP code is spent here (it works once); the recovery code is kept. Neither
     // needs the mail to work.
     if second_step_proof(api, user, code, recovery).await {
-        attempts::forget_second_step(api, user).await;
+        attempts::forget_step_up(api, user).await;
         return Ok(());
     }
     match steps.protected_validate(user, code, true).await {
         Ok(()) => {
-            attempts::forget_second_step(api, user).await;
+            attempts::forget_step_up(api, user).await;
             Ok(())
         }
         Err(error) => Err(proof_error(error)),
@@ -932,8 +952,9 @@ where
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Records that a second step was turned on or off, and tells the owner by mail. Neither can fail
-/// the call: what they describe has happened.
+/// Records that a second step was turned on or off, or a passkey added or removed (`method` is
+/// `"passkey"`), and tells the owner by mail. Neither can fail the call: what they describe has
+/// happened.
 pub(crate) async fn announce_change<S, P, K>(
     api: &Api<S, P, K>,
     authed: &Authed,
@@ -947,10 +968,11 @@ pub(crate) async fn announce_change<S, P, K>(
     let sessions = api.sessions();
     sessions
         .record(
-            if on {
-                "account.two_step_added"
-            } else {
-                "account.two_step_removed"
+            match (method, on) {
+                ("passkey", true) => "account.passkey_added",
+                ("passkey", false) => "account.passkey_removed",
+                (_, true) => "account.two_step_added",
+                (_, false) => "account.two_step_removed",
             },
             authed.actor.user,
             Some(authed.actor.device),
@@ -1054,6 +1076,7 @@ where
 {
     let request: EmailConfirmRequest = body.json()?;
     limit_setup(&api, &authed, "email-setup")?;
+    require_fresh_for_first_step(&api, &authed).await?;
     // The setup code is checked first, then the proof is spent, then the method is turned on. A
     // refused proof puts the right setup code back, so it needn't be mailed again.
     let steps = two_step_of(&api, &runtime);
@@ -1122,6 +1145,7 @@ where
 {
     let request: YubikeySetRequest = body.json()?;
     limit_setup(&api, &authed, "yubikey-setup")?;
+    require_fresh_for_first_step(&api, &authed).await?;
     if request.otps.iter().all(|otp| otp.trim().is_empty()) {
         return Err(AppError::Invalid("A key is required.").into());
     }
@@ -1190,6 +1214,7 @@ where
 {
     let request: DuoSetRequest = body.json()?;
     limit_setup(&api, &authed, "duo-setup")?;
+    require_fresh_for_first_step(&api, &authed).await?;
     let custom = match (request.host, request.client_id, request.client_secret) {
         (None, None, None) => None,
         (host, ik, sk) => Some(DuoKeys {

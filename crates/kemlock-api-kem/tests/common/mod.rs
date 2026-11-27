@@ -160,7 +160,10 @@ impl App {
                 signups_allowed,
                 ..AuthConfig::default()
             },
-            trusted_proxies,
+            trusted_proxies: trusted_proxies
+                .into_iter()
+                .map(kemlock_api_kem::ratelimit::Proxy::from)
+                .collect(),
             ip_header: None,
             browser_extension_ids,
         };

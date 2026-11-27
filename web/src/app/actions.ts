@@ -57,23 +57,41 @@ function worthRetrying(error: unknown): boolean {
 
 /**
  * Keeps asking the server to end a session after the person was signed out here without it
- * answering: until one try works, the server refuses (the session is gone or never was), or the
- * delays run out. Only a page that stays open can do this; the tokens it holds are in this closure
- * and nowhere else.
+ * answering: until one try works, the server refuses (the session is gone or never was), the
+ * delays run out, or `cancelled` says so. Only a page that stays open can do this; the tokens it
+ * holds are in this closure and nowhere else. `onEnd` runs once, whichever way it stops.
  */
-export function keepRevoking(attempt: () => Promise<unknown>, delays: readonly number[] = REVOKE_RETRY_MS): void {
+export function keepRevoking(
+  attempt: () => Promise<unknown>,
+  delays: readonly number[] = REVOKE_RETRY_MS,
+  cancelled: () => boolean = () => false,
+  onEnd: () => void = () => undefined,
+): void {
   const [next, ...rest] = delays;
-  if (next === undefined) return;
+  if (next === undefined) {
+    onEnd();
+    return;
+  }
   setTimeout(() => {
-    attempt().catch((error: unknown) => {
-      if (worthRetrying(error)) keepRevoking(attempt, rest);
-    });
+    if (cancelled()) {
+      onEnd();
+      return;
+    }
+    attempt().then(
+      () => onEnd(),
+      (error: unknown) => {
+        if (worthRetrying(error)) keepRevoking(attempt, rest, cancelled, onEnd);
+        else onEnd();
+      },
+    );
   }, next);
 }
 
 /**
  * Retries the sign-out call over a client of its own, which holds the session's tokens as they were
- * when the person signed out: the page's client forgets them in the same moment.
+ * when the person signed out: the page's client forgets them in the same moment. It stops when the
+ * person signs in again (the page then has a session of its own, and an old one is not to be ended
+ * from here).
  */
 function revokeInBackground(held: Tokens | undefined): void {
   if (!held) return;
@@ -95,8 +113,21 @@ function revokeInBackground(held: Tokens | undefined): void {
     },
   });
   const devices = createDevicesApi(detached);
+  // This runs while the person is still signed in (the sign-out ends the session here right after),
+  // so a sign-in is a change away from 'signed-out' that comes after the sign-out was seen.
+  let seenOut = session.getState().status === 'signed-out';
+  let signedInAgain = false;
+  const unsubscribe = session.subscribe(() => {
+    if (session.getState().status === 'signed-out') seenOut = true;
+    else if (seenOut) signedInAgain = true;
+  });
   // The server refused the refresh token, or the tokens were dropped: nothing is left to end.
-  keepRevoking(() => (tokens ? devices.endSession() : Promise.resolve()));
+  keepRevoking(
+    () => (tokens ? devices.endSession() : Promise.resolve()),
+    REVOKE_RETRY_MS,
+    () => signedInAgain,
+    unsubscribe,
+  );
 }
 
 /**

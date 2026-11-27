@@ -3,7 +3,7 @@
 
 use crate::dpop::DpopVerifier;
 use crate::live::LiveHub;
-use crate::ratelimit::Limiter;
+use crate::ratelimit::{Limiter, Proxy};
 use crate::replay::{Full, TimedSet};
 use kemlock_app::admin::{InviteGate, InviteTicket, Live};
 use kemlock_app::api_use::{ApiUseRepo, RecordApiUse, USE_GRANULARITY};
@@ -108,8 +108,9 @@ pub struct ApiConfig {
     pub source_url: String,
     /// Token lifetimes, `SIGNUPS_ALLOWED` and item limits.
     pub auth: AuthConfig,
-    /// `KEMLOCK_TRUSTED_PROXIES`: peers whose forwarded header is believed.
-    pub trusted_proxies: Vec<IpAddr>,
+    /// `KEMLOCK_TRUSTED_PROXIES`: peers (addresses or blocks of them) whose forwarded header is
+    /// believed.
+    pub trusted_proxies: Vec<Proxy>,
     /// `IP_HEADER`: the header naming the client behind a trusted proxy.
     pub ip_header: Option<String>,
     /// `KEMLOCK_BROWSER_EXTENSION_IDS`: the ids of the Kemlock browser extensions that may take an
@@ -147,16 +148,27 @@ pub struct Limits {
     /// doubling slowdowns of at most a few seconds. It never refuses a right password; the hard
     /// limit is `account`, per account and source.
     pub account_slow: Limiter,
-    /// The most password checks an account takes from all sources together: 100 an hour, then
-    /// doubling waits, so guesses spread over many addresses are bounded too. Right passwords
-    /// are given back, so only wrong ones add up, but while it holds the account's password
-    /// checks are refused, a right password with them. In memory, per replica.
+    /// What every source's password checks add up to for one account: 100 an hour, then doubling
+    /// waits. Past it every password check for the account is held back a few seconds (at most),
+    /// right ones too, but none is refused: many addresses must not be able to keep the owner
+    /// out. Right passwords are given back, so only wrong ones add up. In memory, per replica.
     pub account_cap: Limiter,
+    /// The backstop behind `account_cap`: 600 password checks an hour for one account from all
+    /// sources together, then doubling waits, so guesses spread over a great many addresses are
+    /// bounded too. Right passwords are given back. While it holds, the account's password checks
+    /// are refused, a right password with them. In memory, per replica.
+    pub account_cap_hard: Limiter,
     /// Second-step attempts per account, 5 in 15 minutes, then doubling delays, whichever address
     /// or challenge they come from. The limit and window the Kemlock API's second steps count
     /// under in the store (`SecondStepGuard`); the counts in this limiter's own memory are the
     /// admin console's step-up and mailed setup codes.
     pub second_step: Limiter,
+    /// Step-up proofs per account (a code or a security key's answer that proves the owner before
+    /// a sensitive change, and the admin console's step-up): the limit and window of `second_step`
+    /// (the console sets both), counted in the store apart from it, so someone holding a session
+    /// who guesses at proofs spends nothing of the owner's sign-in second step, and the owner's own
+    /// sign-in spends nothing of the proofs.
+    pub step_up: Limiter,
     /// DPoP proofs checked before anyone is authenticated, per IP: 120 a minute, then doubling
     /// delays. Honest devices make a handful; the limit only stops a flood.
     pub proof: Limiter,
@@ -188,7 +200,9 @@ impl Default for Limits {
             account: Limiter::new(10, 900),
             account_slow: Limiter::new(10, 900),
             account_cap: Limiter::new(100, 3600),
+            account_cap_hard: Limiter::new(600, 3600),
             second_step: Limiter::new(5, 900),
+            step_up: Limiter::new(5, 900),
             proof: Limiter::new(120, 60),
             setup: Limiter::new(5, 60),
             register: Limiter::new(10, 3600),

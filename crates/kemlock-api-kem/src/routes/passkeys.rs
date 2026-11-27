@@ -580,6 +580,7 @@ where
             prf,
         })
         .await?;
+    announce_change(&api, &authed, "passkey", true).await;
     Ok((
         StatusCode::CREATED,
         Json(PasskeyDto::from_passkey(&passkey)),
@@ -624,9 +625,11 @@ where
     W: WebAuthn + Clone + 'static,
     M: Send + Sync + 'static,
 {
+    authed.require_fresh_sign_in(api.now())?;
     manage(&api, &runtime)
         .delete(authed.actor.user, passkey_id(&id)?)
         .await?;
+    announce_change(&api, &authed, "passkey", false).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -647,6 +650,7 @@ where
     W: WebAuthn + Clone + 'static,
     M: Send + Sync + 'static,
 {
+    authed.require_fresh_sign_in(api.now())?;
     let request: PrfBody = body.json()?;
     manage(&api, &runtime)
         .set_wrap(
@@ -711,6 +715,7 @@ where
         now,
     )?;
     let credential = credential_bytes(&request.credential)?;
+    super::two_step::require_fresh_for_first_step(&api, &authed).await?;
     require_proof_to_add(
         &api,
         &proof_steps(&api, runtime.repos.clone()),
@@ -853,6 +858,7 @@ where
     // A genuine, fresh challenge names the account its failures count against; the attempt is
     // reserved before the answer is looked at.
     let user = step.challenge_user(&challenge)?;
+    api.sign_in().check_second_step_allowed(&challenge).await?;
     attempts::reserve_second_step(&api, user, now).await?;
     let finished = step.verify(&challenge, &response, &proof.jkt).await;
     attempts::settle_second_step(&api, user, &finished).await;

@@ -540,7 +540,7 @@ pub async fn restore_check(
     work_in: &Path,
     allow_unauthenticated: bool,
 ) -> Result<DrillReport, String> {
-    std::fs::create_dir_all(work_in)
+    crate::keys::create_data_folder(work_in)
         .map_err(|e| format!("can't make {}: {e}", work_in.display()))?;
     let key = read_server_key(server_key)?;
     let scratch = tempfile::Builder::new()

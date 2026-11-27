@@ -129,6 +129,11 @@ export function DeviceApprovalView({
             </p>
             <p className="hint">{t('deviceApproval.phrase.hint')}</p>
           </div>
+          {progress.heldBack ? (
+            <Notice tone="info">
+              <p>{t('deviceApproval.heldBack')}</p>
+            </Notice>
+          ) : null}
           <p role="status">
             {t('deviceApproval.waiting', {
               time: new Date(progress.expiresAt).toLocaleTimeString(),

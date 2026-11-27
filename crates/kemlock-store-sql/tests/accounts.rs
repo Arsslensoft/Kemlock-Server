@@ -579,6 +579,45 @@ async fn second_step_attempts_are_reserved_atomically_and_kept(store: &SqlStore)
     assert_eq!(reserve(1001).await, Ok(Reservation::Granted));
 }
 
+async fn step_up_attempts_are_counted_apart_from_the_sign_in_second_step(store: &SqlStore) {
+    let owner = user(&unique_email("step-up-attempts"));
+    UserRepo::insert(store, &owner).await.expect("insert user");
+    // The sign-in second step reaches its limit and waits.
+    for _ in 0..3 {
+        assert_eq!(
+            SecondStepGuard::reserve_second_step(store, owner.id, 1000, 3, 900).await,
+            Ok(Reservation::Granted)
+        );
+    }
+    assert!(matches!(
+        SecondStepGuard::reserve_second_step(store, owner.id, 1000, 3, 900).await,
+        Ok(Reservation::Wait(_))
+    ));
+    // The step-up has a count of its own, with the same rule.
+    for _ in 0..3 {
+        assert_eq!(
+            SecondStepGuard::reserve_step_up(store, owner.id, 1000, 3, 900).await,
+            Ok(Reservation::Granted)
+        );
+    }
+    assert!(matches!(
+        SecondStepGuard::reserve_step_up(store, owner.id, 1000, 3, 900).await,
+        Ok(Reservation::Wait(_))
+    ));
+    // Clearing one leaves the other.
+    SecondStepGuard::clear_step_up(store, owner.id)
+        .await
+        .expect("clear");
+    assert_eq!(
+        SecondStepGuard::reserve_step_up(store, owner.id, 1001, 3, 900).await,
+        Ok(Reservation::Granted)
+    );
+    assert!(matches!(
+        SecondStepGuard::reserve_second_step(store, owner.id, 1000, 3, 900).await,
+        Ok(Reservation::Wait(_))
+    ));
+}
+
 async fn events(store: &SqlStore) {
     let owner = user(&unique_email("events"));
     UserRepo::insert(store, &owner).await.expect("insert user");
@@ -730,6 +769,7 @@ async fn run_all(store: &SqlStore) {
     two_factor(store).await;
     two_step_version_moves_when_a_method_is_turned_on_or_off(store).await;
     second_step_attempts_are_reserved_atomically_and_kept(store).await;
+    step_up_attempts_are_counted_apart_from_the_sign_in_second_step(store).await;
     events(store).await;
 }
 

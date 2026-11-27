@@ -980,3 +980,22 @@ async fn a_sign_in_row_has_the_account_the_method_and_the_address_cut_on_write()
     );
     assert_eq!(rows[1].ip.as_deref(), Some("2001:db8:1::/48"));
 }
+
+#[tokio::test]
+async fn the_store_refusing_the_last_admin_is_a_plain_refusal_and_nothing_is_reported_erased() {
+    let world = World::new().with_signups();
+    let user = make_user(&world, "root@example.org").await;
+    let privacy = FakePrivacy::new(&world.store);
+    privacy.lock().last_admin = true;
+    let sends = FakeSends::default();
+    let refused = erase(&world, &privacy, &sends)
+        .execute_now(user, kemlock_app::privacy::Requester::Account)
+        .await;
+    assert_eq!(
+        refused,
+        Err(kemlock_app::AppError::Invalid(
+            "the last admin can't be deleted"
+        ))
+    );
+    assert!(privacy.lock().erased.is_empty());
+}

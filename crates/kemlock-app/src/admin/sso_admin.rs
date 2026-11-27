@@ -212,6 +212,10 @@ where
             Some(existing) => existing,
             None => SsoSettings::new(issuer.clone(), client_id.clone(), now),
         };
+        // A stored secret belongs to the provider it was made for. Pointing the connection at
+        // another issuer while keeping it would send it there, and an admin could read it back that
+        // way: a new issuer starts without one unless a new secret comes with it.
+        let issuer_changed = settings.issuer != issuer;
         settings.enabled = input.enabled;
         settings.display_name = display_name;
         settings.issuer = issuer;
@@ -224,6 +228,7 @@ where
         settings.group_rules = input.group_rules;
         settings.updated_at = now;
         match &input.client_secret {
+            SecretChange::Keep if issuer_changed => settings.sealed_client_secret = None,
             SecretChange::Keep => {}
             SecretChange::Clear => settings.sealed_client_secret = None,
             SecretChange::Set(secret) => settings.set_client_secret(&self.env, secret),

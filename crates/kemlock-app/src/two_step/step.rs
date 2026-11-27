@@ -258,6 +258,7 @@ where
         if self.users.account_disabled(user.id).await? {
             return Err(AppError::AccountDisabled);
         }
+        ensure_not_pending(&self.users, user.id).await?;
         self.recovery.recover(user.id, code).await?;
         let device = self
             .sessions

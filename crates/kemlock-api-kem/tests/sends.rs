@@ -744,6 +744,40 @@ async fn wrong_passwords_are_limited_per_send() {
     );
 }
 
+#[tokio::test]
+async fn made_up_access_ids_do_not_reset_a_sends_count_and_an_address_has_its_own_limit() {
+    let rig = Rig::signed_in().await;
+    let guarded = rig
+        .make(rig.note_body(json!({"password": b64(&PROOF)})))
+        .await;
+    let access = guarded["accessId"].as_str().expect("an access id");
+    let recipient = rig.recipient();
+
+    for n in 0..10 {
+        let wrong = open(&recipient, access, Some(b"guess")).await;
+        assert_eq!(wrong.status, StatusCode::UNAUTHORIZED, "try {n}");
+    }
+    // Ids that parse but name nothing are not counted against any Send, so no number of them
+    // can push the guarded Send's count out of the limiter.
+    for n in 0..15u8 {
+        let junk = open(&recipient, &b64(&[n; 16]), Some(b"guess")).await;
+        assert_eq!(junk.status, StatusCode::NOT_FOUND, "junk {n}");
+    }
+    let still_limited = open(&recipient, access, Some(&PROOF)).await;
+    assert_eq!(still_limited.status, StatusCode::TOO_MANY_REQUESTS);
+
+    // And one address takes only so many proofs a minute, whatever the ids.
+    let mut limited = false;
+    for n in 0..40u8 {
+        let junk = open(&recipient, &b64(&[100 + n; 16]), Some(b"guess")).await;
+        if junk.status == StatusCode::TOO_MANY_REQUESTS {
+            limited = true;
+            break;
+        }
+    }
+    assert!(limited, "the address was never limited");
+}
+
 // ---- file Sends ----
 
 #[tokio::test]

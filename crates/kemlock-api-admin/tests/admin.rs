@@ -365,19 +365,24 @@ async fn wrong_totp_codes_are_refused_and_then_slowed_down() {
 }
 
 #[tokio::test]
-async fn wrong_step_up_codes_spend_the_same_budget_as_the_second_step_at_sign_in() {
+async fn step_up_codes_and_the_second_step_at_sign_in_keep_separate_counts() {
     use kemlock_app::second_step_guard::{Reservation, SecondStepGuard};
     let rig = Rig::new();
     let root = rig.admin(ADMIN).await;
-    // Four attempts at the second step of a sign-in, counted in the store as the Kemlock API
-    // counts them.
-    for _ in 0..4 {
+    // Five attempts at the second step of a sign-in, counted in the store as the Kemlock API
+    // counts them: the sign-in count is at its limit and waits.
+    for _ in 0..5 {
         let reserved =
             SecondStepGuard::reserve_second_step(&rig.app.store, root.id, rig.app.now(), 5, 900)
                 .await;
         assert_eq!(reserved, Ok(Reservation::Granted));
     }
-    // One wrong step-up code is the fifth: it is looked at, and the next try waits.
+    assert!(matches!(
+        SecondStepGuard::reserve_second_step(&rig.app.store, root.id, rig.app.now(), 5, 900).await,
+        Ok(Reservation::Wait(_))
+    ));
+    // The step-up has a count of its own: a wrong code is looked at and refused as wrong, not
+    // as too many tries.
     let wrong = root
         .send(
             "POST",
@@ -387,6 +392,18 @@ async fn wrong_step_up_codes_spend_the_same_budget_as_the_second_step_at_sign_in
         )
         .await;
     assert_eq!(slug(&wrong), "step-up-failed");
+    // Four more wrong step-up codes reach its own limit, and the next waits...
+    for _ in 0..4 {
+        let again = root
+            .send(
+                "POST",
+                "/admin/v1/step-up/totp",
+                Some(json!({"code": "000000"})),
+                None,
+            )
+            .await;
+        assert_eq!(slug(&again), "step-up-failed");
+    }
     let waiting = root
         .send(
             "POST",
@@ -396,7 +413,7 @@ async fn wrong_step_up_codes_spend_the_same_budget_as_the_second_step_at_sign_in
         )
         .await;
     assert_eq!(waiting.status, StatusCode::TOO_MANY_REQUESTS);
-    // After the wait the right code gets a step-up token, and clears the count for both.
+    // ...while the sign-in count is where it was: a right step-up clears only its own.
     rig.app.clock.advance(Duration::seconds(1));
     rig.next_step();
     let ok = root
@@ -408,12 +425,14 @@ async fn wrong_step_up_codes_spend_the_same_budget_as_the_second_step_at_sign_in
         )
         .await;
     assert_eq!(ok.status, StatusCode::OK, "{:?}", ok.json());
-    let after =
+    let step_up =
+        SecondStepGuard::reserve_step_up(&rig.app.store, root.id, rig.app.now(), 5, 900).await;
+    assert_eq!(step_up, Ok(Reservation::Granted));
+    let sign_in =
         SecondStepGuard::reserve_second_step(&rig.app.store, root.id, rig.app.now(), 5, 900).await;
-    assert_eq!(after, Ok(Reservation::Granted));
+    assert!(matches!(sign_in, Ok(Reservation::Wait(_))), "{sign_in:?}");
 }
 
-#[tokio::test]
 async fn the_password_check_makes_a_step_up_token() {
     let rig = Rig::new();
     let root = rig.admin(ADMIN).await;
@@ -1603,6 +1622,23 @@ async fn verifying_new_accounts_can_only_be_turned_on_where_mail_can_be_sent() {
     assert_eq!(off.status, StatusCode::OK, "{:?}", off.json());
 }
 
+
+#[tokio::test]
+async fn verifying_signups_from_the_environment_shows_as_off_while_no_mail_can_be_sent() {
+    let env = [("SIGNUPS_VERIFY", "true")];
+    // No mail server: the server holds nobody back, so the console says off.
+    let rig = Rig::with(false, &env);
+    let root = rig.admin(ADMIN).await;
+    let list = root.get("/admin/v1/settings").await.json();
+    let verify = setting(&list, "signups_verify");
+    assert_eq!(verify["source"], "env");
+    assert_eq!(verify["value"], "false");
+    // With mail it is as asked.
+    let rig = Rig::with(true, &env);
+    let root = rig.admin(ADMIN).await;
+    let list = root.get("/admin/v1/settings").await.json();
+    assert_eq!(setting(&list, "signups_verify")["value"], "true");
+}
 #[tokio::test]
 async fn settings_refuse_what_is_out_of_bounds_all_or_none() {
     let rig = Rig::new();
@@ -1741,6 +1777,137 @@ async fn secrets_are_sealed_and_never_shown() {
     // The audit trail names the setting, not its value.
     let events = rig.admin.events();
     assert_eq!(events[0].target.as_deref(), Some("smtp_password"));
+}
+
+#[tokio::test]
+async fn rate_limit_settings_have_sane_caps() {
+    let rig = Rig::new();
+    let root = rig.admin(ADMIN).await;
+    let token = root.step_up(&rig).await;
+    for (key, ok, too_many) in [
+        ("rate_sign_in_per_minute", "100", "101"),
+        ("rate_password_failures_per_15_minutes", "30", "31"),
+        ("rate_second_step_failures_per_15_minutes", "20", "21"),
+        ("rate_second_step_challenges_per_5_minutes", "30", "31"),
+        ("rate_register_per_hour", "50", "51"),
+    ] {
+        for (value, status) in [(ok, StatusCode::OK), (too_many, StatusCode::BAD_REQUEST)] {
+            let reply = root
+                .write(
+                    "PUT",
+                    "/admin/v1/settings",
+                    Some(json!({"changes": {key: value}})),
+                    &token,
+                )
+                .await;
+            assert_eq!(reply.status, status, "{key}={value}: {:?}", reply.json());
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_audit_trail_records_what_a_setting_was_and_became_but_never_a_secret() {
+    let rig = Rig::new();
+    let root = rig.admin(ADMIN).await;
+    let token = root.step_up(&rig).await;
+    let saved = root
+        .write(
+            "PUT",
+            "/admin/v1/settings",
+            Some(json!({"changes": {
+                "trash_days": "45",
+                "smtp_password": "hunter2-hunter2",
+            }})),
+            &token,
+        )
+        .await;
+    assert_eq!(saved.status, StatusCode::OK, "{:?}", saved.json());
+    let target = rig.admin.events()[0].target.clone().expect("a target");
+    assert!(target.contains("trash_days: 30 -> 45"), "{target}");
+    assert!(target.contains("smtp_password"), "{target}");
+    assert!(!target.contains("hunter2"), "{target}");
+
+    let reset = root
+        .write(
+            "PUT",
+            "/admin/v1/settings",
+            Some(json!({"changes": {"trash_days": null}})),
+            &token,
+        )
+        .await;
+    assert_eq!(reset.status, StatusCode::OK);
+    let target = rig.admin.events().last().and_then(|e| e.target.clone()).expect("a target");
+    assert_eq!(target, "trash_days: 45 -> 30");
+}
+
+#[tokio::test]
+async fn a_new_smtp_host_starts_without_the_saved_smtp_password() {
+    let rig = Rig::new();
+    let root = rig.admin(ADMIN).await;
+    let token = root.step_up(&rig).await;
+    let put = |changes: Value| {
+        root.write(
+            "PUT",
+            "/admin/v1/settings",
+            Some(json!({ "changes": changes })),
+            &token,
+        )
+    };
+    assert_eq!(
+        put(json!({"smtp_host": "mail.example.org", "smtp_password": "hunter2-hunter2"}))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert!(rig.admin.saved_setting("setting.smtp_password").is_some());
+    // Another setting of the mail server, or the same host again: the password stays.
+    assert_eq!(
+        put(json!({"smtp_host": "mail.example.org", "smtp_port": "465"}))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert!(rig.admin.saved_setting("setting.smtp_password").is_some());
+    // A new host with a new password keeps the new one.
+    assert_eq!(
+        put(json!({"smtp_host": "smtp.other.example", "smtp_password": "another-secret-1"}))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert!(rig.admin.saved_setting("setting.smtp_password").is_some());
+    // A new host alone drops the password the old one was given.
+    assert_eq!(
+        put(json!({"smtp_host": "evil.example"})).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(rig.admin.saved_setting("setting.smtp_password"), None);
+}
+
+#[tokio::test]
+async fn a_new_sso_issuer_starts_without_the_stored_client_secret() {
+    let rig = Rig::new();
+    let root = rig.admin(ADMIN).await;
+    let token = root.step_up(&rig).await;
+    let saved = root
+        .write("PUT", "/admin/v1/sso", Some(sso_body()), &token)
+        .await;
+    assert_eq!(saved.status, StatusCode::OK, "{:?}", saved.json());
+    // The same issuer, the secret left out: kept.
+    let mut keep = sso_body();
+    keep.as_object_mut().expect("object").remove("clientSecret");
+    let kept = root
+        .write("PUT", "/admin/v1/sso", Some(keep.clone()), &token)
+        .await
+        .json();
+    assert_eq!(kept["clientSecretSet"], true);
+    // Another issuer with the secret left out: the secret does not follow it.
+    keep["issuer"] = json!("https://idp.attacker.example/realms/kemlock");
+    let moved = root
+        .write("PUT", "/admin/v1/sso", Some(keep), &token)
+        .await
+        .json();
+    assert_eq!(moved["clientSecretSet"], false);
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -247,6 +247,7 @@
   "deviceApproval.phrase": "The words on this screen",
   "deviceApproval.phrase.hint": "They are worked out in this browser from a one-time key it just made. Approve only if the other device shows exactly these five words.",
   "deviceApproval.waiting": "Waiting for the other device. This request lapses at {time}.",
+  "deviceApproval.heldBack": "This account is getting a lot of approval requests, so yours may take longer to find. It is listed on the signed-in devices like the others: look for the words shown above, and approve only if they match.",
   "deviceApproval.signingIn": "Approved. Opening your vault",
   "deviceApproval.cancel": "Cancel",
   "deviceApproval.back": "Back to sign-in",

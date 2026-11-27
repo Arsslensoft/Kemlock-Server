@@ -714,7 +714,7 @@ async fn a_wrap_for_the_old_key_version_is_refused_after_the_install(store: &Sql
         .confirm(vec![3; SEALED_BOX_OVERHEAD + 64], T0)
         .expect("confirmed");
     assert_eq!(
-        EmergencyRepo::save_grant_at(store, &confirmed, EmergencyState::Accepted, Some(1)).await,
+        EmergencyRepo::save_grant_at(store, &confirmed, EmergencyState::Accepted, None, Some(1)).await,
         Err(stale.clone())
     );
     let kept = EmergencyRepo::grant(store, grant.id)
@@ -723,7 +723,7 @@ async fn a_wrap_for_the_old_key_version_is_refused_after_the_install(store: &Sql
         .expect("the grant");
     assert_eq!((kept.state, kept.sealed_key), (EmergencyState::Accepted, None));
     assert_eq!(
-        EmergencyRepo::save_grant_at(store, &confirmed, EmergencyState::Accepted, Some(2)).await,
+        EmergencyRepo::save_grant_at(store, &confirmed, EmergencyState::Accepted, None, Some(2)).await,
         Ok(true)
     );
     let space = SpaceId::random();

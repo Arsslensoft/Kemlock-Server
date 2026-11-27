@@ -28,6 +28,12 @@ use time::OffsetDateTime;
 /// How long a provider's metadata and keys are reused before they are fetched again.
 pub const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 
+/// The least time between two fetches of a provider's keys forced by a back-channel logout token
+/// that doesn't verify. The route is open to anyone, so a forged token must not make the server
+/// run discovery every time; a real key rotation is picked up by the first token after it, and by
+/// the cache's own expiry otherwise.
+pub const DEFAULT_REFRESH_FLOOR: Duration = Duration::from_secs(60);
+
 /// How long a request to the provider may take.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -52,6 +58,10 @@ pub struct OidcClient {
     http: reqwest::Client,
     cache: Mutex<HashMap<String, Cached>>,
     ttl: Duration,
+    /// When each issuer's keys were last fetched again because a logout token didn't verify.
+    forced: Mutex<HashMap<String, Instant>>,
+    /// The least time between two such fetches for one issuer.
+    refresh_floor: Duration,
 }
 
 impl std::fmt::Debug for OidcClient {
@@ -100,6 +110,8 @@ impl OidcClient {
             http,
             cache: Mutex::new(HashMap::new()),
             ttl: DEFAULT_CACHE_TTL,
+            forced: Mutex::new(HashMap::new()),
+            refresh_floor: DEFAULT_REFRESH_FLOOR,
         })
     }
 
@@ -107,6 +119,28 @@ impl OidcClient {
     pub fn with_cache_ttl(mut self, ttl: Duration) -> Self {
         self.ttl = ttl;
         self
+    }
+
+    /// Changes the least time between two key fetches a back-channel logout token may force.
+    pub fn with_refresh_floor(mut self, floor: Duration) -> Self {
+        self.refresh_floor = floor;
+        self
+    }
+
+    /// Whether a logout token that didn't verify may force the issuer's keys to be fetched again
+    /// now: once in [`OidcClient::with_refresh_floor`], however many forged tokens arrive.
+    fn may_force_refresh(&self, issuer: &str) -> bool {
+        let Ok(mut forced) = self.forced.lock() else {
+            return false;
+        };
+        if forced
+            .get(issuer)
+            .is_some_and(|at| at.elapsed() < self.refresh_floor)
+        {
+            return false;
+        }
+        forced.insert(issuer.to_owned(), Instant::now());
+        true
     }
 
     fn cached(&self, issuer: &str) -> Option<Arc<CoreProviderMetadata>> {
@@ -239,7 +273,10 @@ impl OidcProvider for OidcClient {
         let (metadata, fetched_now) = self.metadata(&client.issuer, false).await?;
         let mut payload = logout::verify_signature(token, metadata.jwks());
         let mut issuer = metadata.issuer().to_string();
-        if matches!(payload, Err(SignatureError::NoKey | SignatureError::Bad)) && !fetched_now {
+        if matches!(payload, Err(SignatureError::NoKey | SignatureError::Bad))
+            && !fetched_now
+            && self.may_force_refresh(&client.issuer)
+        {
             let (metadata, _) = self.metadata(&client.issuer, true).await?;
             payload = logout::verify_signature(token, metadata.jwks());
             issuer = metadata.issuer().to_string();

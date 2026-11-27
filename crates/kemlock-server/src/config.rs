@@ -21,7 +21,7 @@
 use kemlock_app::admin::settings::DEFINITIONS;
 use serde::Deserialize;
 use std::collections::BTreeMap;
-use std::net::IpAddr;
+use kemlock_api_kem::ratelimit::Proxy;
 use std::path::{Path, PathBuf};
 
 /// Vaultwarden settings that Kemlock Server has no use for, or doesn't support yet. Each one that
@@ -38,13 +38,15 @@ pub const IGNORED_VAULTWARDEN_VARS: &[&str] = &[
     "LOG_FILE",
 ];
 
-/// How many connections the server holds at once unless `KEMLOCK_MAX_CONNECTIONS` says otherwise:
-/// no limit. A cap on all clients lets one of them fill it, so the limit that is on by default is
-/// the one for each address.
-pub const DEFAULT_MAX_CONNECTIONS: usize = 0;
+/// How many connections the server holds at once unless `KEMLOCK_MAX_CONNECTIONS` says otherwise.
+/// Every connection takes a file descriptor, so a cap below the open-file limit keeps the server
+/// able to open its database and files when clients fill it; the listener lowers it further to
+/// three quarters of the limit it reads at start (see `listener::fd_budget`). Past it clients wait
+/// in the operating system's queue until a connection ends. 0 is no limit.
+pub const DEFAULT_MAX_CONNECTIONS: usize = 4096;
 
 /// How many connections one client address may hold at once unless
-/// `KEMLOCK_MAX_CONNECTIONS_PER_IP` says otherwise.
+/// `KEMLOCK_MAX_CONNECTIONS_PER_IP` says otherwise. An IPv6 address counts by its /56.
 pub const DEFAULT_MAX_CONNECTIONS_PER_IP: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -88,8 +90,8 @@ pub struct Config {
     pub log_format: LogFormat,
     /// `KEMLOCK_SERVER_KEY`: the server key itself (hex or base64url), instead of the file.
     pub server_key: Option<String>,
-    /// `KEMLOCK_TRUSTED_PROXIES`.
-    pub trusted_proxies: Vec<IpAddr>,
+    /// `KEMLOCK_TRUSTED_PROXIES`: addresses, or blocks of them (`10.0.0.0/8`).
+    pub trusted_proxies: Vec<Proxy>,
     /// `IP_HEADER`.
     pub ip_header: Option<String>,
     /// `KEMLOCK_BROWSER_EXTENSION_IDS`: the ids of the Kemlock browser extensions whose redirect
@@ -104,11 +106,11 @@ pub struct Config {
     /// seconds; 0 turns the probes off. Default 60. Failed probes back off up to ten minutes.
     pub federation_probe_seconds: u64,
     /// `KEMLOCK_MAX_CONNECTIONS`: how many connections the server holds at once, WebSockets
-    /// included; further ones wait in the operating system's queue until one ends. 0 (the default)
-    /// is no limit.
+    /// included; further ones wait in the operating system's queue until one ends. Default 4096,
+    /// and never more than three quarters of the open-file limit. 0 is no limit.
     pub max_connections: usize,
     /// `KEMLOCK_MAX_CONNECTIONS_PER_IP`: how many connections one client address (an IPv6 one by
-    /// its /64) may hold at once; the addresses in `KEMLOCK_TRUSTED_PROXIES` are exempt. 0 is no
+    /// its /56) may hold at once; the addresses in `KEMLOCK_TRUSTED_PROXIES` are exempt. 0 is no
     /// limit. Default 64.
     pub max_connections_per_ip: usize,
     /// Vaultwarden settings that were set and are not used.
@@ -168,15 +170,15 @@ fn parse_port(value: &str) -> Result<u16, ConfigError> {
     })
 }
 
-fn parse_proxies<'a>(items: impl IntoIterator<Item = &'a str>) -> Result<Vec<IpAddr>, ConfigError> {
+fn parse_proxies<'a>(items: impl IntoIterator<Item = &'a str>) -> Result<Vec<Proxy>, ConfigError> {
     items
         .into_iter()
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(|s| {
-            s.parse().map_err(|_| ConfigError::Bad {
+            Proxy::parse(s).ok_or_else(|| ConfigError::Bad {
                 name: "KEMLOCK_TRUSTED_PROXIES",
-                expected: "a list of IP addresses",
+                expected: "a list of IP addresses or blocks of them (10.0.0.0/8), none of them /0",
                 value: s.to_owned(),
             })
         })
@@ -351,6 +353,21 @@ impl Config {
             Some(value) => parse_proxies(value.split(','))?,
             None => parse_proxies(file.trusted_proxies.iter().flatten().map(String::as_str))?,
         };
+        let ip_header = lookup(env, "IP_HEADER")
+            .or(file.ip_header)
+            .filter(|header| !header.trim().is_empty());
+        // A header naming the client is believed only from a trusted proxy. With none listed it
+        // would be ignored, and every client would count as the proxy: say so at start, not at
+        // the first lockout.
+        if let Some(header) = &ip_header
+            && trusted_proxies.is_empty()
+        {
+            return Err(ConfigError::Bad {
+                name: "IP_HEADER",
+                expected: "set together with KEMLOCK_TRUSTED_PROXIES, the proxies it is believed from",
+                value: header.clone(),
+            });
+        }
         let browser_extension_ids = match lookup(env, "KEMLOCK_BROWSER_EXTENSION_IDS") {
             Some(value) => parse_extension_ids(value.split(','))?,
             None => parse_extension_ids(
@@ -412,7 +429,7 @@ impl Config {
             log_format,
             server_key: lookup(env, "KEMLOCK_SERVER_KEY"),
             trusted_proxies,
-            ip_header: lookup(env, "IP_HEADER").or(file.ip_header),
+            ip_header,
             browser_extension_ids,
             source_url,
             federation_probe_seconds,
@@ -487,6 +504,7 @@ mod tests {
                 ("SIGNUPS_ALLOWED", "TRUE"),
                 ("LOG_LEVEL", "debug"),
                 ("IP_HEADER", "X-Forwarded-For"),
+                ("KEMLOCK_TRUSTED_PROXIES", "10.0.0.1"),
             ],
             None,
         )
@@ -646,19 +664,68 @@ mod tests {
     }
 
     #[test]
-    fn trusted_proxies_are_a_comma_list() {
+    fn trusted_proxies_are_a_comma_list_of_addresses_and_blocks() {
         let c = config(
-            &[("KEMLOCK_TRUSTED_PROXIES", "10.0.0.1, 192.168.1.2")],
+            &[(
+                "KEMLOCK_TRUSTED_PROXIES",
+                "10.0.0.1, 192.168.1.2, 10.244.0.0/16, 2001:db8::/48",
+            )],
             None,
         )
         .expect("valid");
+        let proxy = |text: &str| Proxy::parse(text).expect("a proxy");
         assert_eq!(
             c.trusted_proxies,
             vec![
-                "10.0.0.1".parse::<IpAddr>().expect("ip"),
-                "192.168.1.2".parse::<IpAddr>().expect("ip")
+                proxy("10.0.0.1"),
+                proxy("192.168.1.2"),
+                proxy("10.244.0.0/16"),
+                proxy("2001:db8::/48"),
             ]
         );
+        assert!(c.trusted_proxies[2].contains("10.244.8.9".parse().expect("ip")));
+        for bad in ["proxy", "10.0.0.0/33", "0.0.0.0/0", "10.0.0.1/x"] {
+            assert!(
+                matches!(
+                    config(&[("KEMLOCK_TRUSTED_PROXIES", bad)], None),
+                    Err(ConfigError::Bad {
+                        name: "KEMLOCK_TRUSTED_PROXIES",
+                        ..
+                    })
+                ),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_client_address_header_without_a_trusted_proxy_is_refused_at_start() {
+        let refused = config(&[("IP_HEADER", "X-Forwarded-For")], None);
+        assert!(
+            matches!(
+                refused,
+                Err(ConfigError::Bad {
+                    name: "IP_HEADER",
+                    ..
+                })
+            ),
+            "{refused:?}"
+        );
+        // From the file too.
+        assert!(config(&[], Some("ip_header = \"X-Real-IP\"\n")).is_err());
+        // With a proxy it is fine, and an empty value counts as unset.
+        assert!(
+            config(
+                &[
+                    ("IP_HEADER", "X-Forwarded-For"),
+                    ("KEMLOCK_TRUSTED_PROXIES", "10.0.0.0/8")
+                ],
+                None
+            )
+            .is_ok()
+        );
+        let c = config(&[("IP_HEADER", " ")], None).expect("empty is unset");
+        assert_eq!(c.ip_header, None);
     }
 
     #[test]
@@ -688,7 +755,7 @@ mod tests {
     }
 
     #[test]
-    fn the_total_of_connections_is_limited_only_when_the_operator_says_so() {
+    fn the_total_of_connections_has_a_default_and_the_operator_can_change_it() {
         let c = config(&[], None).expect("valid");
         assert_eq!(c.max_connections, DEFAULT_MAX_CONNECTIONS);
         let c = config(&[("KEMLOCK_MAX_CONNECTIONS", " 200 ")], None).expect("valid");
@@ -712,9 +779,9 @@ mod tests {
     }
 
     #[test]
-    fn each_address_is_limited_but_the_total_is_not_by_default() {
+    fn each_address_and_the_total_are_limited_by_default() {
         let c = config(&[], None).expect("valid");
-        assert_eq!(c.max_connections, 0);
+        assert_eq!(c.max_connections, 4096);
         assert_eq!(c.max_connections_per_ip, 64);
         let c = config(&[("KEMLOCK_MAX_CONNECTIONS_PER_IP", " 8 ")], None).expect("valid");
         assert_eq!(c.max_connections_per_ip, 8);

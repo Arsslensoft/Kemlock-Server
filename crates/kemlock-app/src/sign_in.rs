@@ -208,6 +208,7 @@ where
             device_name: input.device.name,
             device_kind: input.device.kind,
             jkt: input.jkt,
+            via_sso: false,
         };
         Ok(SignedIn::SecondStep(SecondStep {
             challenge: self.seal.seal(PURPOSE_CHALLENGE, &challenge.encode()),
@@ -219,6 +220,28 @@ where
     /// uses it to count second-step failures per account before the code is looked at.
     pub fn challenge_user(&self, challenge: &[u8]) -> Result<UserId, AppError> {
         Ok(self.open_challenge(challenge)?.user)
+    }
+
+    /// What every finish of a second step must pass before its answer is looked at, whichever
+    /// method it is: the account still exists, is not disabled, is not waiting out an erasure,
+    /// and, for a challenge a password's first step made, no space it is an ordinary member of
+    /// has turned Require SSO on since (the second step of an SSO sign-in is not held to it).
+    /// [`SignIn::second_step`] runs the same checks for the authenticator app.
+    pub async fn check_second_step_allowed(&self, challenge: &[u8]) -> Result<(), AppError> {
+        let challenge = self.open_challenge(challenge)?;
+        let user = self
+            .users
+            .by_id(challenge.user)
+            .await?
+            .ok_or(AppError::Unauthorized)?;
+        if self.users.account_disabled(user.id).await? {
+            return Err(AppError::AccountDisabled);
+        }
+        ensure_not_pending(&self.users, user.id).await?;
+        if !challenge.via_sso {
+            self.sso.check(&user, SignInMethod::Password).await?;
+        }
+        Ok(())
     }
 
     fn open_challenge(&self, challenge: &[u8]) -> Result<Challenge, AppError> {
@@ -252,7 +275,14 @@ where
             return Err(AppError::AccountDisabled);
         }
         ensure_not_pending(&self.users, user.id).await?;
-        self.sso.check(&user, SignInMethod::Password).await?;
+        // The second step of an SSO sign-in is not a way round Require SSO: only a password's is
+        // held to it.
+        let first_step = if challenge.via_sso {
+            SignInMethod::Sso
+        } else {
+            SignInMethod::Password
+        };
+        self.sso.check(&user, first_step).await?;
         let factor = self
             .two_factor
             .list(user.id)
@@ -325,6 +355,19 @@ where
     /// remembers the state as used, so made-up states take no room in that memory.
     pub fn check_login_state(&self, sealed: &[u8]) -> Result<(), AppError> {
         self.open_login_state(sealed).map(|_| ())
+    }
+
+    /// [`SignIn::check_login_state`], and the state must be the one started for `email`. The API
+    /// checks this before it counts a try against the account, so a state made for another
+    /// account (or for nobody) spends nobody's attempts.
+    pub fn check_login_state_for(&self, sealed: &[u8], email: &str) -> Result<(), AppError> {
+        let state = self.open_login_state(sealed)?;
+        if !constant_time_eq(&state.credential_id, &credential_id(email)) {
+            return Err(AppError::Invalid(
+                "the login state belongs to another email",
+            ));
+        }
+        Ok(())
     }
 
     fn open_login_state(&self, sealed: &[u8]) -> Result<LoginState, AppError> {

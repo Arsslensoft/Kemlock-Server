@@ -392,6 +392,53 @@ async fn emergency(store: &SqlStore) {
             .all(|g| g.id != grant.id)
     );
 
+    // The request is refused and asked for again: running again, a new wait, the same state the
+    // timer read. Its approval over the version it read is refused; over the current one it is
+    // accepted when the new wait ends.
+    let read = EmergencyRepo::grant(store, grant.id)
+        .await
+        .expect("read")
+        .expect("there");
+    let mut again = read.clone();
+    again
+        .initiate(started + Duration::days(8))
+        .expect("asks again");
+    assert!(
+        EmergencyRepo::save_grant(store, &again, EmergencyState::Rejected)
+            .await
+            .expect("save")
+    );
+    // What the timer would write after reading `again` before the second request: the state it
+    // read, `RecoveryInitiated`, and the version it read.
+    let mut early = again.clone();
+    early
+        .approve_due(started + Duration::days(8) + Duration::days(7))
+        .expect("due");
+    assert!(
+        !EmergencyRepo::save_grant_at(
+            store,
+            &early,
+            EmergencyState::RecoveryInitiated,
+            Some(started + Duration::days(7)),
+            None,
+        )
+        .await
+        .expect("save"),
+        "the version the timer read is not the grant's now"
+    );
+    assert!(
+        EmergencyRepo::save_grant_at(
+            store,
+            &early,
+            EmergencyState::RecoveryInitiated,
+            Some(again.updated_at),
+            None,
+        )
+        .await
+        .expect("save"),
+        "the version it is now"
+    );
+
     EmergencyRepo::remove_grant(store, grant.id)
         .await
         .expect("remove");

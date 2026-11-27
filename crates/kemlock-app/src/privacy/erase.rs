@@ -189,10 +189,13 @@ where
     async fn erase_now(&self, account: User, requested_by: Requester) -> Result<Erasure, AppError> {
         let sends = self.sends.erase_sends(account.id).await?;
         // The store checks the owners again in the erasure's own transaction: an owner may have
-        // stepped down since `blocking_spaces` was read.
+        // stepped down since `blocking_spaces` was read. It also refuses the last admin.
         let rows = match self.eraser.erase_user(&account).await {
             Err(StoreError::Backend(why)) if why == OWNER_REQUIRED => {
                 return Err(AppError::Invalid(ONLY_OWNER));
+            }
+            Err(StoreError::Backend(why)) if why == super::LAST_ADMIN => {
+                return Err(AppError::Invalid("the last admin can't be deleted"));
             }
             other => other?,
         };

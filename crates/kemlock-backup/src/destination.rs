@@ -82,7 +82,7 @@ impl Destination {
     pub fn open(config: &DestinationConfig) -> Result<Destination, BackupError> {
         match config {
             DestinationConfig::Local { folder } => {
-                std::fs::create_dir_all(folder)
+                crate::archive::create_private_dir(folder)
                     .map_err(|e| BackupError::io(format!("can't make {}", folder.display()), e))?;
                 let fs = LocalFileSystem::new_with_prefix(folder)
                     .map_err(|e| dest_error("can't open the folder", e))?;

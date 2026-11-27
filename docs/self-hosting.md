@@ -28,7 +28,7 @@ TrueNAS).
 Set `DOMAIN` to the address clients use, for example `https://vault.example.com`. Sign-in proofs
 are checked against it. Settings use Vaultwarden's names (`DOMAIN`, `DATABASE_URL`,
 `SIGNUPS_ALLOWED`, `DATA_FOLDER`, `LOG_LEVEL`, `ROCKET_ADDRESS`, `ROCKET_PORT`, `IP_HEADER`), plus
-`KEMLOCK_TRUSTED_PROXIES`, `KEMLOCK_LOG_FORMAT`, `KEMLOCK_BROWSER_EXTENSION_IDS` (see below) and
+`KEMLOCK_TRUSTED_PROXIES` (addresses or blocks such as `10.0.0.0/8`), `KEMLOCK_LOG_FORMAT`, `KEMLOCK_BROWSER_EXTENSION_IDS` (see below) and
 `KEMLOCK_SERVER_KEY`. A Vaultwarden setting
 Kemlock has no use for, such as `ADMIN_TOKEN`, is logged once as ignored.
 
@@ -328,7 +328,9 @@ Vaultwarden data, password hashes and keys included); a later pass is the comman
 
 **From the command line**, on the server (`kemlock-cli import-vaultwarden --from <folder|url>
 [--files <folder>] [--twice] [--apply] [--adopt-existing]`): `--from` is a data folder or a
-`mysql://` or `postgres://` URL, and without `--apply` it only prints the plan.
+`mysql://` or `postgres://` URL, and without `--apply` it only prints the plan. A URL with a password
+in it goes in an environment variable, `--from-env VW_DATABASE_URL`: an argument is visible to every
+user of the machine in the process list, so `--from` refuses a URL that carries a password.
 
 Both write only what an import made. An account or space whose id already exists on this server is
 the import's only when the import created it (the server keeps a record of each id a move created,
@@ -482,8 +484,14 @@ WebSocket through it. Kemlock serves the API, the web vault and both WebSocket r
 | HAProxy | A long `timeout tunnel`, such as `1h`, so idle WebSockets stay open |
 
 - Real client IPs. The header named by `IP_HEADER` is trusted only from the addresses in
-  `KEMLOCK_TRUSTED_PROXIES`, so rate limits see the real client. Set both, with the proxy's
-  address, or every client looks like the proxy. Kemlock reads every line of the header and takes
+  `KEMLOCK_TRUSTED_PROXIES`, so rate limits and connection caps see the real client. Set both:
+  without them every client looks like the proxy and shares one budget, so a few slow requests
+  from one person can lock everyone out. `KEMLOCK_TRUSTED_PROXIES` takes addresses and blocks of
+  them (`10.0.0.1, 10.244.0.0/16, fd00::/8`; `/0` is refused), and Kemlock refuses to start when
+  `IP_HEADER` is set with no trusted proxy. `compose.yaml` trusts `X-Forwarded-For` from
+  `172.16.0.0/12`, the Docker bridge networks the host's proxy arrives from; the Helm chart does
+  the same from the private ranges when the ingress is on (set `ipHeader` and `trustedProxies` to
+  narrow it to your controller). Kemlock reads every line of the header and takes
   the right-most address that is not a trusted proxy; have the outermost proxy drop any
   `X-Forwarded-For` the client sent (the HAProxy example does).
 - Private only. Bind the port to a Tailscale or WireGuard address, or run Tailscale as a sidecar
@@ -503,13 +511,17 @@ WebSocket through it. Kemlock serves the API, the web vault and both WebSocket r
   `upstream` block defaults to 60 seconds; if you raise those past 125 seconds, a request can be
   sent down a connection that is closing and fail with a 502). One client address may hold
   `KEMLOCK_MAX_CONNECTIONS_PER_IP` connections at once (default 64, `max_connections_per_ip` in
-  `kemlock.toml`, 0 for no limit; an IPv6 address counts by its /64), and further connections from
+  `kemlock.toml`, 0 for no limit; an IPv6 address counts by its /56), and further connections from
   it are closed. The addresses in `KEMLOCK_TRUSTED_PROXIES` are exempt, because behind a proxy
   every connection comes from the proxy. `KEMLOCK_MAX_CONNECTIONS` caps all connections together
-  (default 0, no limit): further clients wait in the operating system's queue until one ends, so
-  one client can fill it, which is why the per-address limit is the one on by default. Both count
-  WebSockets for as long as their socket is open. Raise the open-file limit with them
-  (`LimitNOFILE` in systemd, `--ulimit nofile` in Docker).
+  (default 4096, and never more than three quarters of the open-file limit the server runs under,
+  read at start from `/proc/self/limits`; 0 for no limit): further clients wait in the operating
+  system's queue until one ends, so a client that holds many connections can fill it, which is why
+  the per-address limit is there too. Both count WebSockets for as long as their socket is open.
+  Raise the open-file limit if you raise them (`LimitNOFILE` in systemd, `--ulimit nofile` in
+  Docker). An HTTP/2 connection is pinged every 30 seconds and dropped when the peer doesn't
+  answer within 20, is held to 100 streams and 32 KiB of request headers, and is ended gracefully
+  once it has had no request in flight for 125 seconds.
 - IPv6. Kemlock listens dual-stack on `[::]` by default. Rate limits count an IPv6 client by its
   /56 (the failed-password limit per account counts by /64), so a host that rotates through the
   /64s of its site shares one count.

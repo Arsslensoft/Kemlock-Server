@@ -11,6 +11,7 @@ use super::{SendsError, parse_access_id, proof_matches};
 use crate::files::BlobRead;
 use crate::platform::Platform;
 use crate::ports::UserRepo;
+use kemlock_domain::UserId;
 use kemlock_domain::sends::{SendId, SendKind, SendRecord};
 use time::OffsetDateTime;
 
@@ -45,6 +46,13 @@ pub struct SendDownload {
 }
 
 impl<S: SendRepo, U: UserRepo, B: SendBlobs, E: Platform> AccessSend<S, U, B, E> {
+    /// Whether the Send's owner may have Sends open: an account an admin disabled, or one that
+    /// waits out its erasure, has none (they open again if the account does).
+    async fn owner_is_active(&self, owner: UserId) -> Result<bool, SendsError> {
+        Ok(!self.users.account_disabled(owner).await?
+            && self.users.erasure_pending(owner).await?.is_none())
+    }
+
     /// The Send behind `access_id` if it is open, with its password checked.
     async fn open(&self, access_id: &str, proof: Option<&[u8]>) -> Result<SendRecord, SendsError> {
         let id = parse_access_id(access_id).ok_or(SendsError::NotFound)?;
@@ -54,6 +62,9 @@ impl<S: SendRepo, U: UserRepo, B: SendBlobs, E: Platform> AccessSend<S, U, B, E>
             .await?
             .filter(|send| send.is_open(self.env.now()))
             .ok_or(SendsError::NotFound)?;
+        if !self.owner_is_active(send.owner).await? {
+            return Err(SendsError::NotFound);
+        }
         if let Some(password) = &send.password {
             match proof {
                 None => return Err(SendsError::PasswordRequired),
@@ -68,12 +79,16 @@ impl<S: SendRepo, U: UserRepo, B: SendBlobs, E: Platform> AccessSend<S, U, B, E>
     /// unknown Send is `NotFound`.
     pub async fn needs_password(&self, access_id: &str) -> Result<bool, SendsError> {
         let id = parse_access_id(access_id).ok_or(SendsError::NotFound)?;
-        self.sends
+        let send = self
+            .sends
             .send_by_id(id)
             .await?
             .filter(|send| send.is_open(self.env.now()))
-            .map(|send| send.has_password())
-            .ok_or(SendsError::NotFound)
+            .ok_or(SendsError::NotFound)?;
+        if !self.owner_is_active(send.owner).await? {
+            return Err(SendsError::NotFound);
+        }
+        Ok(send.has_password())
     }
 
     /// Opens a Send. A note counts a view; a file Send's description doesn't (the download does).

@@ -26,6 +26,7 @@ pub mod notify;
 pub mod passkeys;
 pub mod privacy;
 pub mod restore;
+pub mod security_headers;
 pub mod security_txt;
 pub mod sends;
 pub mod source;

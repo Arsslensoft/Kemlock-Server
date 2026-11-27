@@ -582,6 +582,7 @@ pub fn apply(snapshot: &Snapshot, live: &Live, limits: &Limits, mailer: &SwitchM
     live.set_send_limit(snapshot.send_limit);
     limits.sign_in.set_limit(snapshot.rate_sign_in_per_minute);
     limits.account.set_limit(snapshot.rate_password_failures);
+    limits.step_up.set_limit(snapshot.rate_second_step_failures);
     limits
         .second_step
         .set_limit(snapshot.rate_second_step_failures);
@@ -1191,6 +1192,7 @@ mod tests {
         assert_eq!(limits.sign_in.limit(), 20);
         assert_eq!(limits.account.limit(), 30);
         assert_eq!(limits.second_step.limit(), 8);
+        assert_eq!(limits.step_up.limit(), 8);
         assert_eq!(limits.register.limit(), 40);
 
         // Back to the defaults when the saved values are reset.

@@ -26,10 +26,10 @@
 
 use super::view::MaybeView;
 use crate::dto::decode;
-use crate::extract::{Authed, Body, DPOP_NONCE};
+use crate::extract::{Authed, Body, ClientIp, DPOP_NONCE};
 use crate::openapi::ProblemDoc;
 use crate::problem::{Problem, rate_limited};
-use crate::ratelimit::Limiter;
+use crate::ratelimit::{Limiter, ip_key};
 use crate::state::{Api, Crypto, Store};
 use axum::body::{Body as HttpBody, BodyDataStream, Bytes};
 use axum::extract::{FromRequestParts, Path, Request, State};
@@ -51,6 +51,7 @@ use kemlock_crypto::{kma1, send as format};
 use kemlock_domain::sends::{NewSend, SendFileFormat, SendId, SendKind, SendOptions, SendRecord};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::net::IpAddr;
 use std::sync::Arc;
 use time::OffsetDateTime;
 use utoipa::{OpenApi, ToSchema};
@@ -419,6 +420,8 @@ struct SendsInner<S, P, K, R, B, Q> {
     config: SendsConfig,
     /// Password tries: 10 a minute per Send, then doubling delays (design, "Rate limits").
     password_limit: Limiter,
+    /// Password proofs per client address: 30 a minute, then doubling delays, whatever the ids.
+    source_limit: Limiter,
 }
 
 /// The state of the Send routes: the API's own state, the Send repository, blob storage, the
@@ -440,6 +443,9 @@ impl<S, P, K, R, B, Q> std::fmt::Debug for SendsApi<S, P, K, R, B, Q> {
 /// Wrong tries allowed per Send per minute.
 const PASSWORD_TRIES_PER_MINUTE: u32 = 10;
 
+/// Password proofs one client address may send a minute, to any Sends.
+const PROOFS_PER_ADDRESS_PER_MINUTE: u32 = 30;
+
 impl<S, P, K, R, B, Q> SendsApi<S, P, K, R, B, Q> {
     pub fn new(api: Api<S, P, K>, sends: R, blobs: B, policies: Q, config: SendsConfig) -> Self {
         SendsApi(Arc::new(SendsInner {
@@ -449,6 +455,7 @@ impl<S, P, K, R, B, Q> SendsApi<S, P, K, R, B, Q> {
             policies,
             config,
             password_limit: Limiter::new(PASSWORD_TRIES_PER_MINUTE, 60),
+            source_limit: Limiter::new(PROOFS_PER_ADDRESS_PER_MINUTE, 60),
         }))
     }
 }
@@ -474,6 +481,30 @@ where
         <Authed as FromRequestParts<Api<S, P, K>>>::from_request_parts(parts, &sends.0.api)
             .await
             .map(SendAuthed)
+    }
+}
+
+/// The client's address, checked by the API's own extractor against the API's own state.
+pub(crate) struct SendClientIp(IpAddr);
+
+impl<S, P, K, R, B, Q> FromRequestParts<SendsApi<S, P, K, R, B, Q>> for SendClientIp
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: Send + Sync + 'static,
+    B: Send + Sync + 'static,
+    Q: Send + Sync + 'static,
+{
+    type Rejection = Problem;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        sends: &SendsApi<S, P, K, R, B, Q>,
+    ) -> Result<Self, Problem> {
+        <ClientIp as FromRequestParts<Api<S, P, K>>>::from_request_parts(parts, &sends.0.api)
+            .await
+            .map(|ClientIp(ip)| SendClientIp(ip))
     }
 }
 
@@ -620,14 +651,48 @@ where
 
     /// Counts one password try against the Send, when the request carries a proof: a 429 when it
     /// is over. A request without a proof reveals nothing and costs nothing, so it isn't counted.
-    fn count_try(&self, access_id: &str, proof: &Option<Vec<u8>>) -> Result<(), Problem> {
+    ///
+    /// Two counts. Each address (a /56 for IPv6) takes only so many proofs a minute, whatever
+    /// the ids. Then the Send itself counts the tries, keyed by its id, and only once the id
+    /// parses and names an open Send that has a password: a flood of made-up ids can't push the
+    /// counter of a real Send out of the limiter, because made-up ids are never counted there.
+    async fn count_try(
+        &self,
+        access_id: &str,
+        proof: &Option<Vec<u8>>,
+        ip: IpAddr,
+    ) -> Result<(), Problem> {
         if proof.is_none() {
+            return Ok(());
+        }
+        let now = self.0.api.now();
+        self.0
+            .source_limit
+            .check(&ip_key(ip), now)
+            .map_err(rate_limited)?;
+        let Some(id) = parse_access_id(access_id) else {
+            return Ok(());
+        };
+        let send = self
+            .0
+            .sends
+            .send_by_id(id)
+            .await
+            .map_err(|e| self.problem(SendsError::from(e)))?;
+        if !send.is_some_and(|s| s.has_password() && s.is_open(self.0.api.crypto.now())) {
             return Ok(());
         }
         self.0
             .password_limit
-            .check(access_id, self.0.api.now())
+            .check(&format!("send:{id}"), now)
             .map_err(rate_limited)
+    }
+
+    /// Forgets the Send's wrong tries, after a right password.
+    fn clear_tries(&self, access_id: &str) {
+        if let Some(id) = parse_access_id(access_id) {
+            self.0.password_limit.clear(&format!("send:{id}"));
+        }
     }
 
     /// `POST /kem/v1/sends`.
@@ -798,10 +863,11 @@ where
         State(sends): State<Self>,
         Path(access_id): Path<String>,
         MaybeView(view): MaybeView,
+        SendClientIp(ip): SendClientIp,
         body: Body,
     ) -> Result<Response, Problem> {
         let proof = proof_of(&body)?;
-        sends.count_try(&access_id, &proof)?;
+        sends.count_try(&access_id, &proof, ip).await?;
         sends.refuse_if_limited_elsewhere(view, &access_id).await?;
         let opened = sends
             .access()
@@ -809,7 +875,7 @@ where
             .await
             .map_err(|e| sends.problem(e))?;
         if proof.is_some() {
-            sends.0.password_limit.clear(&access_id);
+            sends.clear_tries(&access_id);
         }
         let dto = AccessDto {
             id: access_id,
@@ -833,10 +899,11 @@ where
         State(sends): State<Self>,
         Path(access_id): Path<String>,
         MaybeView(view): MaybeView,
+        SendClientIp(ip): SendClientIp,
         body: Body,
     ) -> Result<Response, Problem> {
         let proof = proof_of(&body)?;
-        sends.count_try(&access_id, &proof)?;
+        sends.count_try(&access_id, &proof, ip).await?;
         sends.refuse_if_limited_elsewhere(view, &access_id).await?;
         let downloaded = sends
             .access()
@@ -844,7 +911,7 @@ where
             .await
             .map_err(|e| sends.problem(e))?;
         if proof.is_some() {
-            sends.0.password_limit.clear(&access_id);
+            sends.clear_tries(&access_id);
         }
         let size = downloaded.read.size;
         let mut response = Response::new(HttpBody::from_stream(downloaded.read.body));

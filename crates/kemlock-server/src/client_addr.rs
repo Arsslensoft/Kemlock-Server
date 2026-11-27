@@ -13,7 +13,7 @@ use axum::extract::{ConnectInfo, Request, State};
 use axum::http::HeaderMap;
 use axum::middleware::Next;
 use axum::response::Response;
-use kemlock_api_kem::ratelimit::{client_ip, joined_header};
+use kemlock_api_kem::ratelimit::{Proxy, client_ip, joined_header};
 use kemlock_app::privacy::ClientAddr;
 use kemlock_store_sql::with_request_ip;
 use std::net::{IpAddr, SocketAddr};
@@ -22,7 +22,7 @@ use std::sync::Arc;
 /// What tells a proxy's client from the proxy.
 #[derive(Clone, Debug, Default)]
 pub struct ClientAddrSettings {
-    pub trusted_proxies: Vec<IpAddr>,
+    pub trusted_proxies: Vec<Proxy>,
     pub ip_header: Option<String>,
 }
 
@@ -87,7 +87,7 @@ mod tests {
 
     fn settings(proxies: &[&str], header: Option<&str>) -> ClientAddrSettings {
         ClientAddrSettings {
-            trusted_proxies: proxies.iter().map(|p| ip(p)).collect(),
+            trusted_proxies: proxies.iter().map(|p| Proxy::from(ip(p))).collect(),
             ip_header: header.map(str::to_owned),
         }
     }

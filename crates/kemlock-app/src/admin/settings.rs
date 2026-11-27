@@ -229,35 +229,35 @@ pub const DEFINITIONS: &[Definition] = &[
     Definition {
         key: "rate_sign_in_per_minute",
         group: "rate-limits",
-        kind: Kind::Int { min: 1, max: 1000 },
+        kind: Kind::Int { min: 1, max: 100 },
         default: "10",
         env: "KEMLOCK_RATE_SIGN_IN_PER_MINUTE",
     },
     Definition {
         key: "rate_password_failures_per_15_minutes",
         group: "rate-limits",
-        kind: Kind::Int { min: 1, max: 1000 },
+        kind: Kind::Int { min: 1, max: 30 },
         default: "10",
         env: "KEMLOCK_RATE_PASSWORD_FAILURES",
     },
     Definition {
         key: "rate_second_step_failures_per_15_minutes",
         group: "rate-limits",
-        kind: Kind::Int { min: 1, max: 1000 },
+        kind: Kind::Int { min: 1, max: 20 },
         default: "5",
         env: "KEMLOCK_RATE_SECOND_STEP_FAILURES",
     },
     Definition {
         key: "rate_second_step_challenges_per_5_minutes",
         group: "rate-limits",
-        kind: Kind::Int { min: 1, max: 1000 },
+        kind: Kind::Int { min: 1, max: 30 },
         default: "10",
         env: "KEMLOCK_RATE_SECOND_STEP_CHALLENGES",
     },
     Definition {
         key: "rate_register_per_hour",
         group: "rate-limits",
-        kind: Kind::Int { min: 1, max: 1000 },
+        kind: Kind::Int { min: 1, max: 50 },
         default: "10",
         env: "KEMLOCK_RATE_REGISTER_PER_HOUR",
     },
@@ -511,10 +511,78 @@ fn clean_domains(raw: &str) -> Result<String, AdminError> {
     Ok(seen.join(","))
 }
 
-/// Whether `value` is an address the push relays may be reached at: https, or plain http on the
-/// loopback address (the installation key travels with every request).
-fn is_relay_url(value: &str) -> bool {
-    crate::push::is_relay_url(value)
+/// Whether `value` is an address the server may reach out to from the console's settings: `https`,
+/// no user name or password, and a host that is a name or a public IP address. An IP literal in a
+/// private, loopback, link-local or other special range, `localhost` and the names a network
+/// keeps for itself (`.local`, `.internal`, `.localhost`, `.lan`, `.home.arpa`) are refused, so a
+/// saved setting can't point the server at its own network. (A name that resolves to a private
+/// address is not caught here; the code that dials it is the second guard.) What the environment
+/// sets is the operator's own and is not held to this.
+fn is_public_https_url(value: &str) -> bool {
+    use url::Host;
+    let Ok(url) = url::Url::parse(value.trim()) else {
+        return false;
+    };
+    if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
+        return false;
+    }
+    match url.host() {
+        Some(Host::Domain(name)) => {
+            let name = name.trim_end_matches('.').to_ascii_lowercase();
+            const PRIVATE_SUFFIXES: [&str; 6] = [
+                ".localhost",
+                ".local",
+                ".internal",
+                ".lan",
+                ".home.arpa",
+                ".localdomain",
+            ];
+            !(name == "localhost"
+                || name.is_empty()
+                || !name.contains('.')
+                || PRIVATE_SUFFIXES.iter().any(|suffix| name.ends_with(suffix)))
+        }
+        Some(Host::Ipv4(ip)) => public_ip(std::net::IpAddr::V4(ip)),
+        Some(Host::Ipv6(ip)) => public_ip(std::net::IpAddr::V6(ip)),
+        None => false,
+    }
+}
+
+/// Whether `ip` is on the public internet: not private, loopback, link-local, shared (carrier-grade
+/// NAT), documentation, multicast, unspecified or reserved, and, for IPv6, not carrying such an
+/// IPv4 address.
+fn public_ip(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            let [a, b, c, _] = v4.octets();
+            !(v4.is_unspecified()
+                || v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || v4.is_documentation()
+                || a == 0
+                || (a == 100 && (64..=127).contains(&b))
+                || (a == 192 && b == 0 && c == 0)
+                || (a == 198 && (b == 18 || b == 19))
+                || a >= 240)
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return public_ip(IpAddr::V4(v4));
+            }
+            let first = v6.segments()[0];
+            !(v6.is_unspecified()
+                || v6.is_loopback()
+                || v6.is_multicast()
+                // fc00::/7 unique local, fe80::/10 link-local, 2001:db8::/32 documentation.
+                || (first & 0xfe00) == 0xfc00
+                || (first & 0xffc0) == 0xfe80
+                || (first == 0x2001 && v6.segments()[1] == 0x0db8))
+        }
+    }
 }
 
 /// What the store keeps in the data folder, by the start of the name: a backup folder saved in the
@@ -556,9 +624,9 @@ fn is_folder_inside(value: &str) -> bool {
 fn check_text(key: &str, value: &str) -> Result<(), &'static str> {
     match key {
         "push_relay_uri" | "push_identity_uri" | "kemlock_push_relay_url"
-            if !value.is_empty() && !is_relay_url(value) =>
+            if !value.is_empty() && !is_public_https_url(value) =>
         {
-            Err("must be an https address")
+            Err("must be an https address of a public host (not localhost or a private network)")
         }
         "backup_destination" if !is_folder_inside(value) => {
             Err("must be a folder inside the data folder, such as backups")
@@ -827,6 +895,21 @@ impl<R: SettingsRepo, S: SecretSeal, E: EnvSettings> Settings<R, S, E> {
                 }
             }
         }
+        // The stored SMTP password was made for the host it was saved with. Pointing the server at
+        // another host while keeping it would send it there, and an admin who can set the host
+        // could collect it: a new host starts without a password unless one is set with it.
+        if let Some(change) = changes.get("smtp_host")
+            && !changes.contains_key("smtp_password")
+        {
+            let now = match change {
+                Change::Set(value) => value.trim().to_owned(),
+                Change::Reset => String::new(),
+            };
+            let before = self.get("smtp_host").await?.unwrap_or_default();
+            if now != before.trim() {
+                writes.push(("smtp_password", None));
+            }
+        }
         // A link can't be mailed without a mail server, and an account held back for one that never
         // comes can't be used: turning the setting on needs the SMTP settings the server needs to
         // make a mail server, saved with it or already set (a host and a sender, and a user name
@@ -971,7 +1054,25 @@ mod tests {
         ] {
             let d = def(key);
             assert!(validate(d, "https://push.example.org").is_ok(), "{key}");
-            assert!(validate(d, "http://127.0.0.1:9000").is_ok(), "{key}");
+            assert!(validate(d, "http://127.0.0.1:9000").is_err(), "{key}");
+            for private in [
+                "https://localhost",
+                "https://127.0.0.1",
+                "https://10.0.0.5/relay",
+                "https://192.168.1.2",
+                "https://169.254.169.254/latest",
+                "https://[::1]/",
+                "https://[fd00::1]/",
+                "https://[::ffff:10.0.0.1]/",
+                "https://nas.local",
+                "https://relay.internal",
+                "https://intranet",
+                "https://user:pw@push.example.org",
+            ] {
+                assert!(validate(d, private).is_err(), "{key}: {private}");
+            }
+            assert!(validate(d, "https://203.0.113.9").is_err(), "documentation range");
+            assert!(validate(d, "https://93.184.216.34/relay").is_ok(), "{key}");
             assert!(validate(d, "http://push.example.org").is_err(), "{key}");
         }
         assert!(validate(def("kemlock_push_relay_url"), "").is_ok());

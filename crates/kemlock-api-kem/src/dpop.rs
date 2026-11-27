@@ -20,7 +20,9 @@
 //! per client address; a proof that carries a valid access token goes in the authenticated set.
 //! Anyone who can register an account can get such a token, so the authenticated set is not
 //! closed to strangers: each device is limited in how many authenticated requests it may make
-//! (`Limits::device_proof`), which bounds what one registration can put in. A full open set
+//! (`Limits::device_proof`), and one account may take only `1/ACCOUNT_SHARE` of the set whatever
+//! its number of devices, which bounds what one registration can put in. The proof is remembered
+//! only once the token it carries is shown to belong to a live session. A full open set
 //! refuses only sign-ins, never a call that already holds a token or a refresh.
 
 use crate::replay::{Full, TimedSet};
@@ -43,6 +45,10 @@ pub const MAX_TRACKED_JTIS: usize = 100_000;
 pub const MAX_OPEN_JTIS: usize = 25_000;
 /// One source may take 1/this of the open set, so it takes 100 sources to fill it.
 pub const OPEN_SOURCE_SHARE: usize = 100;
+/// One account may take 1/this of the authenticated set, however many devices it has, so it
+/// takes 20 accounts to fill it. An honest account's devices put in a few hundred proofs in the
+/// five minutes a proof id is kept.
+pub const ACCOUNT_SHARE: usize = 20;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DpopError {
@@ -65,6 +71,8 @@ pub struct DpopVerifier {
     seen_open: TimedSet,
     /// How many of the open set one source (client address) may take.
     open_source_cap: usize,
+    /// How many of the authenticated set one account may take.
+    account_cap: usize,
 }
 
 /// A proof that passed every check and is not remembered yet: see
@@ -178,6 +186,7 @@ impl DpopVerifier {
             seen: TimedSet::new(JTI_TTL_SECS, cap),
             seen_open: TimedSet::new(JTI_TTL_SECS, open_cap),
             open_source_cap: (open_cap / OPEN_SOURCE_SHARE).max(1),
+            account_cap: (cap / ACCOUNT_SHARE).max(1),
         })
     }
 
@@ -272,11 +281,47 @@ impl DpopVerifier {
         path: &str,
         now: i64,
     ) -> Result<Pending, DpopError> {
-        let (jkt, id) = self.check(proof, method, path, now, None)?;
+        self.verify_unrecorded_with(proof, method, path, now, None)
+    }
+
+    /// [`DpopVerifier::verify_unrecorded`] for a request that carries `access_token` (the proof's
+    /// `ath` must hash it) or none. The caller records the proof with
+    /// [`DpopVerifier::record_for_account`] once the token is shown to belong to a live session,
+    /// so a token that is signed but refused (a stale security stamp, a signed-out device) leaves
+    /// nothing in the set.
+    pub fn verify_unrecorded_with(
+        &self,
+        proof: &str,
+        method: &str,
+        path: &str,
+        now: i64,
+        access_token: Option<&str>,
+    ) -> Result<Pending, DpopError> {
+        let (jkt, id) = self.check(proof, method, path, now, access_token)?;
         if self.seen.contains(id.as_bytes(), now) || self.seen_open.contains(id.as_bytes(), now) {
             return Err(DpopError::Invalid("the proof was already used"));
         }
         Ok(Pending { jkt, id })
+    }
+
+    /// Remembers a proof [`DpopVerifier::verify_unrecorded_with`] let through, in the set of
+    /// proofs that belong to sessions, on behalf of `account` (a stable text for the signed-in
+    /// account): one account may take only `1/ACCOUNT_SHARE` of the set, so no number of devices
+    /// can fill it for everybody else.
+    pub fn record_for_account(
+        &self,
+        pending: &Pending,
+        account: &[u8],
+        now: i64,
+    ) -> Result<(), DpopError> {
+        match self
+            .seen
+            .insert_from(account, self.account_cap, pending.id.as_bytes(), now)
+        {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(DpopError::Invalid("the proof was already used")),
+            Err(Full) => Err(DpopError::Overloaded),
+        }
     }
 
     /// Remembers a proof [`DpopVerifier::verify_unrecorded`] let through, in the set of proofs
@@ -631,6 +676,75 @@ mod tests {
                 None
             )
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn one_account_takes_only_its_share_of_the_authenticated_set() {
+        // A share of 40 / ACCOUNT_SHARE = 2 proofs, however many devices the account has.
+        let v = DpopVerifier::with_capacities("https://vault.example.org", [3u8; 32], 40, 5)
+            .expect("a valid domain");
+        let nonce = v.current_nonce(NOW);
+        let record = |account: &[u8], signer: &DpopSigner, jti: &str| {
+            let proof = signer.proof(&ProofClaims {
+                access_token: Some("tok"),
+                ..claims(jti, &nonce)
+            });
+            let pending = v
+                .verify_unrecorded_with(&proof, "POST", PATH, NOW, Some("tok"))
+                .expect("valid");
+            v.record_for_account(&pending, account, NOW)
+        };
+        let (first, second) = (DpopSigner::es256(), DpopSigner::es256());
+        assert_eq!(record(b"user:a", &first, "1"), Ok(()));
+        assert_eq!(record(b"user:a", &second, "2"), Ok(()));
+        assert_eq!(
+            record(b"user:a", &first, "3"),
+            Err(DpopError::Overloaded),
+            "a third proof of the same account"
+        );
+        assert_eq!(
+            record(b"user:b", &first, "4"),
+            Ok(()),
+            "another account is not held back"
+        );
+    }
+
+    #[test]
+    fn a_proof_with_a_token_is_remembered_only_when_it_is_recorded() {
+        let v = verifier();
+        let signer = DpopSigner::es256();
+        let nonce = v.current_nonce(NOW);
+        let proof = signer.proof(&ProofClaims {
+            access_token: Some("tok"),
+            ..claims("p", &nonce)
+        });
+        // The token is signed but the session behind it is refused: nothing is recorded.
+        for _ in 0..3 {
+            assert!(
+                v.verify_unrecorded_with(&proof, "POST", PATH, NOW, Some("tok"))
+                    .is_ok()
+            );
+        }
+        assert_eq!(v.tracked(), 0);
+        let wrong_token = signer.proof(&ProofClaims {
+            access_token: Some("other"),
+            ..claims("q", &nonce)
+        });
+        assert!(
+            v.verify_unrecorded_with(&wrong_token, "POST", PATH, NOW, Some("tok"))
+                .is_err(),
+            "the proof's ath must hash the token"
+        );
+        let pending = v
+            .verify_unrecorded_with(&proof, "POST", PATH, NOW, Some("tok"))
+            .expect("valid");
+        assert_eq!(v.record_for_account(&pending, b"user:a", NOW), Ok(()));
+        assert_eq!(v.tracked(), 1);
+        assert_eq!(
+            v.verify_unrecorded_with(&proof, "POST", PATH, NOW + 1, Some("tok"))
+                .err(),
+            Some(DpopError::Invalid("the proof was already used"))
         );
     }
 

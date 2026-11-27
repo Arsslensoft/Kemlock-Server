@@ -33,7 +33,8 @@ use crate::tables::{
 };
 use crate::tables::{dedup_owners, item_tags};
 use crate::tables::{
-    refresh_tokens, second_step_attempts, two_factor, two_factor_recovery, two_step_versions, users,
+    refresh_tokens, second_step_attempts, step_up_attempts, two_factor, two_factor_recovery,
+    two_step_versions, users,
 };
 use kemlock_app::ports::{DeviceRepo, Event, ItemStore, StoreError, TwoFactorRepo};
 use kemlock_app::privacy::{
@@ -51,7 +52,8 @@ use kemlock_federation::home::Policy;
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{
-    ColumnTrait, Condition, DatabaseTransaction, EntityTrait, QueryFilter, QueryOrder, QuerySelect,
+    ColumnTrait, ConnectionTrait, Condition, DatabaseTransaction, EntityTrait, QueryFilter, QueryOrder,
+    QuerySelect,
     TransactionTrait,
 };
 use std::collections::HashMap;
@@ -594,6 +596,29 @@ async fn erase_in(
     {
         return Err(StoreError::NotFound);
     }
+    // The last admin can't go. Counted here, in the erasing transaction, with the admins' rows
+    // locked (PostgreSQL and MySQL; SQLite has one writer), so two admins erasing each other at
+    // the same moment can't both see the other still standing and leave none.
+    if user.is_admin() {
+        let mut admins = users::Entity::find()
+            .filter(users::Column::Role.eq(users::ROLE_ADMIN))
+            .order_by_asc(users::Column::Id);
+        if txn.get_database_backend() != sea_orm::DbBackend::Sqlite {
+            admins = admins.lock_exclusive();
+        }
+        let others = admins
+            .all(txn)
+            .await
+            .store()?
+            .into_iter()
+            .filter(|row| row.id != uid)
+            .count();
+        if others == 0 {
+            return Err(StoreError::Backend(
+                kemlock_app::privacy::LAST_ADMIN.to_owned(),
+            ));
+        }
+    }
     let mut out = ErasedRows::default();
 
     // Spaces: the account's place in each, and the spaces it was alone in.
@@ -718,6 +743,11 @@ async fn erase_in(
         .store()?;
     second_step_attempts::Entity::delete_many()
         .filter(second_step_attempts::Column::UserId.eq(uid))
+        .exec(txn)
+        .await
+        .store()?;
+    step_up_attempts::Entity::delete_many()
+        .filter(step_up_attempts::Column::UserId.eq(uid))
         .exec(txn)
         .await
         .store()?;

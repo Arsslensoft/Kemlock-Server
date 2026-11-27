@@ -10,8 +10,8 @@ use kemlock_app::devices::{
 use kemlock_app::ports::Clock;
 use kemlock_app::{Actor, AppError, DeviceInfo, SignedIn};
 use kemlock_domain::unlock::{
-    ApprovalState, HOURLY_REQUEST_LIMIT, KX1_PUBLIC_KEY_LEN, REQUEST_TTL, SEALED_BOX_OVERHEAD,
-    SOURCE_HOURLY_REQUEST_LIMIT,
+    ApprovalState, HARD_HOURLY_REQUEST_LIMIT, HOURLY_REQUEST_LIMIT, KX1_PUBLIC_KEY_LEN,
+    REQUEST_TTL, SEALED_BOX_OVERHEAD, SOURCE_HOURLY_REQUEST_LIMIT,
 };
 use kemlock_domain::{DeviceId, DeviceKind, UserId};
 use std::net::{IpAddr, Ipv4Addr};
@@ -223,29 +223,36 @@ async fn an_address_takes_three_requests_an_hour_and_the_rest_are_answered_like_
 }
 
 #[tokio::test]
-async fn all_addresses_take_thirty_an_hour_and_the_owner_is_told_once_when_one_is_held_back() {
+async fn all_addresses_take_thirty_an_hour_and_the_rest_are_stored_held_back_and_shown() {
     let (world, _, open) = account().await;
     let notices = FakeNotices::default();
     let use_case = request_approval(&world, &notices);
 
     for i in 0..HOURLY_REQUEST_LIMIT {
-        use_case
+        let requested = use_case
             .execute(input_from(EMAIL, public_key(i as u8), i as u8))
             .await
             .expect("inside the limit");
+        assert!(!requested.held_back, "{i}");
     }
     assert_eq!(world.store.auth_request_count(), HOURLY_REQUEST_LIMIT);
     // The owner is mailed about the first few only.
     assert_eq!(notices.new_devices().len(), NOTICES_PER_HOUR);
 
-    // The next, from an address nobody has heard from, is answered like any other but held back:
-    // no open device is shown it, and the owner is told approvals are being throttled.
+    // The next, from an address nobody has heard from, is stored like any other and shown on the
+    // account's open devices, so a flood of look-alikes can't hide the owner's own request. The
+    // new device is told it was held back, and the owner is told approvals are being throttled.
     let key = public_key(99);
     let held = use_case
         .execute(input_from(EMAIL, key.clone(), 200))
         .await
         .expect("answered like any other");
     assert_eq!(held.phrase, phrase_for(&world.env, &key));
+    assert!(held.held_back);
+    assert_eq!(
+        world.store.auth_request(held.id).expect("stored").state,
+        ApprovalState::Pending
+    );
     assert_eq!(notices.new_devices().len(), NOTICES_PER_HOUR + 1);
     assert!(
         notices.new_devices()[NOTICES_PER_HOUR]
@@ -259,17 +266,13 @@ async fn all_addresses_take_thirty_an_hour_and_the_owner_is_told_once_when_one_i
         .expect("answered like any other");
     assert_eq!(notices.new_devices().len(), NOTICES_PER_HOUR + 1);
     let listed = list_approvals(&world).execute(&open).await.expect("lists");
-    assert_eq!(
-        listed.len(),
-        HOURLY_REQUEST_LIMIT,
-        "held back ones are not shown"
-    );
-    assert!(world.store.auth_request(held.id).is_none());
+    assert_eq!(listed.len(), HOURLY_REQUEST_LIMIT + 2);
+    assert!(listed.iter().any(|p| p.id == held.id));
 }
 
 #[tokio::test]
-async fn an_address_the_owner_was_answered_from_is_not_held_back_with_the_rest() {
-    let (world, _, open) = account().await;
+async fn past_the_hard_limit_nothing_is_stored_but_the_owners_own_address_still_is() {
+    let (world, _, _) = account().await;
     let notices = FakeNotices::default();
     let use_case = request_approval(&world, &notices);
 
@@ -287,28 +290,34 @@ async fn an_address_the_owner_was_answered_from_is_not_held_back_with_the_rest()
             .await
             .expect("saved")
     );
-    // Strangers use up the rest of the account's hour.
-    for i in 1..HOURLY_REQUEST_LIMIT {
+    // Strangers use up the rest of the account's hour: three each from a /24 of its own.
+    let mut n = 0u8;
+    while world.store.auth_request_count() < HARD_HOURLY_REQUEST_LIMIT {
         use_case
-            .execute(input_from(EMAIL, public_key(i as u8), i as u8))
+            .execute(input_from(EMAIL, public_key(n), n))
             .await
-            .expect("inside the limit");
+            .expect("answered");
+        n += 1;
     }
-    // The owner asks again from the same address: a real request, shown on the open devices.
+    assert_eq!(world.store.auth_request_count(), HARD_HOURLY_REQUEST_LIMIT);
+
+    // A stranger's is answered like any other, held back, and not stored.
+    let stranger = use_case
+        .execute(input_from(EMAIL, public_key(78), 220))
+        .await
+        .expect("answered");
+    assert!(stranger.held_back);
+    assert!(world.store.auth_request(stranger.id).is_none());
+    assert_eq!(world.store.auth_request_count(), HARD_HOURLY_REQUEST_LIMIT);
+
+    // The owner asks again from the address that was answered: a real request, shown on the open
+    // devices whatever the hour holds.
     let again = use_case
         .execute(input_from(EMAIL, public_key(77), 150))
         .await
         .expect("answered");
     let stored = world.store.auth_request(again.id).expect("stored for real");
     assert_eq!(stored.state, ApprovalState::Pending);
-    let listed = list_approvals(&world).execute(&open).await.expect("lists");
-    assert!(listed.iter().any(|p| p.id == again.id));
-    // A stranger's is held back.
-    let stranger = use_case
-        .execute(input_from(EMAIL, public_key(78), 220))
-        .await
-        .expect("answered");
-    assert!(world.store.auth_request(stranger.id).is_none());
 }
 
 #[tokio::test]

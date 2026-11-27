@@ -23,7 +23,7 @@ pub mod state;
 pub use admin::{
     AdminActor, AdminGate, AdminState, ApiError, GateRefusal, admin_openapi, admin_router,
 };
-pub use homegate::{HOME_HEADER, HomeGate, home_gate, home_only_target};
+pub use homegate::{HOME_HEADER, HomeGate, HomeTarget, home_gate, home_only_target};
 pub use identity::{
     FileRotator, IdentityError, IdentityParams, REFRESH_AFTER_SECS, default_suites, load_or_create,
     refresh_due, rotate_identity,

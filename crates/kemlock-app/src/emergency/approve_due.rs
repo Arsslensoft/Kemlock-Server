@@ -31,15 +31,25 @@ impl<U: UserRepo, R: EmergencyRepo, N: EmergencyNotices, E: Platform, V: EventLo
             if !grant.is_due(now) {
                 continue;
             }
+            // As read: the timer writes only over this very version of the grant.
+            let version = grant.updated_at;
+            // The grantor's account is disabled or erasing: the grant is inactive, and the wait
+            // that has run out is not an approval until the account is back.
+            if self.users.account_disabled(grant.grantor).await?
+                || self.users.erasure_pending(grant.grantor).await?.is_some()
+            {
+                continue;
+            }
             if grant.approve_due(now).is_err() {
                 continue;
             }
             if !self
                 .grants
-                .save_grant(&grant, EmergencyState::RecoveryInitiated)
+                .save_grant_at(&grant, EmergencyState::RecoveryInitiated, Some(version), None)
                 .await?
             {
-                // The grantor refused, or another replica approved, in the meantime.
+                // The grantor refused (and the contact perhaps asked again: a new wait), or another
+                // replica approved, in the meantime.
                 continue;
             }
             approved += 1;

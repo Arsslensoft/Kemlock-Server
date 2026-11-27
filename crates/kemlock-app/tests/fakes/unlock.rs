@@ -73,6 +73,28 @@ impl ApprovalRepo for FakeStore {
         Ok(())
     }
 
+    async fn insert_request_within(
+        &self,
+        request: &AuthRequest,
+        since: OffsetDateTime,
+        max_recent: usize,
+    ) -> Result<bool, StoreError> {
+        let mut g = self.unlock.lock();
+        let recent = g
+            .requests
+            .values()
+            .filter(|r| r.user == request.user && r.created_at > since)
+            .count();
+        if recent >= max_recent {
+            return Ok(false);
+        }
+        if g.requests.contains_key(&request.id) {
+            return Err(StoreError::Duplicate);
+        }
+        g.requests.insert(request.id, request.clone());
+        Ok(true)
+    }
+
     async fn request(&self, id: ApprovalId) -> Result<Option<AuthRequest>, StoreError> {
         Ok(self.unlock.lock().requests.get(&id).cloned())
     }
@@ -250,10 +272,20 @@ impl EmergencyRepo for FakeStore {
         &self,
         grant: &EmergencyGrant,
         from: EmergencyState,
+        version: Option<OffsetDateTime>,
         key_version: Option<u32>,
     ) -> Result<bool, StoreError> {
         self.check_key_version(grant.grantor, key_version)?;
-        self.save_grant(grant, from).await
+        let mut g = self.unlock.lock();
+        match g.grants.get_mut(&grant.id) {
+            Some(stored)
+                if stored.state == from && version.is_none_or(|version| stored.updated_at == version) =>
+            {
+                *stored = grant.clone();
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
     }
 
     async fn recovering_grants(&self) -> Result<Vec<EmergencyGrant>, StoreError> {

@@ -110,6 +110,24 @@ pub fn create_private_file(path: &Path) -> std::io::Result<File> {
     Ok(file)
 }
 
+/// Makes `path` and any missing parents as folders only their owner can use (0700 on Unix), when
+/// it does not exist. A folder that is there is left as it is: the operator, a container runtime
+/// or an installer chose its mode. The data folder holds `server.key`, the database and the sealed
+/// secrets, so every entry point that may be the one to make it makes it this way.
+pub fn create_private_dir(path: &Path) -> std::io::Result<()> {
+    if path.is_dir() {
+        return Ok(());
+    }
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(path)
+}
+
 /// Whether a restore puts `data/<name>` back into the data folder. A backup writes the sealed
 /// secrets (`*.sealed`), the Bitwarden token key (`rsa_key.pem`) and the Vaultwarden settings file
 /// (`config.json`) there; any other name is not something a restore installs, so an archive
@@ -1072,5 +1090,26 @@ mod tests {
         assert_eq!(safe_relative(Path::new("/etc/passwd")), None);
         assert_eq!(safe_relative(Path::new("a/../../x")), None);
         assert_eq!(safe_relative(Path::new("")), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_made_for_the_server_is_private_and_one_that_exists_is_left_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().expect("a folder");
+        let made = root.path().join("data").join("backups");
+        create_private_dir(&made).expect("made");
+        // The parent was made on the way, private too.
+        for folder in [&made, &root.path().join("data")] {
+            let mode = std::fs::metadata(folder).expect("meta").permissions().mode();
+            assert_eq!(mode & 0o777, 0o700, "{}", folder.display());
+        }
+        // A folder that is already there keeps the mode its owner gave it.
+        let shared = root.path().join("shared");
+        std::fs::create_dir(&shared).expect("a folder");
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o755)).expect("755");
+        create_private_dir(&shared).expect("fine");
+        let mode = std::fs::metadata(&shared).expect("meta").permissions().mode();
+        assert_eq!(mode & 0o777, 0o755);
     }
 }

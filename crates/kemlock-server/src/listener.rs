@@ -11,14 +11,18 @@
 //!   ends an idle connection, and no request is sent down one that is about to close;
 //! - a write-progress timeout: a write that moves no data for 60 seconds fails the connection, so a
 //!   client that never reads its response doesn't hold the connection (and its buffers) for ever;
-//! - a cap on the connections one client address holds (an IPv6 address by its /64), with the
+//! - a cap on the connections one client address holds (an IPv6 address by its /56), with the
 //!   trusted proxies exempt, because behind a proxy every connection comes from the proxy;
-//! - an optional cap on all connections, off by default.
+//! - a cap on all connections (4096 by default, and at most three quarters of the open-file limit);
+//! - for HTTP/2, which has no header-read timeout in hyper, pings that drop a dead peer, a bound on
+//!   the streams and header size of one connection, and a graceful end after it has had no request
+//!   in flight for the header-read timeout.
 //!
 //! A connection counts for as long as its socket lives, so a WebSocket, which leaves the HTTP
 //! connection when it upgrades, still counts: the permit lives in the socket.
 
 use crate::config::Config;
+use kemlock_api_kem::ratelimit::Proxy;
 use axum::Router;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto::Builder as ConnectionBuilder;
@@ -61,8 +65,35 @@ pub struct ServeLimits {
     pub max_connections: usize,
     /// How many connections one address holds at once; 0 for no limit.
     pub max_connections_per_ip: usize,
-    /// Addresses the per-address limit doesn't apply to: the trusted proxies.
-    pub exempt: Vec<IpAddr>,
+    /// Addresses (or blocks of them) the per-address limit doesn't apply to: the trusted proxies.
+    pub exempt: Vec<Proxy>,
+}
+
+/// The soft limit on open files this process runs under, read from `/proc/self/limits`. `None`
+/// where there is no such file (not Linux) or the limit is "unlimited".
+fn open_file_limit() -> Option<u64> {
+    let limits = std::fs::read_to_string("/proc/self/limits").ok()?;
+    parse_open_file_limit(&limits)
+}
+
+/// The soft "Max open files" value of the text of `/proc/self/limits`.
+fn parse_open_file_limit(limits: &str) -> Option<u64> {
+    let line = limits
+        .lines()
+        .find(|line| line.starts_with("Max open files"))?;
+    line.split_whitespace().nth(3)?.parse().ok()
+}
+
+/// `max` connections lowered to what the open-file limit leaves room for: three quarters of it,
+/// because a connection holds a descriptor and the database, the files and the outgoing requests
+/// need some. 0 (no cap) stays 0, as the operator asked, and an unknown limit changes nothing.
+fn within_file_limit(max: usize, limit: Option<u64>) -> usize {
+    let Some(limit) = limit else { return max };
+    if max == 0 {
+        return 0;
+    }
+    let room = usize::try_from(limit.saturating_mul(3) / 4).unwrap_or(usize::MAX);
+    max.min(room.max(1))
 }
 
 impl ServeLimits {
@@ -71,7 +102,7 @@ impl ServeLimits {
             first_request_timeout: FIRST_REQUEST_TIMEOUT,
             header_read_timeout: HEADER_READ_TIMEOUT,
             write_timeout: WRITE_TIMEOUT,
-            max_connections: config.max_connections,
+            max_connections: within_file_limit(config.max_connections, open_file_limit()),
             max_connections_per_ip: config.max_connections_per_ip,
             exempt: config.trusted_proxies.clone(),
         }
@@ -94,7 +125,7 @@ struct Tracker {
     freed: tokio::sync::Notify,
     max_total: usize,
     max_per_address: usize,
-    exempt: Vec<IpAddr>,
+    exempt: Vec<Proxy>,
 }
 
 #[derive(Debug, Default)]
@@ -103,12 +134,13 @@ struct TrackerState {
     per_address: HashMap<IpAddr, usize>,
 }
 
-/// What a client is counted under: its address, an IPv6 one by its /64 (one subscriber holds a
-/// whole /64, so counting single addresses would count it as many).
+/// What a client is counted under: its address, an IPv6 one by its /56 (one subscriber holds a
+/// whole /56 or more, so counting single addresses or /64s would count it as many).
 fn address_key(ip: IpAddr) -> IpAddr {
     match ip.to_canonical() {
         IpAddr::V6(v6) => {
             let mut segments = v6.segments();
+            segments[3] &= 0xff00;
             for segment in &mut segments[4..] {
                 *segment = 0;
             }
@@ -125,7 +157,7 @@ impl Tracker {
             freed: tokio::sync::Notify::new(),
             max_total: limits.max_connections,
             max_per_address: limits.max_connections_per_ip,
-            exempt: limits.exempt.iter().map(IpAddr::to_canonical).collect(),
+            exempt: limits.exempt.clone(),
         })
     }
 
@@ -140,7 +172,7 @@ impl Tracker {
 
     /// Counts a connection from `peer`, or `None` when that address holds as many as it may.
     fn admit(self: &Arc<Self>, peer: IpAddr) -> Option<Permit> {
-        let exempt = self.exempt.contains(&peer.to_canonical());
+        let exempt = self.exempt.iter().any(|proxy| proxy.contains(peer));
         let key = address_key(peer);
         let mut state = self.lock();
         if !exempt
@@ -366,9 +398,60 @@ pub async fn serve(
     }
 }
 
+/// How many requests a connection has in flight and when it last finished one, for telling an
+/// idle HTTP/2 connection (which hyper's header-read timeout doesn't cover) from a busy one.
+#[derive(Debug)]
+struct Activity {
+    in_flight: std::sync::atomic::AtomicUsize,
+    last: Mutex<tokio::time::Instant>,
+}
+
+impl Activity {
+    fn new() -> Self {
+        Activity {
+            in_flight: std::sync::atomic::AtomicUsize::new(0),
+            last: Mutex::new(tokio::time::Instant::now()),
+        }
+    }
+
+    fn begin(&self) {
+        self.in_flight.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn end(&self) {
+        self.in_flight.fetch_sub(1, Ordering::Relaxed);
+        *self.last.lock().unwrap_or_else(PoisonError::into_inner) = tokio::time::Instant::now();
+    }
+
+    /// Whether no request is in flight and the last one ended at least `idle` ago.
+    fn idle_for(&self, idle: Duration) -> bool {
+        self.in_flight.load(Ordering::Relaxed) == 0
+            && self
+                .last
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .elapsed()
+                >= idle
+    }
+}
+
+/// How often a connection looks at whether it has been idle for too long.
+const IDLE_CHECK_EVERY: Duration = Duration::from_secs(15);
+
+/// How often an HTTP/2 connection is pinged, and how long the answer may take: a peer that has
+/// gone away without closing is dropped after the two.
+const H2_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(30);
+const H2_KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// How many requests one HTTP/2 connection may have open at once, and how large its request
+/// headers may be.
+const H2_MAX_CONCURRENT_STREAMS: u32 = 100;
+const H2_MAX_HEADER_LIST_SIZE: u32 = 32 * 1024;
+
 /// One client's connection: HTTP/1 (and HTTP/2 when the client opens with it) over `stream`, the
 /// requests answered by `router`, ended gracefully once `stopping` turns true. The connection is
-/// dropped when no request has begun within the first-request timeout.
+/// dropped when no request has begun within the first-request timeout, and, HTTP/2 included, ended
+/// gracefully once it has had no request in flight for the header-read timeout.
 async fn serve_connection(
     stream: tokio::net::TcpStream,
     peer: SocketAddr,
@@ -378,15 +461,24 @@ async fn serve_connection(
     mut stopping: tokio::sync::watch::Receiver<bool>,
 ) {
     let started = Arc::new(AtomicBool::new(false));
+    let activity = Arc::new(Activity::new());
     let service = hyper::service::service_fn({
         let started = Arc::clone(&started);
+        let activity = Arc::clone(&activity);
         move |mut request: axum::http::Request<hyper::body::Incoming>| {
             started.store(true, Ordering::Relaxed);
             // What `into_make_service_with_connect_info` adds, for the handlers that name the peer.
             request
                 .extensions_mut()
                 .insert(axum::extract::ConnectInfo(peer));
-            router.clone().oneshot(request)
+            let router = router.clone();
+            let activity = Arc::clone(&activity);
+            async move {
+                activity.begin();
+                let answer = router.oneshot(request).await;
+                activity.end();
+                answer
+            }
         }
     });
     let io = TokioIo::new(GuardedIo::new(stream, timeouts.write, Some(permit)));
@@ -395,12 +487,23 @@ async fn serve_connection(
         .http1()
         .timer(TokioTimer::new())
         .header_read_timeout(timeouts.header_read);
+    // HTTP/2 has no header-read timeout in hyper: a dead peer is found by pings, a flood of streams
+    // is bounded, and an idle connection is ended by the check below.
+    builder
+        .http2()
+        .timer(TokioTimer::new())
+        .keep_alive_interval(H2_KEEP_ALIVE_INTERVAL)
+        .keep_alive_timeout(H2_KEEP_ALIVE_TIMEOUT)
+        .max_concurrent_streams(H2_MAX_CONCURRENT_STREAMS)
+        .max_header_list_size(H2_MAX_HEADER_LIST_SIZE);
     let connection = builder.serve_connection_with_upgrades(io, service);
     let mut connection = std::pin::pin!(connection);
     let first_request = tokio::time::sleep(timeouts.first_request);
     let mut first_request = std::pin::pin!(first_request);
     let mut waiting_for_first_request = true;
     let mut asked_to_stop = false;
+    let mut idle_check = tokio::time::interval(IDLE_CHECK_EVERY);
+    idle_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
             result = connection.as_mut() => {
@@ -417,6 +520,14 @@ async fn serve_connection(
                 } else {
                     tracing::debug!(%peer, "closed a connection that sent no request in time");
                     break;
+                }
+            }
+            // An HTTP/2 connection that has sat with no request for as long as an idle HTTP/1 one
+            // may: ended gracefully, so a request on its way still gets its answer.
+            _ = idle_check.tick(), if !asked_to_stop && !waiting_for_first_request => {
+                if activity.idle_for(timeouts.header_read) {
+                    asked_to_stop = true;
+                    connection.as_mut().graceful_shutdown();
                 }
             }
             // Resolves when the server is stopping (or gone); asks for one more answer at most.
@@ -664,7 +775,7 @@ mod tests {
     async fn a_trusted_proxy_is_exempt_from_the_address_limit() {
         let (address, stop, task) = serve_for_test(ServeLimits {
             max_connections_per_ip: 1,
-            exempt: vec!["127.0.0.1".parse().expect("an address")],
+            exempt: vec![Proxy::parse("127.0.0.1").expect("an address")],
             ..limits()
         })
         .await;
@@ -685,11 +796,11 @@ mod tests {
     }
 
     #[test]
-    fn addresses_are_counted_per_address_and_ipv6_per_64() {
+    fn addresses_are_counted_per_address_and_ipv6_per_56() {
         let mut limits = limits();
         limits.max_connections_per_ip = 2;
         limits.max_connections = 3;
-        limits.exempt = vec!["10.0.0.1".parse().expect("an address")];
+        limits.exempt = vec![Proxy::parse("10.0.0.1").expect("an address")];
         let tracker = Tracker::new(&limits);
         let ip = |text: &str| text.parse::<IpAddr>().expect("an address");
 
@@ -708,16 +819,52 @@ mod tests {
         assert_eq!(tracker.lock().total, 0);
         assert!(tracker.lock().per_address.is_empty());
 
-        // One /64 is one client.
+        // One /56 is one client: a site holds 256 /64s, and a /48 holds 256 /56s.
         let x = tracker.admit(ip("2001:db8:1:2::1")).expect("one");
         let y = tracker.admit(ip("2001:db8:1:2:ffff::9")).expect("two");
         assert!(tracker.admit(ip("2001:db8:1:2::3")).is_none());
-        assert!(tracker.admit(ip("2001:db8:1:3::1")).is_some());
+        assert!(tracker.admit(ip("2001:db8:1:3::1")).is_none(), "another /64 of the /56");
+        assert!(tracker.admit(ip("2001:db8:1:100::1")).is_some(), "the next /56");
         // An IPv4 address mapped into IPv6 is that IPv4 address.
         let _z = tracker.admit(ip("192.0.2.9")).expect("one");
         let _w = tracker.admit(ip("::ffff:192.0.2.9")).expect("two");
         assert!(tracker.admit(ip("192.0.2.9")).is_none());
         drop((x, y));
+    }
+
+    #[test]
+    fn the_open_file_limit_is_read_from_proc_and_caps_the_total_of_connections() {
+        let text = "Limit                     Soft Limit           Hard Limit           Units     \n\
+                    Max cpu time              unlimited            unlimited            seconds   \n\
+                    Max open files            1024                 524288               files     \n";
+        assert_eq!(parse_open_file_limit(text), Some(1024));
+        assert_eq!(parse_open_file_limit("Max open files unlimited unlimited files"), None);
+        assert_eq!(parse_open_file_limit("nothing here"), None);
+        // Three quarters of the limit at most; no cap and an unknown limit stay as they are.
+        assert_eq!(within_file_limit(4096, Some(1024)), 768);
+        assert_eq!(within_file_limit(4096, Some(65535)), 4096);
+        assert_eq!(within_file_limit(0, Some(1024)), 0);
+        assert_eq!(within_file_limit(4096, None), 4096);
+        assert_eq!(within_file_limit(10, Some(0)), 1);
+    }
+
+    #[tokio::test]
+    async fn a_connection_is_idle_only_with_nothing_in_flight_for_long_enough() {
+        let idle = Duration::from_millis(60);
+        let pause = Duration::from_millis(120);
+        let activity = Activity::new();
+        assert!(!activity.idle_for(idle));
+        tokio::time::sleep(pause).await;
+        assert!(activity.idle_for(idle));
+        // A request in flight is never idle, however long it takes.
+        activity.begin();
+        tokio::time::sleep(pause).await;
+        assert!(!activity.idle_for(idle));
+        // Ending it starts the clock again.
+        activity.end();
+        assert!(!activity.idle_for(idle));
+        tokio::time::sleep(pause).await;
+        assert!(activity.idle_for(idle));
     }
 
     #[tokio::test]

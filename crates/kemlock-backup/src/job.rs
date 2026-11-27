@@ -239,7 +239,7 @@ pub async fn create_backup(
 ) -> Result<BackupReport, BackupError> {
     let recipient = parse_recipient(&settings.recipient)?;
     let destination = Destination::open(&settings.destination)?;
-    std::fs::create_dir_all(&layout.data_folder)
+    crate::archive::create_private_dir(&layout.data_folder)
         .map_err(|e| BackupError::io(format!("can't make {}", layout.data_folder.display()), e))?;
     // Work in a folder of the data folder: it is the one place the image lets the server write.
     let work = tempfile::Builder::new()

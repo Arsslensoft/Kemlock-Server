@@ -182,9 +182,20 @@ impl<U: UserRepo, R: EmergencyRepo, N: EmergencyNotices, E: Platform, V: EventLo
         Ok(grant)
     }
 
+    /// Whether the grantor's account may have grants in force: not disabled by an admin and not
+    /// waiting out an erasure. Their grants are inactive meanwhile (a contact can't ask, the timer
+    /// doesn't approve, a key isn't released) and are as they were when the account is back.
+    async fn grantor_is_active(&self, grantor: UserId) -> Result<bool, AppError> {
+        Ok(!self.users.account_disabled(grantor).await?
+            && self.users.erasure_pending(grantor).await?.is_none())
+    }
+
     /// The contact asks for access: the wait starts and the grantor is told.
     pub async fn initiate(&self, actor: &Actor, id: GrantId) -> Result<EmergencyGrant, AppError> {
         let mut grant = self.addressed(actor, id).await?;
+        if !self.grantor_is_active(grant.grantor).await? {
+            return Err(AppError::Forbidden);
+        }
         let from = grant.state;
         grant.initiate(self.env.now()).map_err(grant_error)?;
         self.save(&grant, from).await?;
@@ -242,6 +253,9 @@ impl<U: UserRepo, R: EmergencyRepo, N: EmergencyNotices, E: Platform, V: EventLo
     /// The sealed key, for the contact, once the grant is approved.
     pub async fn release_key(&self, actor: &Actor, id: GrantId) -> Result<KeyRelease, AppError> {
         let grant = self.addressed(actor, id).await?;
+        if !self.grantor_is_active(grant.grantor).await? {
+            return Err(AppError::Forbidden);
+        }
         if !grant.key_released() {
             return Err(AppError::Forbidden);
         }
@@ -337,7 +351,7 @@ impl<U: UserRepo, R: EmergencyRepo, N: EmergencyNotices, E: Platform, V: EventLo
         from: EmergencyState,
         key_version: Option<u32>,
     ) -> Result<(), AppError> {
-        if self.grants.save_grant_at(grant, from, key_version).await? {
+        if self.grants.save_grant_at(grant, from, None, key_version).await? {
             Ok(())
         } else {
             Err(AppError::Invalid("the grant changed; look again and retry"))
