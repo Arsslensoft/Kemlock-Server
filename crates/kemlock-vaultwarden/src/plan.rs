@@ -222,9 +222,12 @@ mod tests {
         mapped
             .settings
             .ignored
-            .push("x\nrsa_key.pem     not found".into());
+            .push("x\nrsa_key.pem     carried".into());
         let plan = render_plan(&meta, &mapped, None);
-        assert!(!plan.contains("\nrsa_key.pem     not found"), "{plan}");
-        assert!(plan.contains(r#""x\nrsa_key.pem     not found""#), "{plan}");
+        // No key file in this source: the real line says "not found", so a "carried" line could
+        // only be forged.
+        assert!(plan.contains("\nrsa_key.pem     not found"), "{plan}");
+        assert!(!plan.contains("\nrsa_key.pem     carried"), "{plan}");
+        assert!(plan.contains(r#""x\nrsa_key.pem     carried""#), "{plan}");
     }
 }
