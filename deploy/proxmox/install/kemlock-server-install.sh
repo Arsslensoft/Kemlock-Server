@@ -133,7 +133,7 @@ curl -fsSL -o "${tmp}/${asset}.sigstore.json" "${base}/${asset}.sigstore.json"
 if ! "$cosign" verify-blob "${tmp}/${asset}" \
   --bundle "${tmp}/${asset}.sigstore.json" \
   --certificate-identity "https://github.com/${REPO}/.github/workflows/release.yml@refs/tags/${tag}" \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com >/dev/null 2>&1; then
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com >/dev/null; then
   echo "the cosign signature of ${asset} does not verify" >&2
   exit 1
 fi
