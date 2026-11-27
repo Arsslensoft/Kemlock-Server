@@ -6,6 +6,7 @@
 //! counted through, so a burst of parallel guesses got past the limit. The count is the store's, so
 //! it holds across restarts and between replicas.
 
+use crate::finish_gate::GateGuard;
 use crate::problem::{Problem, rate_limited};
 use crate::ratelimit::ip_key_64;
 use crate::state::{Api, Crypto, Store};
@@ -13,6 +14,7 @@ use kemlock_app::AppError;
 use kemlock_app::ports::TokenSigner;
 use kemlock_app::second_step_guard::{Reservation, SecondStepGuard};
 use kemlock_domain::UserId;
+use std::sync::PoisonError;
 
 /// Reserves one second-step attempt for `user` under the limit the console sets (5 in 15 minutes
 /// by default, then doubling waits, whichever challenge or address the attempt comes from). A 429
@@ -112,7 +114,7 @@ where
 /// seconds. The slowdown never refuses anything.
 const MAX_SLOWDOWN_SECS: u64 = 3;
 
-/// A password attempt in progress: the counts it is under.
+/// A password attempt in progress: the counts it is under, and its turn at the account's gate.
 #[derive(Debug)]
 pub(crate) struct PasswordAttempt {
     /// The account as seen from one source: `scope:account|address`. The hard limit.
@@ -122,6 +124,16 @@ pub(crate) struct PasswordAttempt {
     /// Whether the soft cap counted this attempt. It doesn't while the account is over the cap:
     /// the attempt is held back instead, and so has nothing to give back.
     counted: bool,
+    /// The attempt's turn at the account's gate, until it ends. `None` when the line was full.
+    turn: std::sync::Mutex<Option<GateGuard>>,
+}
+
+impl PasswordAttempt {
+    /// Ends the attempt's turn: the next finish for the account may start a second from now.
+    fn release(&self) {
+        let turn = self.turn.lock().unwrap_or_else(PoisonError::into_inner).take();
+        drop(turn);
+    }
 }
 
 /// Starts a password attempt on `credential` (the account's sign-in name as `credential_id`
@@ -133,13 +145,17 @@ pub(crate) struct PasswordAttempt {
 /// can't all pass it. The account's name comes from the request, and anyone can send wrong
 /// passwords for any name, so a limit on the name alone would let anyone lock the real owner out;
 /// per source, each stranger can only lock themselves out. What every source adds up to slows
-/// the account: once it has seen many wrong passwords, every request for it, right or wrong, is
-/// held back a few seconds, which a right password rides out and a distributed guesser pays for
-/// on every guess (OPAQUE already makes each guess cost a key stretch on the client). Past 100
-/// wrong passwords in an hour from all sources together the hold-back is the same few seconds
-/// and never a refusal, so many addresses can't keep the owner out; a far higher backstop (600 an
-/// hour, then doubling waits) refuses, so guesses spread over many addresses stay bounded. Both
-/// are in this replica's memory.
+/// the account: once it has seen many wrong passwords, or 100 in an hour, every request for it,
+/// right or wrong, is held back a few seconds, which a right password rides out and a distributed
+/// guesser pays for on every guess (OPAQUE already makes each guess cost a key stretch on the
+/// client). Nothing here refuses a right password but the per-source limit, which a stranger's
+/// guesses can only spend for themselves.
+///
+/// However many addresses the guesses come from, one account has at most one password check in
+/// flight and a second between two of them ([`PasswordGate`](crate::finish_gate::PasswordGate)): the others wait their turn, in
+/// order, and a right password is only later. Past [`MAX_WAITING`](crate::finish_gate::MAX_WAITING) waiting, a request skips the
+/// line and is held back the full few seconds instead, so the owner is never queued behind an
+/// unbounded line and never refused.
 ///
 /// Whoever calls this must end the attempt with [`end_password_attempt`], or give it back with
 /// [`abandon_password_attempt`] when the password is never looked at.
@@ -161,11 +177,6 @@ where
         .account
         .reserve(&source, now)
         .map_err(rate_limited)?;
-    // However many addresses the guesses come from, an account takes only so many.
-    if let Err(wait) = api.limits.account_cap_hard.reserve(&account, now) {
-        api.limits.account.refund(&source, now);
-        return Err(rate_limited(wait));
-    }
     let mut hold = 0;
     let counted = match api.limits.account_cap.reserve(&account, now) {
         Ok(()) => true,
@@ -180,10 +191,16 @@ where
     if hold > 0 {
         tokio::time::sleep(std::time::Duration::from_secs(hold)).await;
     }
+    // Then the account's turn: one at a time, a second apart.
+    let turn = api.limits.finish_gate.enter(&account).await;
+    if turn.is_none() {
+        tokio::time::sleep(std::time::Duration::from_secs(MAX_SLOWDOWN_SECS)).await;
+    }
     Ok(PasswordAttempt {
         source,
         account,
         counted,
+        turn: std::sync::Mutex::new(turn),
     })
 }
 
@@ -198,15 +215,16 @@ where
 {
     let now = api.now();
     api.limits.account.refund(&attempt.source, now);
-    api.limits.account_cap_hard.refund(&attempt.account, now);
     if attempt.counted {
         api.limits.account_cap.refund(&attempt.account, now);
     }
+    attempt.release();
 }
 
 /// Ends a password attempt: a right password clears the source's count and the account's
-/// slowdown and is given back to the account's caps; a wrong one stays counted against its source
-/// (it was reserved) and the caps, and adds to the account's slowdown.
+/// slowdown and is given back to the account's cap; a wrong one stays counted against its source
+/// (it was reserved) and the cap, and adds to the account's slowdown. Either way the attempt's
+/// turn at the account's gate ends.
 pub(crate) fn end_password_attempt<S, P, K, T>(
     api: &Api<S, P, K>,
     attempt: &PasswordAttempt,
@@ -221,21 +239,21 @@ pub(crate) fn end_password_attempt<S, P, K, T>(
         Ok(_) => {
             api.limits.account.clear(&attempt.source);
             api.limits.account_slow.clear(&attempt.account);
-            give_back_caps(api, attempt, now);
+            give_back_cap(api, attempt, now);
         }
         Err(AppError::Unauthorized) => api.limits.account_slow.fail(&attempt.account, now),
-        // Not a wrong password: it doesn't add up toward the account's caps.
-        Err(_) => give_back_caps(api, attempt, now),
+        // Not a wrong password: it doesn't add up toward the account's cap.
+        Err(_) => give_back_cap(api, attempt, now),
     }
+    attempt.release();
 }
 
-fn give_back_caps<S, P, K>(api: &Api<S, P, K>, attempt: &PasswordAttempt, now: i64)
+fn give_back_cap<S, P, K>(api: &Api<S, P, K>, attempt: &PasswordAttempt, now: i64)
 where
     S: Store,
     P: Crypto,
     K: TokenSigner + Clone + 'static,
 {
-    api.limits.account_cap_hard.refund(&attempt.account, now);
     if attempt.counted {
         api.limits.account_cap.refund(&attempt.account, now);
     }

@@ -285,6 +285,13 @@ owner, never what changed, and a replica that loses its connection nudges every 
 is back. Only the replica that took a write pushes to phones, so a phone is woken once. Bitwarden
 apps are told in detail by the replica that took the write and with a general sync by the others.
 
+Password checks per account. However many addresses the guesses come from, one account has at most
+one password check in flight on a replica, and the next starts a second after the last ended; the
+others wait their turn in order (up to 16 waiting, past which a request skips the line and is held
+back 3 seconds). A wrong password from one address counts against that address and slows the
+account (a few seconds, once 10 wrong in 15 minutes or 100 an hour have come from anywhere). The
+right password is only ever later, and no number of guesses from other addresses refuses it.
+
 Rate limits and replay checks. Each replica keeps these in its own memory: the per-address limits
 (sign-in starts, DPoP proofs, registration, device-approval requests), the per-address-and-account
 limit on wrong passwords, and the replay sets of DPoP proofs and spent login states. With several

@@ -11,6 +11,7 @@
 pub mod dpop;
 pub mod dto;
 pub mod extract;
+pub mod finish_gate;
 pub mod jws;
 pub mod live;
 pub mod openapi;

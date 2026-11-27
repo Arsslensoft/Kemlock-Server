@@ -153,11 +153,10 @@ pub struct Limits {
     /// right ones too, but none is refused: many addresses must not be able to keep the owner
     /// out. Right passwords are given back, so only wrong ones add up. In memory, per replica.
     pub account_cap: Limiter,
-    /// The backstop behind `account_cap`: 600 password checks an hour for one account from all
-    /// sources together, then doubling waits, so guesses spread over a great many addresses are
-    /// bounded too. Right passwords are given back. While it holds, the account's password checks
-    /// are refused, a right password with them. In memory, per replica.
-    pub account_cap_hard: Limiter,
+    /// One password check at a time for an account, a second apart, from all sources together: the
+    /// others wait their turn and a right password is only later, never refused (see
+    /// `finish_gate`). In memory, per replica.
+    pub finish_gate: crate::finish_gate::PasswordGate,
     /// Second-step attempts per account, 5 in 15 minutes, then doubling delays, whichever address
     /// or challenge they come from. The limit and window the Kemlock API's second steps count
     /// under in the store (`SecondStepGuard`); the counts in this limiter's own memory are the
@@ -200,7 +199,7 @@ impl Default for Limits {
             account: Limiter::new(10, 900),
             account_slow: Limiter::new(10, 900),
             account_cap: Limiter::new(100, 3600),
-            account_cap_hard: Limiter::new(600, 3600),
+            finish_gate: crate::finish_gate::PasswordGate::default(),
             second_step: Limiter::new(5, 900),
             step_up: Limiter::new(5, 900),
             proof: Limiter::new(120, 60),
