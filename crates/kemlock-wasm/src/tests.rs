@@ -2880,6 +2880,51 @@ fn a_collection_is_made_and_deleted_and_a_tampered_chain_is_refused() {
     }
 }
 
+/// Asserts that `item`, an item a key replacement or a reseal writes again for `space`, is signed
+/// as any write of a space's item is: by `writer`, the account `session` is unlocked as, at its
+/// key version, over the statement that binds `collection`, and not over any other collection.
+fn assert_signed_rewrite(
+    session: &Session,
+    space: &[u8; 16],
+    item: &Value,
+    collection: &[u8; 16],
+    writer: &[u8; 16],
+) {
+    let fields = |collection: &[u8; 16]| {
+        WriteFields::parse(
+            &json!({
+                "owner": format!("space:{}", uuid_text(space)),
+                "id": item["id"],
+                "kind": item["kind"],
+                "revision": item["revision"],
+                "deleted": false,
+                "keyVersion": item["keyVersion"],
+                "ciphertext": item["ciphertext"],
+                "itemKey": item["itemKey"],
+                "collectionId": uuid_text(collection),
+                "writer": item["writer"],
+                "writerKeyVersion": item["writerKeyVersion"],
+            })
+            .to_string(),
+        )
+        .expect("fields")
+    };
+    assert_eq!(item["writer"], uuid_text(writer));
+    assert_eq!(item["writerKeyVersion"], FIRST_KEY_VERSION);
+    let signature = b64::decode(item["writeSignature"].as_str().expect("a signature"))
+        .expect("base64url");
+    assert_eq!(signature.len(), 3373);
+    session
+        .verify_own_item_write(&fields(collection), &signature)
+        .expect("the re-written item carries its writer's signature, with its collection bound");
+    assert!(
+        session
+            .verify_own_item_write(&fields(&[0x77u8; 16]), &signature)
+            .is_err(),
+        "the signature is not one of another collection"
+    );
+}
+
 #[wasm_bindgen_test]
 fn marked_keys_are_replaced_with_their_names_and_items_sealed_again() {
     let (space, general) = ([0xC1u8; 16], [0xC2u8; 16]);
@@ -3046,6 +3091,9 @@ fn marked_keys_are_replaced_with_their_names_and_items_sealed_again() {
         .expect("the item opens under the new key");
     assert_eq!(opened.as_slice(), br#"{"name":"vpn"}"#);
 
+    // The re-written item is a signed write of General, which a signed-only space takes.
+    assert_signed_rewrite(&owner, &space, item_out, &general, &me);
+
     // Nothing is marked now: there is nothing to replace.
     let again = serde_json::to_value(
         owner
@@ -3177,6 +3225,8 @@ fn items_left_under_an_old_key_version_are_sealed_again_for_the_batch_route() {
         )
         .expect("the item opens under the current key");
     assert_eq!(opened.as_slice(), br#"{"name":"vpn"}"#);
+    // A reseal signs its writes too, with the collection bound.
+    assert_signed_rewrite(&owner, &space, item_out, &general, &me);
 
     // An account that holds no chain of the space builds nothing.
     let (other, _, _) = open_signed_account([0xD8; 16]);

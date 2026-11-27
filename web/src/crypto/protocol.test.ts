@@ -11,6 +11,26 @@ import type { WasmVault } from './wasm';
 
 const KDF: KdfSettings = { memoryKib: 65536, iterations: 3, parallelism: 4, salt: 'c2FsdHNhbHRzYWx0c2FsdA' };
 const UUID = '00010203-0405-0607-0809-0a0b0c0d0e0f';
+/** An item a key replacement or a reseal writes again, as the worker answers it: signed, with its collection. */
+const REWRITE = {
+  collection: UUID,
+  expectedRevision: 1,
+  item: {
+    id: UUID,
+    owner: `space:${UUID}`,
+    kind: 'login',
+    format: 'kem1',
+    revision: 2,
+    keyVersion: 2,
+    ciphertext: 'Y3Q',
+    itemKey: 'a2V5',
+    deleted: false,
+    collectionId: UUID,
+    writer: UUID,
+    writerKeyVersion: 1,
+    writeSignature: 'c2ln',
+  },
+};
 
 function mockVault(overrides: Partial<WasmVault> = {}): WasmVault {
   return {
@@ -114,8 +134,12 @@ function mockVault(overrides: Partial<WasmVault> = {}): WasmVault {
       }),
     ),
     buildChainRecords: vi.fn(() => JSON.stringify({ ok: true, records: [], seals: [], names: [] })),
-    buildKeyReplacement: vi.fn(() => JSON.stringify({ ok: true, records: [], seals: [], names: [] })),
-    buildReseal: vi.fn(() => JSON.stringify({ ok: true, records: [], seals: [], names: [], held: ['x'] })),
+    buildKeyReplacement: vi.fn(() =>
+      JSON.stringify({ ok: true, records: [], seals: [], names: [], writes: [REWRITE] }),
+    ),
+    buildReseal: vi.fn(() =>
+      JSON.stringify({ ok: true, records: [], seals: [], names: [], held: ['x'], writes: [REWRITE] }),
+    ),
     verifySpaceChain: vi.fn(() => JSON.stringify({ ok: false, reason: 'forked', seq: 3 })),
     spaceChainView: vi.fn((): string | undefined => undefined),
     sealLocal: vi.fn(() => 'c2VhbGVk'),
@@ -428,12 +452,19 @@ describe('the dispatcher', () => {
       dispatch('buildChainRecords', [{ spaceId: UUID, at: 1.5, change }]),
     ).rejects.toMatchObject({ code: 'invalid' });
     const replacement = { items: [], names: [] };
-    expect(await dispatch('buildKeyReplacement', [{ spaceId: UUID, at: 5, replacement }])).toMatchObject({ ok: true });
+    // The items it re-writes come back signed, with the three members of a signed write.
+    expect(await dispatch('buildKeyReplacement', [{ spaceId: UUID, at: 5, replacement }])).toMatchObject({
+      ok: true,
+      writes: [REWRITE],
+    });
     expect(vault.buildKeyReplacement).toHaveBeenCalledWith(UUID, 5, JSON.stringify(replacement));
     await expect(
       dispatch('buildKeyReplacement', [{ spaceId: UUID, at: -1, replacement }]),
     ).rejects.toMatchObject({ code: 'invalid' });
-    expect(await dispatch('buildReseal', [{ spaceId: UUID, items: [] }])).toMatchObject({ held: ['x'] });
+    expect(await dispatch('buildReseal', [{ spaceId: UUID, items: [] }])).toMatchObject({
+      held: ['x'],
+      writes: [REWRITE],
+    });
     expect(vault.buildReseal).toHaveBeenCalledWith(UUID, JSON.stringify({ items: [] }));
 
     // The space chain: JSON goes in and comes out, and a key version is checked before the module.

@@ -59,14 +59,76 @@ pub(crate) async fn verify_writes<U: UserRepo>(
     actor: UserId,
     writes: &[(&ItemWrite, Option<CollectionId>)],
 ) -> Result<(), Problem> {
-    if writes.iter().all(|(w, _)| w.signature.is_none()) {
+    let Some(account) = signer_of(users, actor, writes).await? else {
         return Ok(());
+    };
+    check_writes(&account, actor, writes)
+}
+
+/// How many batches of signatures are checked at once: about one for each CPU, so a few large
+/// requests can't fill the blocking pool and starve everything else that uses it.
+fn verify_permits() -> &'static tokio::sync::Semaphore {
+    static PERMITS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+    PERMITS.get_or_init(|| {
+        tokio::sync::Semaphore::new(
+            std::thread::available_parallelism().map_or(2, std::num::NonZeroUsize::get),
+        )
+    })
+}
+
+/// [`verify_writes`] for many writes into collections: the signatures are checked on a blocking
+/// thread, one after another, so a request of hundreds of them doesn't hold a runtime worker. The
+/// writes move into the task and come back, checked, so none is copied.
+pub(crate) async fn verify_writes_blocking<U: UserRepo>(
+    users: &U,
+    actor: UserId,
+    writes: Vec<(CollectionId, ItemWrite)>,
+) -> Result<Vec<(CollectionId, ItemWrite)>, Problem> {
+    let refs: Vec<(&ItemWrite, Option<CollectionId>)> =
+        writes.iter().map(|(c, w)| (w, Some(*c))).collect();
+    let account = signer_of(users, actor, &refs).await?;
+    drop(refs);
+    let Some(account) = account else {
+        return Ok(writes);
+    };
+    let _permit = verify_permits()
+        .acquire()
+        .await
+        .map_err(|_| Problem::from(AppError::Store("a signature check didn't start".to_owned())))?;
+    tokio::task::spawn_blocking(move || {
+        let checked = {
+            let refs: Vec<(&ItemWrite, Option<CollectionId>)> =
+                writes.iter().map(|(c, w)| (w, Some(*c))).collect();
+            check_writes(&account, actor, &refs)
+        };
+        checked.map(|()| writes)
+    })
+    .await
+    .map_err(|_| Problem::from(AppError::Store("a signature check didn't finish".to_owned())))?
+}
+
+/// The account `actor`, when some write carries a signature to check.
+async fn signer_of<U: UserRepo>(
+    users: &U,
+    actor: UserId,
+    writes: &[(&ItemWrite, Option<CollectionId>)],
+) -> Result<Option<kemlock_domain::User>, Problem> {
+    if writes.iter().all(|(w, _)| w.signature.is_none()) {
+        return Ok(None);
     }
-    let account = users
+    users
         .by_id(actor)
         .await
         .map_err(|e| Problem::from(AppError::from(e)))?
-        .ok_or_else(|| Problem::from(AppError::Unauthorized))?;
+        .map(Some)
+        .ok_or_else(|| Problem::from(AppError::Unauthorized))
+}
+
+fn check_writes(
+    account: &kemlock_domain::User,
+    actor: UserId,
+    writes: &[(&ItemWrite, Option<CollectionId>)],
+) -> Result<(), Problem> {
     for (write, collection) in writes {
         let Some(signature) = &write.signature else {
             continue;

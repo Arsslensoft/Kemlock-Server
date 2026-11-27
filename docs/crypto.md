@@ -1349,7 +1349,12 @@ signature covers those), and `bw` items, which have no `kem1` envelope.
 - **Client to server.** `PUT /kem/v1/items/{id}`, `POST /kem/v1/items:batch` and the writes of a
   key replacement take three new optional members on the item: `writer` (the writing account's id),
   `writerKeyVersion` and `writeSignature` (base64url). All three or none; `writer` must be the
-  signed-in account.
+  signed-in account. The items a key replacement writes again (the `writes` of the chain append
+  route and of `POST /kem/v1/spaces/{id}/key-replacement`) and those a reseal writes through the
+  batch route are writes like any other: signed by the account that makes them, with the item's
+  collection bound, and checked the same way. A signed-only space refuses them unsigned on the chain
+  append route and the batch route; the route that replaces keys without a chain still accepts an
+  unsigned re-write from an owner or an admin ("Accepting records").
 - **Stored** with the item's change, as one value `writer (16) ‖ u32be(key version) ‖ signature
   (3373)`, 3393 bytes, and **served back** on sync (`GET /kem/v1/sync`, siblings included) in the
   same three members, so any device can check it.
@@ -2385,8 +2390,69 @@ live items the record leaves held (I3), and `"writes": [{"collection", "expected
 version (an `item` is written as `PUT /kem/v1/items/{id}` takes it). They are stored in the same transaction as the records. A write is of a live item of a
 collection whose key a `keys` record of the request replaces, by a member with edit on it; an item
 is written once and is not also held; any other write is refused (`400`, or `422`
-`held-not-rotated` for a collection the request does not replace). The server refuses a record
-unless all of these hold:
+`held-not-rotated` for a collection the request does not replace).
+
+**Each re-written item is a signed write** ("Signed item writes"): the member who replaces the key
+signs it with their own `sig1` key, over the statement of a space's item, so the statement binds the
+item's collection, the new envelope (key version, ciphertext and wrapped item key) and the revision,
+and the item carries `writer`, `writerKeyVersion` and `writeSignature`. The server checks each one
+as it checks any write (the writer is the signed-in account at its current key version, the signature
+verifies under its registered bundle, `invalid-signature` otherwise), before anything is stored, and
+this route refuses an unsigned `kem1` re-write for a space that takes signed writes only (`422`
+`signature-required`). The web vault signs them in the worker, as it does the items its reseal
+writes again (`POST /kem/v1/items:batch`), so a signed-only space is not stuck behind its own key
+replacement and a client that holds an item at its floor takes the re-written revision in. Of the
+two key replacement routes, only this one requires it: the route that replaces keys without a chain
+(`POST /kem/v1/spaces/{id}/key-replacement`) still accepts an unsigned re-write from an owner or
+an admin in a signed-only space, so that no client is left at `423 space-keys-pending` for want of
+one that signs; a re-write there that carries a signature is checked like any other.
+
+**Who may write items here, and how many.** A request re-writes each item once, at most 6,000 of
+them. Before any signature is checked, the server reads the chain's state: the caller must be a
+confirmed member with edit on the collection of every item (`404` for a stranger, `422`
+`space-chain-refused` otherwise), so a request from someone who may not write costs no
+signature check. The signatures are then checked on a blocking thread, not on a request worker.
+
+**The size of the request.** The signatures make a key replacement about four times larger than
+it was: each re-written item adds a signature of 4.5 KiB in base64url to its envelope, and the whole
+replacement is one request. The route reads 8 MiB from any signed-in caller, as a stream, so
+nothing past 8 MiB is held for anyone else. It reads up to **32 MiB** only when the chain's state
+has a collection key marked ("Removal and replacement") that the caller may replace: a confirmed
+member entitled to that key, with edit on the collection, as the worker's replacement decides it.
+A stranger, a member who may only view, and an owner of a space with no key waiting get `413` as
+soon as the body passes 8 MiB. The pending-answer route (`POST .../chain/pending/{pending}`) never
+reads above 8 MiB: no queued change is a `keys` record.
+
+**Large bodies.** A body above 8 MiB is a *large body*, and the server limits them:
+
+- *Places.* It has two, and an account and a space have one each at a time. A request that finds
+  none waits up to ten seconds, and the next place goes to the request that has waited longest:
+  an account has one place or one turn in the queue, never two, so the queue is round-robin
+  between accounts, and a request that comes back after its turn goes behind the others. After the
+  ten seconds it is `429` with `Retry-After`, as it is at once for an account or a space that
+  has a place or a turn already.
+- *Every large body counts* against the account that sent it, whatever came of it (read, refused,
+  too slow, or stored): the account waits 60 seconds, counted from the moment the request is over,
+  before another. The one exception is a request that was stored (`201`) and replaced a marked
+  collection key, which is what the places are for: it costs neither the wait nor budget.
+- *A budget* of four large bodies an hour for each account, on top of the places (`429` with
+  `Retry-After`).
+- *A floor on the rate.* Every body, from its first byte, has 30 seconds and one more second for
+  each 256 KiB it has by then: it must arrive at **256 KiB a second or faster** (2 Mbit/s) after a
+  30 second start, and no chunk may take more than 15 seconds; otherwise it is `408`, and a place it
+  held is free again at once. The chain's two POST routes have a timeout of five minutes of their
+  own, which this floor stays well under; the other routes keep 30 seconds. 32 MiB is room for about
+  5,000 items of ordinary size (about 6 KiB each with their signatures), which takes at most
+  2 minutes 30 at the slowest rate allowed; a space with more live items in the replaced
+  collections, or a connection slower than that, can't have its keys replaced from the web vault,
+  which says so and sends nothing.
+
+*What remains.* These limits bound what one account can ask of a server, not what many can. A person
+who can make accounts (each its own space, each with a marked key it may replace) can still keep both
+places busy and so delay the key replacements of others by up to the ten seconds a request waits,
+each of them. A server with sign-ups off, where only its admin makes accounts, has no such person.
+
+The server refuses a record unless all of these hold:
 
 - A1. Its bytes are canonical and within "Limits", and its body has its kind's exact shape.
 - A2. `space` is the route's space.

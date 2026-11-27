@@ -2,10 +2,11 @@
 // the same failure points (a name opens only under the id, kind and key version it was sealed
 // with; a sealed key says who it is for), so the account screens' logic is tested without
 // WebAssembly.
-import type { ChainBuilt, ChainChange, ChainReplacement, ChainView } from '@/crypto/types';
+import type { ChainBuilt, ChainChange, ChainReplacement, ChainView, ChainWrite } from '@/crypto/types';
 import { decodeB64, encodeB64, fromUtf8, utf8 } from '@/lib/b64url';
 import type { SharingCrypto } from '@/sharing/crypto';
 import type { SpaceCrypto } from '@/spaces/crypto';
+import { writeSignatureText } from './fake-crypto';
 
 export interface FakeSharing extends SharingCrypto {
   calls: string[];
@@ -60,6 +61,8 @@ export interface FakeSpaces extends SpaceCrypto {
   ownBundle: Uint8Array;
   /** The key version the fake seals every key at (the real worker seals at the newest it holds). */
   keyVersion: number;
+  /** The account the fake signs the items it seals again as (key version 1). */
+  writer: string;
   /** What `buildChainRecords` answers instead of the default one record per change, when set. */
   built: ChainBuilt | null;
   /** The changes `buildChainRecords` was asked for, in order. */
@@ -108,6 +111,37 @@ function nameBytes(spaceId: string, keyVersion: number, kind: string, id: string
   return utf8(JSON.stringify([spaceId, keyVersion, kind, id, name]));
 }
 
+/**
+ * An item sealed again as the next revision under the next key version, signed as the worker signs
+ * it: by `writer`, with the collection bound (the same fake signature `itemWriteSign` gives, over
+ * the same fields).
+ */
+function rewritten(writer: string, spaceId: string, item: ChainReplacement['items'][number]): ChainWrite {
+  const fields = {
+    owner: `space:${spaceId}`,
+    id: item.id,
+    kind: item.kind,
+    revision: item.revision + 1,
+    deleted: false,
+    keyVersion: item.keyVersion + 1,
+    ciphertext: utf8Text(`again:${item.id}`),
+    itemKey: utf8Text(`wrapped:${item.id}`),
+    collectionId: item.collection,
+  };
+  return {
+    collection: item.collection,
+    expectedRevision: item.revision,
+    item: {
+      ...fields,
+      format: 'kem1' as const,
+      deleted: false as const,
+      writer,
+      writerKeyVersion: 1,
+      writeSignature: encodeB64(utf8(writeSignatureText(writer, 1, fields))),
+    },
+  };
+}
+
 export function fakeSpaceCrypto(): FakeSpaces {
   const base = fakeSharingCrypto();
   const calls = base.calls;
@@ -117,6 +151,7 @@ export function fakeSpaceCrypto(): FakeSpaces {
     ownFingerprintText: '',
     ownBundle: utf8('own-bundle'),
     keyVersion: 1,
+    writer: '00000000-0000-4000-8000-0000000000a1',
     chain: NO_CHAIN,
     built: null,
     changes: [],
@@ -133,22 +168,7 @@ export function fakeSpaceCrypto(): FakeSpaces {
         records: [],
         seals: [],
         names: [],
-        writes: items.map((item) => ({
-          collection: item.collection,
-          expectedRevision: item.revision,
-          item: {
-            id: item.id,
-            owner: `space:${spaceId}`,
-            kind: item.kind,
-            format: 'kem1' as const,
-            revision: item.revision + 1,
-            keyVersion: item.keyVersion + 1,
-            ciphertext: utf8Text(`again:${item.id}`),
-            itemKey: utf8Text(`wrapped:${item.id}`),
-            deleted: false as const,
-            collectionId: item.collection,
-          },
-        })),
+        writes: items.map((item) => rewritten(fake.writer, spaceId, item)),
       };
     },
     async buildKeyReplacement({ spaceId, replacement }) {
@@ -162,22 +182,7 @@ export function fakeSpaceCrypto(): FakeSpaces {
         seals: [],
         names: [],
         rotated: [...new Set(replacement.items.map((item) => `collection:${item.collection}`))],
-        writes: replacement.items.map((item) => ({
-          collection: item.collection,
-          expectedRevision: item.revision,
-          item: {
-            id: item.id,
-            owner: `space:${spaceId}`,
-            kind: item.kind,
-            format: 'kem1' as const,
-            revision: item.revision + 1,
-            keyVersion: item.keyVersion + 1,
-            ciphertext: utf8Text(`again:${item.id}`),
-            itemKey: utf8Text(`wrapped:${item.id}`),
-            deleted: false as const,
-            collectionId: item.collection,
-          },
-        })),
+        writes: replacement.items.map((item) => rewritten(fake.writer, spaceId, item)),
       };
     },
     async newChainedSpace({ spaceId, collectionId, spaceName, collectionName, at }) {

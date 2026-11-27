@@ -161,10 +161,12 @@ interface Made {
 }
 
 /**
- * The most one append request may weigh: the route reads 8 MiB (routes/space_chain.rs), less a
- * margin for what the transport adds.
+ * The most one append request may weigh: the route reads 32 MiB from a member who may replace
+ * keys (routes/space_chain.rs; 8 MiB from anyone else), less a margin for what the transport adds.
+ * Each re-written item carries its signature (about 4.5 KiB), so this is roughly 5,000 items of
+ * ordinary size.
  */
-const MAX_REQUEST_BYTES = 8 * 1024 * 1024 - 256 * 1024;
+const MAX_REQUEST_BYTES = 32 * 1024 * 1024 - 256 * 1024;
 
 /**
  * Makes records in the worker (`make`), appends them to the space's chain, and verifies the chain

@@ -86,6 +86,9 @@ pub enum AppendError {
     /// The request holds an item that isn't in a collection whose key one of its `keys` records
     /// replaces (`422`).
     HeldNotRotated(&'static str),
+    /// The space takes signed writes only and a re-written `kem1` item carries no signature
+    /// (`422` `signature-required`; docs/crypto.md, "Signed item writes").
+    SignatureRequired,
     /// The space isn't there for this caller.
     NotFound,
     Store(String),
@@ -598,6 +601,8 @@ where
         let by_id: BTreeMap<ItemId, &SpaceItemInfo> = infos.iter().map(|i| (i.id, i)).collect();
         let held: BTreeSet<ItemId> = request.held.iter().copied().collect();
         let me = id_of(actor);
+        // Whether the space takes signed writes only, asked once for all the re-writes.
+        let signed_only = self.items.signed_writes_required(Owner::Space(space)).await?;
         let mut written: BTreeSet<ItemId> = BTreeSet::new();
         let mut drafts = Vec::with_capacity(request.writes.len());
         for (collection, write) in &request.writes {
@@ -644,6 +649,12 @@ where
                         "an item can't be re-written as asked: its revision or its sealed parts are wrong",
                     )
                 })?;
+            // The re-write is a write like any other: a space that takes signed writes only
+            // refuses a `kem1` one that carries no signature. Asked after the access and revision
+            // checks, so a caller who may not re-write the item learns nothing of the flag.
+            if signed_only && draft.format == ItemFormat::Kem1 && draft.signature.is_none() {
+                return Err(AppendError::SignatureRequired);
+            }
             drafts.push((draft, *collection));
         }
         Ok(drafts)
