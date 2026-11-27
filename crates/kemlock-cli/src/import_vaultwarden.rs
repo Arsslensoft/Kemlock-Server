@@ -122,7 +122,7 @@ struct SqlSinks {
 impl SqlSinks {
     /// Opens the database (migrating it) and reads or makes `server.key`, as the server does.
     async fn connect(config: &Config, adopt_existing: bool) -> Result<SqlSinks, String> {
-        std::fs::create_dir_all(&config.data_folder)
+        kemlock_server::keys::create_data_folder(&config.data_folder)
             .map_err(|e| format!("can't make {}: {e}", config.data_folder.display()))?;
         let server_key =
             load_or_create_server_key(&config.data_folder, config.server_key.as_deref())
