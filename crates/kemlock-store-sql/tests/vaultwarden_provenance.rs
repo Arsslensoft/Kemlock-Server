@@ -1118,6 +1118,127 @@ async fn an_account_the_api_changed_since_is_not_rolled_back_by_a_rerun() {
     assert_eq!(refused(&again, "user-changed"), vec![user.0.to_string()]);
 }
 
+/// A `twofactor` row of a known id.
+fn twofactor_of(id: Uuid, user: UserId) -> Table {
+    Table::from_rows(
+        &schema::TWOFACTOR,
+        vec![vec![
+            text(id),
+            text(user.0),
+            Cell::Int(0),
+            Cell::Int(1),
+            text("JBSWY3DPEHPK3PXP"),
+            Cell::Int(0),
+        ]],
+    )
+}
+
+/// A confirmed owner's membership of a known id.
+fn membership_of(id: Uuid, space: SpaceId, user: UserId) -> Table {
+    Table::from_rows(
+        &schema::USERS_ORGANIZATIONS,
+        vec![vec![
+            text(id),
+            text(user.0),
+            text(space.0),
+            Cell::Null,
+            Cell::Int(0),
+            text("2.key|iv|mac"),
+            Cell::Int(2),
+            Cell::Int(0),
+            Cell::Null,
+            Cell::Null,
+        ]],
+    )
+}
+
+#[tokio::test]
+async fn a_second_pass_drops_two_step_and_membership_rows_only_of_what_it_owns() {
+    let store = memory().await;
+    let user = UserId::random();
+    let space = SpaceId::random();
+    let (factor, member) = (Uuid::new_v4(), Uuid::new_v4());
+    let mut mapped = MappedImport::default();
+    mapped
+        .accounts
+        .push(account(user, &unique_email("dropped"), "Dropped"));
+    mapped.carried = vec![
+        organizations(&[(space, "Family")]),
+        membership_of(member, space, user),
+        twofactor_of(factor, user),
+    ];
+    let first = pass(&store, &mapped, false).await;
+    assert!(first.refused.is_empty(), "{:?}", first.refused);
+    let deletions = [
+        kemlock_vaultwarden::Deletion {
+            table: "twofactor",
+            key: vec![factor.to_string()],
+        },
+        kemlock_vaultwarden::Deletion {
+            table: "users_organizations",
+            key: vec![member.to_string()],
+        },
+    ];
+    let delete = |store: SqlStore, adopt: bool| {
+        let deletions = deletions.clone();
+        async move {
+            let dest = tempfile::tempdir().expect("a temp dir");
+            let mut options = ImportOptions::new(dest.path(), Arc::new(Files::default()), NOW);
+            options.adopt_existing = adopt;
+            let mut sink = SqlImportSink::begin(&store, ServerSeal::new(&[7u8; 32]), options)
+                .await
+                .expect("a pass opens");
+            apply(&MappedImport::default(), &deletions, &mut sink)
+                .await
+                .expect("the pass applies")
+        }
+    };
+
+    // The person changes their account here. A later pass that says the rows are gone leaves
+    // them, and says so.
+    let mut changed = UserRepo::by_id(&store, user)
+        .await
+        .expect("a read")
+        .expect("the account");
+    changed.name = Some("Changed here".to_owned());
+    changed.updated_at = NOW + time::Duration::hours(1);
+    UserRepo::update(&store, &changed).await.expect("updated");
+    let refused_pass = delete(store.clone(), false).await;
+    assert_eq!(refused(&refused_pass, "twofactor"), vec![factor.to_string()]);
+    assert_eq!(
+        refused(&refused_pass, "users_organizations"),
+        vec![member.to_string()]
+    );
+    assert_eq!(
+        TwoFactorRepo::list(&store, user)
+            .await
+            .expect("a read")
+            .len(),
+        1,
+        "the two-step setup stays"
+    );
+    let state = SpaceRepo::load(&store, space)
+        .await
+        .expect("a read")
+        .expect("the space");
+    assert_eq!(state.members.len(), 1, "the member stays");
+
+    // An operator who means it adopts: then the rows go.
+    let adopted = delete(store.clone(), true).await;
+    assert!(adopted.refused.is_empty(), "{:?}", adopted.refused);
+    assert!(
+        TwoFactorRepo::list(&store, user)
+            .await
+            .expect("a read")
+            .is_empty()
+    );
+    let state = SpaceRepo::load(&store, space)
+        .await
+        .expect("a read")
+        .expect("the space");
+    assert!(state.members.is_empty());
+}
+
 #[tokio::test]
 async fn an_item_the_api_revised_after_the_source_is_not_overwritten() {
     let store = memory().await;

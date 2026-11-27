@@ -581,6 +581,19 @@ pub(super) async fn delete_allowed(ctx: &mut Ctx, table: &str, key: &[String]) -
             Ok(collection_owned(ctx, first).await? && group_owned(ctx, second).await?)
         }
         "groups_users" => group_owned(ctx, first).await,
+        // The stored row names the user, and for a membership the organization too: dropping it
+        // takes a two-step setup from an account, or a person out of a space, so the import may
+        // only do it for what it owns. A row that isn't stored has nothing to drop.
+        "twofactor" | "users_organizations" => {
+            let Some(row) = rows::get_row(ctx, table, &rows::key_text(key)).await? else {
+                return Ok(true);
+            };
+            let user = user_ok(ctx, row_uuid(rows::text(&row, "user_uuid"))).await?;
+            if table == "twofactor" {
+                return Ok(user);
+            }
+            Ok(user && space_ok(ctx, row_uuid(rows::text(&row, "org_uuid"))).await?)
+        }
         "emergency_access" => {
             let Some(id) = first else {
                 return Ok(true);
