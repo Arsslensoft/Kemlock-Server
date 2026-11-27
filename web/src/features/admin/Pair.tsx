@@ -212,7 +212,7 @@ export function PairView({
                     {t('admin.pair.codeExpires', { at: clock(code.expiresAt), minutes })}
                   </span>
                   <div className="actions">
-                    <CopyButton value={code.code} label={t('admin.pair.copyCode')} />
+                    <CopyButton value={code.code} label={t('admin.pair.copyCode')} secret />
                     <Button size="small" onPress={onNewCode}>
                       {t('admin.pair.newCode')}
                     </Button>

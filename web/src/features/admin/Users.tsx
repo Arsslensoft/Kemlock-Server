@@ -201,7 +201,7 @@ function Issued({ issued }: { issued: InviteIssued }) {
       </p>
       <div className="with-action">
         <span className="mono">{issued.link}</span>
-        <CopyButton value={issued.link} label={t('admin.invites.copy')} />
+        <CopyButton value={issued.link} label={t('admin.invites.copy')} secret />
       </div>
     </Notice>
   );
