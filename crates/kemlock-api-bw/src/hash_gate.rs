@@ -10,9 +10,10 @@
 //!   so nobody can keep the owner out by asking again and again. An address with no account is
 //!   treated the same way, keyed by a MAC of the address, so the treatment says nothing about who
 //!   has an account.
-//! - **One client prefix** (a /56 for IPv6, an IPv4 address): at most one hash in flight. A second
-//!   request from the same prefix waits for its turn the same bounded time, then is answered 429,
-//!   so clients behind one address (a NAT, an office) queue rather than being refused.
+//! - **One client prefix** (a /56 for IPv6, an IPv4 address): at most half the pool in flight, so
+//!   one address can never take every permit. A request past that waits for its turn the same
+//!   bounded time, then is answered 429, so clients behind one address (a NAT, an office) queue
+//!   rather than being refused.
 //!
 //! The permit and the claims on the account and the prefix are held by the blocking task that does
 //! the work, not by the request: a request that is dropped (a reset connection, a timeout) leaves
@@ -61,7 +62,9 @@ struct Inner {
     wait: Duration,
     interval: Duration,
     accounts: Mutex<HashMap<[u8; 32], Account>>,
-    prefixes: Mutex<std::collections::HashSet<IpAddr>>,
+    /// Hashes in flight per client prefix, and the most one prefix may have.
+    prefixes: Mutex<HashMap<IpAddr, usize>>,
+    per_prefix: usize,
 }
 
 /// The gate; cheap to clone.
@@ -98,7 +101,13 @@ impl Drop for Claims {
             }
         }
         if let Some(prefix) = self.who.prefix {
-            locked(&inner.prefixes).remove(&prefix);
+            let mut prefixes = locked(&inner.prefixes);
+            if let Some(count) = prefixes.get_mut(&prefix) {
+                *count -= 1;
+                if *count == 0 {
+                    prefixes.remove(&prefix);
+                }
+            }
         }
     }
 }
@@ -112,7 +121,8 @@ impl HashGate {
             wait,
             interval,
             accounts: Mutex::new(HashMap::new()),
-            prefixes: Mutex::new(std::collections::HashSet::new()),
+            prefixes: Mutex::new(HashMap::new()),
+            per_prefix: (permits / 2).max(1),
         }))
     }
 
@@ -149,12 +159,17 @@ impl HashGate {
         }
     }
 
-    /// Takes the prefix's turn (one hash in flight per prefix), waiting for it up to `deadline`:
-    /// clients behind one address (a NAT, an office) queue rather than being refused.
+    /// Takes a turn of the prefix (at most half the pool in flight per prefix), waiting for it up to
+    /// `deadline`: clients behind one address (a NAT, an office) queue rather than being refused.
     async fn claim_prefix(&self, prefix: IpAddr, deadline: Instant) -> BwResult<()> {
         loop {
-            if locked(&self.0.prefixes).insert(prefix) {
-                return Ok(());
+            {
+                let mut prefixes = locked(&self.0.prefixes);
+                let count = prefixes.entry(prefix).or_insert(0);
+                if *count < self.0.per_prefix {
+                    *count += 1;
+                    return Ok(());
+                }
             }
             if Instant::now() + POLL > deadline {
                 return Err(too_many());
@@ -261,7 +276,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_second_hash_of_one_prefix_waits_its_turn_and_is_refused_if_it_does_not_come() {
-        let gate = HashGate::new(4, Duration::from_millis(500), Duration::ZERO);
+        let gate = HashGate::new(2, Duration::from_millis(500), Duration::ZERO);
+        // A pool of 2: one hash in flight per prefix.
         let (task, release, started) = held(&gate, who(1, Some(9)));
         wait_started(started).await;
         let refused = gate.run(who(2, Some(9)), || ()).await.expect_err("refused");
@@ -276,7 +292,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_second_hash_of_one_prefix_runs_once_the_first_ends() {
-        let gate = HashGate::new(4, Duration::from_secs(5), Duration::ZERO);
+        let gate = HashGate::new(2, Duration::from_secs(5), Duration::ZERO);
         let (task, release, started) = held(&gate, who(1, Some(9)));
         wait_started(started).await;
         let queued = tokio::spawn({
