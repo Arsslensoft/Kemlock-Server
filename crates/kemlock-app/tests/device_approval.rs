@@ -301,12 +301,13 @@ async fn past_the_hard_limit_nothing_is_stored_but_the_owners_own_address_still_
     }
     assert_eq!(world.store.auth_request_count(), HARD_HOURLY_REQUEST_LIMIT);
 
-    // A stranger's is answered like any other, held back, and not stored.
+    // A stranger's is answered like a dropped request (it is not held back, as nothing is stored
+    // for it to be listed by) and not stored.
     let stranger = use_case
         .execute(input_from(EMAIL, public_key(78), 220))
         .await
         .expect("answered");
-    assert!(stranger.held_back);
+    assert!(!stranger.held_back);
     assert!(world.store.auth_request(stranger.id).is_none());
     assert_eq!(world.store.auth_request_count(), HARD_HOURLY_REQUEST_LIMIT);
 

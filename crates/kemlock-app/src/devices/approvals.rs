@@ -164,6 +164,17 @@ impl<U: UserRepo, A: ApprovalRepo, N: DeviceNotices, E: Platform> RequestApprova
             .approvals
             .insert_request_within(&request, now - Duration::hours(1), max_recent)
             .await?;
+        if !stored {
+            // Past the hard limit nothing was stored, so there is nothing to list: answered like
+            // a dropped request, not as held back, so the client doesn't say it is shown on the
+            // account's open devices. Nobody is mailed either.
+            return Ok(Requested {
+                id: ApprovalId(random_uuid(&self.env)),
+                phrase,
+                expires_at,
+                held_back: false,
+            });
+        }
         if held_back {
             // The first one held back in an hour tells the owner approvals are being
             // throttled, so a real request that was held back with the rest isn't a silence.
@@ -182,12 +193,7 @@ impl<U: UserRepo, A: ApprovalRepo, N: DeviceNotices, E: Platform> RequestApprova
                     .await;
             }
             return Ok(Requested {
-                // Past the hard limit nothing was stored: answered like any other.
-                id: if stored {
-                    request.id
-                } else {
-                    ApprovalId(random_uuid(&self.env))
-                },
+                id: request.id,
                 phrase,
                 expires_at,
                 held_back: true,
